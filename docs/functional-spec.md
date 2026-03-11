@@ -162,6 +162,13 @@
 
 ## 5. 命令接口
 
+### 5.0 初始化
+
+1. `rccb init [--force]`
+2. 初始化输出：
+   - `.rccb/config.example.json`
+   - `.rccb/providers/*.example.json`（native profile 模板）
+
 ### 5.1 启动
 
 1. 快捷启动: `rccb claude codex gemini opencode droid`

@@ -1,5 +1,6 @@
+use std::fs;
 use std::io::{self, BufRead, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Value};
@@ -19,38 +20,64 @@ use crate::types::{AskEvent, AskResponse};
 pub fn cmd_init(project_dir: &Path, force: bool) -> Result<()> {
     ensure_project_layout(project_dir)?;
     let config_path = rccb_dir(project_dir).join("config.example.json");
-    if config_path.exists() && !force {
-        println!("initialized: {}", rccb_dir(project_dir).display());
-        println!("config exists: {}", config_path.display());
-        return Ok(());
+    if !config_path.exists() || force {
+        let template = json!({
+            "project": project_dir.display().to_string(),
+            "instances": {
+                "default": {
+                    "heartbeat_secs": 5,
+                    "listen": "127.0.0.1:0",
+                    "debug": false,
+                    "providers": ["claude", "codex", "gemini", "opencode", "droid"],
+                    "orchestration_rule": "first provider is orchestrator, remaining providers are executors"
+                }
+            },
+            "channels": {
+                "feishu": {
+                    "webhook_url": "https://open.feishu.cn/open-apis/bot/v2/hook/your-token"
+                },
+                "telegram": {
+                    "bot_token": "123456789:bot-token",
+                    "chat_id": "-1001234567890"
+                }
+            }
+        });
+        write_json_pretty(&config_path, &template)?;
     }
 
-    let template = json!({
-        "project": project_dir.display().to_string(),
-        "instances": {
-            "default": {
-                "heartbeat_secs": 5,
-                "listen": "127.0.0.1:0",
-                "debug": false,
-                "providers": ["claude", "codex", "gemini", "opencode", "droid"],
-                "orchestration_rule": "first provider is orchestrator, remaining providers are executors"
-            }
-        },
-        "channels": {
-            "feishu": {
-                "webhook_url": "https://open.feishu.cn/open-apis/bot/v2/hook/your-token"
-            },
-            "telegram": {
-                "bot_token": "123456789:bot-token",
-                "chat_id": "-1001234567890"
-            }
-        }
-    });
-    write_json_pretty(&config_path, &template)?;
+    let profile_templates = write_native_profile_templates(project_dir, force)?;
 
     println!("initialized: {}", rccb_dir(project_dir).display());
     println!("template: {}", config_path.display());
+    for p in profile_templates {
+        println!("native profile template: {}", p.display());
+    }
     Ok(())
+}
+
+fn write_native_profile_templates(project_dir: &Path, force: bool) -> Result<Vec<PathBuf>> {
+    let profile_dir = rccb_dir(project_dir).join("providers");
+    fs::create_dir_all(&profile_dir)?;
+
+    let mut written = Vec::new();
+    for provider in SUPPORTED_PROVIDERS {
+        let path = profile_dir.join(format!("{}.example.json", provider));
+        if path.exists() && !force {
+            continue;
+        }
+
+        let tpl = json!({
+            "provider": provider,
+            "cmd": format!("./.rccb/bin/{}", provider),
+            "args": [],
+            "no_wrap": false,
+            "_note": "copy to <provider>.json and customize cmd/args/no_wrap for this project"
+        });
+        write_json_pretty(&path, &tpl)?;
+        written.push(path);
+    }
+
+    Ok(written)
 }
 
 pub fn cmd_start(

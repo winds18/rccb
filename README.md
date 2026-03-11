@@ -9,6 +9,17 @@
 - 调试开关（可动态 on/off）与完整调试日志
 - IM 通道（飞书、Telegram）
 
+## 项目初始化
+
+```bash
+rccb --project-dir . init
+```
+
+会生成：
+
+- `./.rccb/config.example.json`
+- `./.rccb/providers/*.example.json`（native provider profile 模板）
+
 ## 编排启动
 
 ### 1) 快捷风格

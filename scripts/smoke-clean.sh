@@ -19,6 +19,12 @@ mkdir -p "$PROJ_DIR"
 echo "[smoke] bin=$BIN"
 echo "[smoke] temp_project=$PROJ_DIR"
 
+# 0) init should generate config + native profile templates
+"$BIN" --project-dir "$PROJ_DIR" init >/dev/null
+test -f "$PROJ_DIR/.rccb/config.example.json"
+test -f "$PROJ_DIR/.rccb/providers/codex.example.json"
+echo "MODE_INIT_TEMPLATES_OK"
+
 # 1) stub mode
 RCCB_EXEC_MODE=stub "$BIN" --project-dir "$PROJ_DIR" start --instance s1 claude codex >/dev/null 2>&1 &
 PID1=$!
