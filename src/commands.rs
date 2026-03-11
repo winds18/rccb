@@ -70,12 +70,14 @@ fn write_native_profile_templates(project_dir: &Path, force: bool) -> Result<Vec
             "provider": provider,
             "cmd": format!("./.rccb/bin/{}", provider),
             "args": [],
+            "timeout_s": 300.0,
+            "quiet": false,
             "no_wrap": false,
             "env": {
                 "RCCB_TASK_ID": "{req_id}",
                 "RCCB_TASK_CALLER": "{caller}"
             },
-            "_note": "copy to <provider>.json and customize cmd/args/no_wrap for this project"
+            "_note": "copy to <provider>.json and customize cmd/args/timeout_s/quiet/no_wrap/env for this project"
         });
         write_json_pretty(&path, &tpl)?;
         written.push(path);

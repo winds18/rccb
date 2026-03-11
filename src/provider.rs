@@ -28,6 +28,8 @@ pub struct ProviderExecResult {
     pub fallback_scan: bool,
     pub status: String,
     pub stderr: String,
+    pub effective_timeout_s: f64,
+    pub effective_quiet: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,6 +64,10 @@ struct NativeProviderProfile {
     no_wrap: Option<bool>,
     #[serde(default)]
     env: Option<BTreeMap<String, String>>,
+    #[serde(default)]
+    timeout_s: Option<f64>,
+    #[serde(default)]
+    quiet: Option<bool>,
 }
 
 pub fn execute_provider_request(
@@ -106,13 +112,23 @@ pub fn execute_provider_request(
                         wrapper.display()
                     )
                 })?;
-            Ok(build_exec_result(mode, req, req_id, outcome))
+            Ok(build_exec_result(
+                mode,
+                req_id,
+                outcome,
+                req.timeout_s,
+                req.quiet,
+            ))
         }
         ExecMode::Native => {
             let work_dir = Path::new(&req.work_dir);
             let profile = load_native_profile(&req.provider, work_dir).with_context(|| {
                 format!("load native provider profile failed for `{}`", req.provider)
             })?;
+            let effective_timeout_s =
+                effective_native_timeout_s(&req.provider, req.timeout_s, profile.as_ref());
+            let effective_quiet =
+                effective_native_quiet(&req.provider, req.quiet, profile.as_ref());
 
             let binary = resolve_native_provider_cmd(&req.provider, work_dir, profile.as_ref())
                 .with_context(|| {
@@ -137,16 +153,33 @@ pub fn execute_provider_request(
                 .env("CCB_REQ_ID", req_id)
                 .env("RCCB_NATIVE_PROVIDER", &req.provider);
 
-            for arg in native_args_for_provider(&req.provider, req, req_id, profile.as_ref()) {
+            for arg in native_args_for_provider(
+                &req.provider,
+                req,
+                req_id,
+                effective_timeout_s,
+                profile.as_ref(),
+            ) {
                 cmd.arg(arg);
             }
-            for (k, v) in native_env_for_provider(&req.provider, req, req_id, profile.as_ref()) {
+            for (k, v) in native_env_for_provider(
+                &req.provider,
+                req,
+                req_id,
+                effective_timeout_s,
+                profile.as_ref(),
+            ) {
                 cmd.env(k, v);
             }
 
             let input = format!("{}\n", prompt);
-            let timeout = timeout_for_request(req.timeout_s);
-            let outcome = run_process_with_stream(cmd, &input, timeout, &mut on_delta)
+            let timeout = timeout_for_request(effective_timeout_s);
+            let mut maybe_emit_delta = |chunk: String| {
+                if !effective_quiet {
+                    on_delta(chunk);
+                }
+            };
+            let outcome = run_process_with_stream(cmd, &input, timeout, &mut maybe_emit_delta)
                 .with_context(|| {
                     format!(
                         "spawn native provider failed: provider={} cmd={}",
@@ -155,7 +188,13 @@ pub fn execute_provider_request(
                     )
                 })?;
 
-            Ok(build_exec_result(mode, req, req_id, outcome))
+            Ok(build_exec_result(
+                mode,
+                req_id,
+                outcome,
+                effective_timeout_s,
+                effective_quiet,
+            ))
         }
     }
 }
@@ -192,6 +231,8 @@ fn run_stub(req: &AskRequest, req_id: &str) -> ProviderExecResult {
         fallback_scan: false,
         status: "completed".to_string(),
         stderr: String::new(),
+        effective_timeout_s: req.timeout_s,
+        effective_quiet: req.quiet,
     }
 }
 
@@ -275,9 +316,10 @@ fn run_process_with_stream(
 
 fn build_exec_result(
     mode: ExecMode,
-    _req: &AskRequest,
     req_id: &str,
     outcome: ProcessOutcome,
+    effective_timeout_s: f64,
+    effective_quiet: bool,
 ) -> ProviderExecResult {
     if outcome.timed_out {
         return ProviderExecResult {
@@ -290,6 +332,8 @@ fn build_exec_result(
             fallback_scan: false,
             status: "timeout".to_string(),
             stderr: outcome.stderr,
+            effective_timeout_s,
+            effective_quiet,
         };
     }
 
@@ -343,6 +387,8 @@ fn build_exec_result(
         fallback_scan: false,
         status: status.to_string(),
         stderr: outcome.stderr,
+        effective_timeout_s,
+        effective_quiet,
     }
 }
 
@@ -517,22 +563,29 @@ fn native_args_for_provider(
     provider: &str,
     req: &AskRequest,
     req_id: &str,
+    effective_timeout_s: f64,
     profile: Option<&NativeProviderProfile>,
 ) -> Vec<String> {
     let key = format!("RCCB_{}_NATIVE_ARGS", provider.to_ascii_uppercase());
     if let Ok(v) = env::var(&key) {
         let parsed = split_shell_like(&v);
         if !parsed.is_empty() {
-            return apply_arg_templates(parsed, provider, req, req_id);
+            return apply_arg_templates(parsed, provider, req, req_id, effective_timeout_s);
         }
     }
 
     if let Ok(v) = env::var("RCCB_NATIVE_ARGS") {
-        return apply_arg_templates(split_shell_like(&v), provider, req, req_id);
+        return apply_arg_templates(
+            split_shell_like(&v),
+            provider,
+            req,
+            req_id,
+            effective_timeout_s,
+        );
     }
 
     if let Some(args) = profile.and_then(|p| p.args.as_ref()) {
-        return apply_arg_templates(args.clone(), provider, req, req_id);
+        return apply_arg_templates(args.clone(), provider, req, req_id, effective_timeout_s);
     }
 
     Vec::new()
@@ -542,6 +595,7 @@ fn native_env_for_provider(
     provider: &str,
     req: &AskRequest,
     req_id: &str,
+    effective_timeout_s: f64,
     profile: Option<&NativeProviderProfile>,
 ) -> Vec<(String, String)> {
     let Some(envs) = profile.and_then(|p| p.env.as_ref()) else {
@@ -556,10 +610,46 @@ fn native_env_for_provider(
             }
             Some((
                 key.to_string(),
-                render_arg_template(v, provider, req, req_id),
+                render_arg_template(v, provider, req, req_id, effective_timeout_s),
             ))
         })
         .collect()
+}
+
+fn effective_native_timeout_s(
+    provider: &str,
+    request_timeout_s: f64,
+    profile: Option<&NativeProviderProfile>,
+) -> f64 {
+    let provider_key = format!("RCCB_{}_NATIVE_TIMEOUT_S", provider.to_ascii_uppercase());
+    if let Some(v) = parse_env_f64(&provider_key) {
+        return v;
+    }
+    if let Some(v) = parse_env_f64("RCCB_NATIVE_TIMEOUT_S") {
+        return v;
+    }
+    if let Some(v) = profile.and_then(|p| p.timeout_s) {
+        return v;
+    }
+    request_timeout_s
+}
+
+fn effective_native_quiet(
+    provider: &str,
+    request_quiet: bool,
+    profile: Option<&NativeProviderProfile>,
+) -> bool {
+    let provider_key = format!("RCCB_{}_NATIVE_QUIET", provider.to_ascii_uppercase());
+    if let Some(v) = parse_env_bool(&provider_key) {
+        return v;
+    }
+    if let Some(v) = parse_env_bool("RCCB_NATIVE_QUIET") {
+        return v;
+    }
+    if let Some(v) = profile.and_then(|p| p.quiet) {
+        return v;
+    }
+    request_quiet
 }
 
 fn should_wrap_native_prompt(provider: &str, profile: Option<&NativeProviderProfile>) -> bool {
@@ -578,17 +668,24 @@ fn apply_arg_templates(
     provider: &str,
     req: &AskRequest,
     req_id: &str,
+    effective_timeout_s: f64,
 ) -> Vec<String> {
     args.into_iter()
-        .map(|arg| render_arg_template(&arg, provider, req, req_id))
+        .map(|arg| render_arg_template(&arg, provider, req, req_id, effective_timeout_s))
         .collect()
 }
 
-fn render_arg_template(arg: &str, provider: &str, req: &AskRequest, req_id: &str) -> String {
+fn render_arg_template(
+    arg: &str,
+    provider: &str,
+    req: &AskRequest,
+    req_id: &str,
+    effective_timeout_s: f64,
+) -> String {
     arg.replace("{req_id}", req_id)
         .replace("{caller}", req.caller.trim())
         .replace("{provider}", provider.trim())
-        .replace("{timeout_s}", &format!("{:.3}", req.timeout_s))
+        .replace("{timeout_s}", &format!("{:.3}", effective_timeout_s))
         .replace("{work_dir}", req.work_dir.trim())
 }
 
@@ -804,6 +901,24 @@ fn sanitize_stderr_for_reply(stderr: &str) -> String {
     out.join("\n").trim().to_string()
 }
 
+fn parse_env_f64(name: &str) -> Option<f64> {
+    let raw = env::var(name).ok()?;
+    let parsed = raw.trim().parse::<f64>().ok()?;
+    if !parsed.is_finite() {
+        return None;
+    }
+    Some(parsed)
+}
+
+fn parse_env_bool(name: &str) -> Option<bool> {
+    let raw = env::var(name).ok()?;
+    let val = raw.trim().to_ascii_lowercase();
+    if val.is_empty() {
+        return None;
+    }
+    Some(!matches!(val.as_str(), "0" | "false" | "no" | "off"))
+}
+
 fn env_bool(name: &str, default: bool) -> bool {
     let raw = env::var(name).unwrap_or_default();
     let val = raw.trim().to_ascii_lowercase();
@@ -919,7 +1034,7 @@ mod tests {
             timed_out: false,
             elapsed_ms: 15,
         };
-        let result = build_exec_result(ExecMode::Native, &req, req_id, outcome);
+        let result = build_exec_result(ExecMode::Native, req_id, outcome, req.timeout_s, req.quiet);
         assert_eq!(result.exit_code, 2);
         assert!(!result.done_seen);
         assert_eq!(result.status, "incomplete");
@@ -936,7 +1051,7 @@ mod tests {
             timed_out: false,
             elapsed_ms: 21,
         };
-        let result = build_exec_result(ExecMode::Native, &req, req_id, outcome);
+        let result = build_exec_result(ExecMode::Native, req_id, outcome, req.timeout_s, req.quiet);
         assert_eq!(result.exit_code, 0);
         assert!(result.done_seen);
         assert_eq!(result.status, "completed");
@@ -966,6 +1081,7 @@ mod tests {
             "codex",
             &req,
             "rid-123",
+            req.timeout_s,
         );
         assert_eq!(got, "--rid=rid-123 --caller=claude --p=codex --wd=.");
     }
@@ -1025,11 +1141,33 @@ mod tests {
             args: None,
             no_wrap: None,
             env: Some(env_map),
+            timeout_s: None,
+            quiet: None,
         };
-        let envs = native_env_for_provider("codex", &req, "rid-x", Some(&profile));
+        let envs = native_env_for_provider("codex", &req, "rid-x", req.timeout_s, Some(&profile));
         assert_eq!(
             envs,
             vec![("RCCB_MARK".to_string(), "codex:claude".to_string())]
         );
+    }
+
+    #[test]
+    fn effective_native_timeout_uses_profile_when_no_env_override() {
+        let profile = NativeProviderProfile {
+            timeout_s: Some(42.5),
+            ..Default::default()
+        };
+        let got = effective_native_timeout_s("codex", 300.0, Some(&profile));
+        assert!((got - 42.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn effective_native_quiet_uses_profile_when_no_env_override() {
+        let profile = NativeProviderProfile {
+            quiet: Some(true),
+            ..Default::default()
+        };
+        let got = effective_native_quiet("codex", false, Some(&profile));
+        assert!(got);
     }
 }

@@ -23,6 +23,8 @@ echo "[smoke] temp_project=$PROJ_DIR"
 "$BIN" --project-dir "$PROJ_DIR" init >/dev/null
 test -f "$PROJ_DIR/.rccb/config.example.json"
 test -f "$PROJ_DIR/.rccb/providers/codex.example.json"
+grep -q '"timeout_s"' "$PROJ_DIR/.rccb/providers/codex.example.json"
+grep -q '"quiet"' "$PROJ_DIR/.rccb/providers/codex.example.json"
 echo "MODE_INIT_TEMPLATES_OK"
 
 # 1) stub mode

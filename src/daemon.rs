@@ -779,6 +779,8 @@ fn worker_loop(worker_key: String, context: DaemonContext, rx: mpsc::Receiver<Wo
                     fallback_scan: false,
                     status: "failed".to_string(),
                     stderr: String::new(),
+                    effective_timeout_s: req.timeout_s,
+                    effective_quiet: req.quiet,
                 }
             }
         };
@@ -816,6 +818,8 @@ fn worker_loop(worker_key: String, context: DaemonContext, rx: mpsc::Receiver<Wo
                 "anchor_seen": exec.anchor_seen,
                 "anchor_ms": exec.anchor_ms.unwrap_or(0),
                 "fallback_scan": exec.fallback_scan,
+                "effective_timeout_s": exec.effective_timeout_s,
+                "effective_quiet": exec.effective_quiet,
                 "log_path": provider_log.display().to_string(),
                 "stderr": exec.stderr,
             })),

@@ -62,7 +62,7 @@
      - 之后才回退到系统 `PATH`
    - 支持项目级 profile：
      - `<project>/.rccb/providers/<provider>.json`
-     - 字段：`cmd`（可选）、`args`（可选）、`no_wrap`（可选）、`env`（可选）
+     - 字段：`cmd`（可选）、`args`（可选）、`timeout_s`（可选）、`quiet`（可选）、`no_wrap`（可选）、`env`（可选）
    - 可覆盖二进制与参数：
      - `RCCB_<PROVIDER>_NATIVE_CMD`
      - `RCCB_<PROVIDER>_NATIVE_ARGS`
@@ -71,6 +71,9 @@
    - 可关闭自动 prompt 包装（高级用法）：
       - `RCCB_NATIVE_NO_WRAP`
       - `RCCB_<PROVIDER>_NATIVE_NO_WRAP`
+   - 可覆盖原生执行策略：
+      - `RCCB_NATIVE_TIMEOUT_S` / `RCCB_<PROVIDER>_NATIVE_TIMEOUT_S`
+      - `RCCB_NATIVE_QUIET` / `RCCB_<PROVIDER>_NATIVE_QUIET`
    - `args` 模板变量：
       - `{req_id}` / `{caller}` / `{provider}` / `{timeout_s}` / `{work_dir}`
    - `env` 值模板变量：
@@ -78,6 +81,8 @@
    - 优先级（高 -> 低）：
       - cmd: `RCCB_<PROVIDER>_NATIVE_CMD` -> profile `cmd` -> `RCCB_NATIVE_BIN_DIR` -> `.rccb/bin` -> `bin` -> `PATH`
       - args: `RCCB_<PROVIDER>_NATIVE_ARGS` -> `RCCB_NATIVE_ARGS` -> profile `args`
+      - timeout: `RCCB_<PROVIDER>_NATIVE_TIMEOUT_S` -> `RCCB_NATIVE_TIMEOUT_S` -> profile `timeout_s` -> request `timeout_s`
+      - quiet: `RCCB_<PROVIDER>_NATIVE_QUIET` -> `RCCB_NATIVE_QUIET` -> profile `quiet` -> request `quiet`
       - wrap: `RCCB_<PROVIDER>_NATIVE_NO_WRAP` -> `RCCB_NATIVE_NO_WRAP` -> profile `no_wrap`
    - 成功判定更严格：`exit_code=0` 且输出包含 `CCB_DONE: <req_id>` 才视为 `completed`；否则记为 `incomplete`（`exit_code=2`）。
 3. `stub`（开发联调）

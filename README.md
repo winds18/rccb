@@ -138,7 +138,7 @@ rccb --project-dir . debug off --instance team-a
      - `<project>/bin/<provider>`
    - 支持项目级 profile：
      - `<project>/.rccb/providers/<provider>.json`
-     - 字段：`cmd`、`args`、`no_wrap`、`env`
+     - 字段：`cmd`、`args`、`timeout_s`、`quiet`、`no_wrap`、`env`
    - 原生命令覆盖：
      - `RCCB_<PROVIDER>_NATIVE_CMD`
      - `RCCB_NATIVE_BIN_DIR`
@@ -148,6 +148,9 @@ rccb --project-dir . debug off --instance team-a
    - 可关闭自动 prompt 包装（高级用法）：
      - `RCCB_NATIVE_NO_WRAP=1`
      - `RCCB_<PROVIDER>_NATIVE_NO_WRAP=1`
+   - 原生执行策略覆盖：
+     - `RCCB_NATIVE_TIMEOUT_S` / `RCCB_<PROVIDER>_NATIVE_TIMEOUT_S`
+     - `RCCB_NATIVE_QUIET` / `RCCB_<PROVIDER>_NATIVE_QUIET`
    - `args` 支持模板变量：
      - `{req_id}`、`{caller}`、`{provider}`、`{timeout_s}`、`{work_dir}`
    - `env` 值同样支持模板变量：
@@ -157,6 +160,8 @@ rccb --project-dir . debug off --instance team-a
    生效优先级（从高到低）：
    - 命令：`RCCB_<PROVIDER>_NATIVE_CMD` > profile `cmd` > `RCCB_NATIVE_BIN_DIR` > 项目 `.rccb/bin` > 项目 `bin` > `PATH`
    - 参数：`RCCB_<PROVIDER>_NATIVE_ARGS` > `RCCB_NATIVE_ARGS` > profile `args`
+   - timeout：`RCCB_<PROVIDER>_NATIVE_TIMEOUT_S` > `RCCB_NATIVE_TIMEOUT_S` > profile `timeout_s` > request `timeout_s`
+   - quiet：`RCCB_<PROVIDER>_NATIVE_QUIET` > `RCCB_NATIVE_QUIET` > profile `quiet` > request `quiet`
    - no-wrap：`RCCB_<PROVIDER>_NATIVE_NO_WRAP` > `RCCB_NATIVE_NO_WRAP` > profile `no_wrap`
 3. `stub`（仅联调）
    - 仅用于通信链路调试，不用于真实 provider 执行
@@ -177,6 +182,8 @@ cat > ./.rccb/providers/codex.json <<'JSON'
 {
   "cmd": "./.rccb/bin/codex",
   "args": ["--request-id", "{req_id}"],
+  "timeout_s": 300,
+  "quiet": false,
   "no_wrap": false,
   "env": {
     "RCCB_TASK_ID": "{req_id}",
