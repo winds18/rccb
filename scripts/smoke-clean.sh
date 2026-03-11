@@ -83,6 +83,7 @@ mkdir -p "$PROJ_DIR/.rccb/providers" "$PROJ_DIR/.rccb/bin"
 cat > "$PROJ_DIR/.rccb/bin/codex-prof" <<'EOF'
 #!/usr/bin/env bash
 echo "ARGS:$*"
+echo "ENV:${RCCB_MARK:-}"
 cat
 EOF
 chmod +x "$PROJ_DIR/.rccb/bin/codex-prof"
@@ -90,7 +91,10 @@ cat > "$PROJ_DIR/.rccb/providers/codex.json" <<'JSON'
 {
   "cmd": "./.rccb/bin/codex-prof",
   "args": ["profile", "{provider}", "{caller}"],
-  "no_wrap": false
+  "no_wrap": false,
+  "env": {
+    "RCCB_MARK": "{provider}:{caller}:{req_id}"
+  }
 }
 JSON
 RCCB_EXEC_MODE=native "$BIN" --project-dir "$PROJ_DIR" start --instance s5 claude codex >/dev/null 2>&1 &
@@ -100,6 +104,7 @@ sleep 1
 "$BIN" --project-dir "$PROJ_DIR" stop --instance s5 >/dev/null
 wait "$PID5"
 grep -q "ARGS:profile codex claude" "$TMP_DIR/s5.ask.log"
+grep -q "ENV:codex:claude:" "$TMP_DIR/s5.ask.log"
 echo "MODE_NATIVE_PROFILE_OK"
 
 echo "[smoke] all checks passed and temp files cleaned."

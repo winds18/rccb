@@ -62,7 +62,7 @@
      - 之后才回退到系统 `PATH`
    - 支持项目级 profile：
      - `<project>/.rccb/providers/<provider>.json`
-     - 字段：`cmd`（可选）、`args`（可选）、`no_wrap`（可选）
+     - 字段：`cmd`（可选）、`args`（可选）、`no_wrap`（可选）、`env`（可选）
    - 可覆盖二进制与参数：
      - `RCCB_<PROVIDER>_NATIVE_CMD`
      - `RCCB_<PROVIDER>_NATIVE_ARGS`
@@ -72,6 +72,8 @@
       - `RCCB_NATIVE_NO_WRAP`
       - `RCCB_<PROVIDER>_NATIVE_NO_WRAP`
    - `args` 模板变量：
+      - `{req_id}` / `{caller}` / `{provider}` / `{timeout_s}` / `{work_dir}`
+   - `env` 值模板变量：
       - `{req_id}` / `{caller}` / `{provider}` / `{timeout_s}` / `{work_dir}`
    - 优先级（高 -> 低）：
       - cmd: `RCCB_<PROVIDER>_NATIVE_CMD` -> profile `cmd` -> `RCCB_NATIVE_BIN_DIR` -> `.rccb/bin` -> `bin` -> `PATH`

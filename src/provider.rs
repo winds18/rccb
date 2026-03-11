@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::env;
 use std::fs;
 use std::io::{Read, Write};
@@ -59,6 +60,8 @@ struct NativeProviderProfile {
     args: Option<Vec<String>>,
     #[serde(default)]
     no_wrap: Option<bool>,
+    #[serde(default)]
+    env: Option<BTreeMap<String, String>>,
 }
 
 pub fn execute_provider_request(
@@ -136,6 +139,9 @@ pub fn execute_provider_request(
 
             for arg in native_args_for_provider(&req.provider, req, req_id, profile.as_ref()) {
                 cmd.arg(arg);
+            }
+            for (k, v) in native_env_for_provider(&req.provider, req, req_id, profile.as_ref()) {
+                cmd.env(k, v);
             }
 
             let input = format!("{}\n", prompt);
@@ -530,6 +536,30 @@ fn native_args_for_provider(
     }
 
     Vec::new()
+}
+
+fn native_env_for_provider(
+    provider: &str,
+    req: &AskRequest,
+    req_id: &str,
+    profile: Option<&NativeProviderProfile>,
+) -> Vec<(String, String)> {
+    let Some(envs) = profile.and_then(|p| p.env.as_ref()) else {
+        return Vec::new();
+    };
+
+    envs.iter()
+        .filter_map(|(k, v)| {
+            let key = k.trim();
+            if key.is_empty() {
+                return None;
+            }
+            Some((
+                key.to_string(),
+                render_arg_template(v, provider, req, req_id),
+            ))
+        })
+        .collect()
 }
 
 fn should_wrap_native_prompt(provider: &str, profile: Option<&NativeProviderProfile>) -> bool {
@@ -958,7 +988,7 @@ mod tests {
         let path = profile_dir.join("codex.json");
         fs::write(
             &path,
-            r#"{"cmd":"./bin/codex","args":["--rid={req_id}"],"no_wrap":true}"#,
+            r#"{"cmd":"./bin/codex","args":["--rid={req_id}"],"no_wrap":true,"env":{"RCCB_MARK":"{provider}:{caller}"}}"#,
         )
         .expect("write profile");
 
@@ -972,7 +1002,34 @@ mod tests {
             vec!["--rid={req_id}".to_string()]
         );
         assert_eq!(profile.no_wrap, Some(true));
+        assert_eq!(
+            profile
+                .env
+                .unwrap_or_default()
+                .get("RCCB_MARK")
+                .cloned()
+                .unwrap_or_default(),
+            "{provider}:{caller}"
+        );
 
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn native_env_for_provider_renders_templates() {
+        let req = sample_request();
+        let mut env_map = BTreeMap::new();
+        env_map.insert("RCCB_MARK".to_string(), "{provider}:{caller}".to_string());
+        let profile = NativeProviderProfile {
+            cmd: None,
+            args: None,
+            no_wrap: None,
+            env: Some(env_map),
+        };
+        let envs = native_env_for_provider("codex", &req, "rid-x", Some(&profile));
+        assert_eq!(
+            envs,
+            vec![("RCCB_MARK".to_string(), "codex:claude".to_string())]
+        );
     }
 }

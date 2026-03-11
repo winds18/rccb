@@ -138,7 +138,7 @@ rccb --project-dir . debug off --instance team-a
      - `<project>/bin/<provider>`
    - 支持项目级 profile：
      - `<project>/.rccb/providers/<provider>.json`
-     - 字段：`cmd`、`args`、`no_wrap`
+     - 字段：`cmd`、`args`、`no_wrap`、`env`
    - 原生命令覆盖：
      - `RCCB_<PROVIDER>_NATIVE_CMD`
      - `RCCB_NATIVE_BIN_DIR`
@@ -149,6 +149,8 @@ rccb --project-dir . debug off --instance team-a
      - `RCCB_NATIVE_NO_WRAP=1`
      - `RCCB_<PROVIDER>_NATIVE_NO_WRAP=1`
    - `args` 支持模板变量：
+     - `{req_id}`、`{caller}`、`{provider}`、`{timeout_s}`、`{work_dir}`
+   - `env` 值同样支持模板变量：
      - `{req_id}`、`{caller}`、`{provider}`、`{timeout_s}`、`{work_dir}`
    - `native` 模式下，provider 成功返回必须包含 `CCB_DONE: <req_id>`；否则标记为 `incomplete`（`exit_code=2`）
 
@@ -175,7 +177,11 @@ cat > ./.rccb/providers/codex.json <<'JSON'
 {
   "cmd": "./.rccb/bin/codex",
   "args": ["--request-id", "{req_id}"],
-  "no_wrap": false
+  "no_wrap": false,
+  "env": {
+    "RCCB_TASK_ID": "{req_id}",
+    "RCCB_TASK_CALLER": "{caller}"
+  }
 }
 JSON
 
