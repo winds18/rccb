@@ -1,0 +1,91 @@
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use anyhow::Result;
+
+pub fn rccb_dir(project_dir: &Path) -> PathBuf {
+    project_dir.join(".rccb")
+}
+
+pub fn run_dir(project_dir: &Path) -> PathBuf {
+    rccb_dir(project_dir).join("run")
+}
+
+pub fn logs_root_dir(project_dir: &Path) -> PathBuf {
+    rccb_dir(project_dir).join("logs")
+}
+
+pub fn sessions_root_dir(project_dir: &Path) -> PathBuf {
+    rccb_dir(project_dir).join("sessions")
+}
+
+pub fn tasks_root_dir(project_dir: &Path) -> PathBuf {
+    rccb_dir(project_dir).join("tasks")
+}
+
+pub fn tmp_root_dir(project_dir: &Path) -> PathBuf {
+    rccb_dir(project_dir).join("tmp")
+}
+
+pub fn session_instance_dir(project_dir: &Path, instance: &str) -> PathBuf {
+    sessions_root_dir(project_dir).join(sanitize_instance(instance))
+}
+
+pub fn tasks_instance_dir(project_dir: &Path, instance: &str) -> PathBuf {
+    tasks_root_dir(project_dir).join(sanitize_instance(instance))
+}
+
+pub fn tmp_instance_dir(project_dir: &Path, instance: &str) -> PathBuf {
+    tmp_root_dir(project_dir).join(sanitize_instance(instance))
+}
+
+pub fn logs_instance_dir(project_dir: &Path, instance: &str) -> PathBuf {
+    logs_root_dir(project_dir).join(sanitize_instance(instance))
+}
+
+pub fn state_path(project_dir: &Path, instance: &str) -> PathBuf {
+    run_dir(project_dir).join(format!("{}.json", sanitize_instance(instance)))
+}
+
+pub fn lock_path(project_dir: &Path, instance: &str) -> PathBuf {
+    run_dir(project_dir).join(format!("{}.lock", sanitize_instance(instance)))
+}
+
+pub fn ensure_project_layout(project_dir: &Path) -> Result<()> {
+    fs::create_dir_all(rccb_dir(project_dir))?;
+    fs::create_dir_all(run_dir(project_dir))?;
+    fs::create_dir_all(logs_root_dir(project_dir))?;
+    fs::create_dir_all(sessions_root_dir(project_dir))?;
+    fs::create_dir_all(tasks_root_dir(project_dir))?;
+    fs::create_dir_all(tmp_root_dir(project_dir))?;
+    Ok(())
+}
+
+pub fn sanitize_instance(instance: &str) -> String {
+    let x = instance.trim();
+    if x.is_empty() {
+        return "default".to_string();
+    }
+
+    x.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+pub fn sanitize_filename(name: &str) -> String {
+    name.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
