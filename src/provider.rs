@@ -400,18 +400,32 @@ fn spawn_pipe_reader(
     thread::spawn(move || {
         if let Some(mut reader) = pipe {
             let mut buf = [0_u8; 4096];
+            let mut pending_utf8 = Vec::<u8>::new();
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
-                        let chunk = String::from_utf8_lossy(&buf[..n]).to_string();
-                        let _ = tx.send(if stdout {
-                            PipeMsg::Stdout(chunk)
-                        } else {
-                            PipeMsg::Stderr(chunk)
-                        });
+                        let chunks = decode_utf8_chunks(&mut pending_utf8, &buf[..n]);
+                        for chunk in chunks {
+                            let _ = tx.send(if stdout {
+                                PipeMsg::Stdout(chunk)
+                            } else {
+                                PipeMsg::Stderr(chunk)
+                            });
+                        }
                     }
                     Err(_) => break,
+                }
+            }
+
+            if !pending_utf8.is_empty() {
+                let tail = String::from_utf8_lossy(&pending_utf8).to_string();
+                if !tail.is_empty() {
+                    let _ = tx.send(if stdout {
+                        PipeMsg::Stdout(tail)
+                    } else {
+                        PipeMsg::Stderr(tail)
+                    });
                 }
             }
         }
@@ -422,6 +436,50 @@ fn spawn_pipe_reader(
             PipeMsg::StderrEof
         });
     });
+}
+
+fn decode_utf8_chunks(pending: &mut Vec<u8>, incoming: &[u8]) -> Vec<String> {
+    pending.extend_from_slice(incoming);
+    let mut out = Vec::<String>::new();
+
+    loop {
+        if pending.is_empty() {
+            break;
+        }
+
+        match std::str::from_utf8(pending) {
+            Ok(all) => {
+                if !all.is_empty() {
+                    out.push(all.to_string());
+                }
+                pending.clear();
+                break;
+            }
+            Err(err) => {
+                let valid = err.valid_up_to();
+                if valid > 0 {
+                    let valid_txt = std::str::from_utf8(&pending[..valid]).unwrap_or_default();
+                    if !valid_txt.is_empty() {
+                        out.push(valid_txt.to_string());
+                    }
+                    pending.drain(..valid);
+                }
+
+                if let Some(err_len) = err.error_len() {
+                    // Invalid UTF-8 byte sequence: emit replacement marker and drop invalid bytes.
+                    out.push("\u{FFFD}".to_string());
+                    let drop_n = err_len.min(pending.len());
+                    pending.drain(..drop_n);
+                    continue;
+                }
+
+                // Incomplete UTF-8 tail, wait for the next read chunk.
+                break;
+            }
+        }
+    }
+
+    out
 }
 
 fn kill_child(child: &mut Child) {
@@ -1169,5 +1227,29 @@ mod tests {
         };
         let got = effective_native_quiet("codex", false, Some(&profile));
         assert!(got);
+    }
+
+    #[test]
+    fn decode_utf8_chunks_keeps_multibyte_boundary() {
+        let mut pending = Vec::new();
+        let all = "中".as_bytes();
+        let part1 = &all[..2];
+        let part2 = &all[2..];
+
+        let out1 = decode_utf8_chunks(&mut pending, part1);
+        assert!(out1.is_empty());
+        assert!(!pending.is_empty());
+
+        let out2 = decode_utf8_chunks(&mut pending, part2);
+        assert_eq!(out2, vec!["中".to_string()]);
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn decode_utf8_chunks_replaces_invalid_sequences() {
+        let mut pending = Vec::new();
+        let out = decode_utf8_chunks(&mut pending, &[0xff, b'a']);
+        assert_eq!(out, vec!["\u{FFFD}".to_string(), "a".to_string()]);
+        assert!(pending.is_empty());
     }
 }
