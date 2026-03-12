@@ -55,6 +55,17 @@ pub enum Command {
         as_json: bool,
     },
 
+    Tasks {
+        #[arg(long)]
+        instance: Option<String>,
+
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+
+        #[arg(long, default_value_t = false)]
+        as_json: bool,
+    },
+
     Stop {
         #[arg(long, default_value = "default")]
         instance: String,

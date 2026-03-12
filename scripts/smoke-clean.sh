@@ -136,6 +136,9 @@ if [ "$EC6" -eq 0 ]; then
 fi
 grep -qi "cancel requested" "$TMP_DIR/s6.cancel.log"
 grep -Eqi "request canceled|exit_code=130" "$TMP_DIR/s6.ask.log"
+"$BIN" --project-dir "$PROJ_DIR" tasks --instance s6 --as-json >"$TMP_DIR/s6.tasks.json"
+grep -q '"req_id": "cancel-req-1"' "$TMP_DIR/s6.tasks.json"
+grep -q '"status": "canceled"' "$TMP_DIR/s6.tasks.json"
 echo "MODE_CANCEL_OK"
 
 echo "[smoke] all checks passed and temp files cleaned."

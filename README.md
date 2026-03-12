@@ -99,6 +99,9 @@ rccb --project-dir . stop --instance team-a
 
 # 取消执行中的请求（按 req_id）
 rccb --project-dir . cancel --instance team-a --req-id req-123
+
+# 查看任务与 req_id（便于取消/排障）
+rccb --project-dir . tasks --instance team-a --limit 20
 ```
 
 ### 调试开关与完整日志

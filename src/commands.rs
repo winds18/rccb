@@ -3,6 +3,7 @@ use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, bail, Context, Result};
+use serde::Serialize;
 use serde_json::{json, Value};
 use sysinfo::{Pid, System};
 
@@ -13,7 +14,10 @@ use crate::io_utils::{
     build_http_client, is_process_alive, load_all_states, load_state, normalize_provider,
     normalize_provider_list, read_stdin_all, write_json_pretty,
 };
-use crate::layout::{ensure_project_layout, logs_instance_dir, rccb_dir, state_path};
+use crate::layout::{
+    ensure_project_layout, logs_instance_dir, rccb_dir, state_path, tasks_instance_dir,
+    tasks_root_dir,
+};
 use crate::protocol::{connect_and_send, send_wire_message};
 use crate::types::{AskEvent, AskResponse};
 
@@ -221,6 +225,163 @@ pub fn cmd_status(project_dir: &Path, instance: Option<&str>, as_json: bool) -> 
         }
     }
     Ok(())
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct TaskView {
+    instance: String,
+    task_id: String,
+    req_id: Option<String>,
+    provider: Option<String>,
+    status: String,
+    created_at_unix: Option<u64>,
+    started_at_unix: Option<u64>,
+    completed_at_unix: Option<u64>,
+    exit_code: Option<i32>,
+}
+
+pub fn cmd_tasks(
+    project_dir: &Path,
+    instance: Option<&str>,
+    limit: usize,
+    as_json: bool,
+) -> Result<()> {
+    ensure_project_layout(project_dir)?;
+    let mut items = collect_tasks(project_dir, instance)?;
+    items.sort_by(|a, b| {
+        b.created_at_unix
+            .unwrap_or(0)
+            .cmp(&a.created_at_unix.unwrap_or(0))
+    });
+
+    if limit > 0 && items.len() > limit {
+        items.truncate(limit);
+    }
+
+    if as_json {
+        let val = json!({
+            "project": project_dir.display().to_string(),
+            "tasks": items,
+        });
+        println!("{}", serde_json::to_string_pretty(&val)?);
+        return Ok(());
+    }
+
+    if items.is_empty() {
+        println!("no tasks found for project={}", project_dir.display());
+        return Ok(());
+    }
+
+    println!("project={} tasks={}", project_dir.display(), items.len());
+    for t in items {
+        println!(
+            "- instance={} task_id={} req_id={} provider={} status={} exit={} created={} started={} completed={}",
+            t.instance,
+            t.task_id,
+            t.req_id.unwrap_or_else(|| "-".to_string()),
+            t.provider.unwrap_or_else(|| "-".to_string()),
+            t.status,
+            t.exit_code
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            t.created_at_unix
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            t.started_at_unix
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            t.completed_at_unix
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "-".to_string()),
+        );
+    }
+
+    Ok(())
+}
+
+fn collect_tasks(project_dir: &Path, instance: Option<&str>) -> Result<Vec<TaskView>> {
+    if let Some(name) = instance {
+        return load_tasks_in_instance(project_dir, name);
+    }
+
+    let mut out = Vec::new();
+    for entry in fs::read_dir(tasks_root_dir(project_dir))? {
+        let e = entry?;
+        let path = e.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let instance_name = e.file_name().to_string_lossy().to_string();
+        out.extend(load_tasks_from_dir(&path, &instance_name)?);
+    }
+    Ok(out)
+}
+
+fn load_tasks_in_instance(project_dir: &Path, instance: &str) -> Result<Vec<TaskView>> {
+    let dir = tasks_instance_dir(project_dir, instance);
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
+    load_tasks_from_dir(&dir, instance)
+}
+
+fn load_tasks_from_dir(dir: &Path, instance: &str) -> Result<Vec<TaskView>> {
+    let mut out = Vec::new();
+    for entry in fs::read_dir(dir)? {
+        let e = entry?;
+        let path = e.path();
+        if !path.is_file() {
+            continue;
+        }
+        if path.extension().and_then(|x| x.to_str()) != Some("json") {
+            continue;
+        }
+
+        let raw = match fs::read_to_string(&path) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let v: Value = match serde_json::from_str(&raw) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let task_id = v
+            .get("task_id")
+            .and_then(|x| x.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| {
+                path.file_stem()
+                    .and_then(|x| x.to_str())
+                    .unwrap_or("unknown")
+                    .to_string()
+            });
+
+        out.push(TaskView {
+            instance: instance.to_string(),
+            task_id,
+            req_id: v
+                .get("req_id")
+                .and_then(|x| x.as_str())
+                .map(|s| s.to_string()),
+            provider: v
+                .get("provider")
+                .and_then(|x| x.as_str())
+                .map(|s| s.to_string()),
+            status: v
+                .get("status")
+                .and_then(|x| x.as_str())
+                .unwrap_or("unknown")
+                .to_string(),
+            created_at_unix: v.get("created_at_unix").and_then(|x| x.as_u64()),
+            started_at_unix: v.get("started_at_unix").and_then(|x| x.as_u64()),
+            completed_at_unix: v.get("completed_at_unix").and_then(|x| x.as_u64()),
+            exit_code: v
+                .get("exit_code")
+                .and_then(|x| x.as_i64())
+                .map(|x| x as i32),
+        });
+    }
+    Ok(out)
 }
 
 pub fn cmd_stop(project_dir: &Path, instance: &str) -> Result<()> {

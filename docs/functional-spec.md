@@ -193,6 +193,7 @@
 ### 5.3 状态
 
 1. `rccb status [--instance <id>] [--as-json]`
+2. `rccb tasks [--instance <id>] [--limit N] [--as-json]`
 
 ### 5.4 调试
 
