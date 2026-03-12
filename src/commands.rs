@@ -1,7 +1,9 @@
 use std::collections::HashMap;
-use std::fs::{self, File};
+use std::env;
+use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::process::{Command as ProcessCommand, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -136,16 +138,334 @@ pub fn cmd_external_provider_launch(project_dir: &Path, raw: Vec<String>) -> Res
         bail!("at least one provider required");
     }
     let effective_debug = resolve_start_debug(project_dir, "default", false);
+    ensure_project_layout(project_dir)?;
+    ensure_default_daemon_running(project_dir, &normalized, effective_debug)?;
 
-    start_instance(
-        project_dir,
-        "default",
-        5,
-        "127.0.0.1:0",
-        normalized,
-        None,
-        effective_debug,
+    if launch_provider_clis(&normalized)? {
+        return Ok(());
+    }
+
+    println!(
+        "daemon ready: project={} instance=default providers={}",
+        project_dir.display(),
+        normalized.join(",")
+    );
+    println!(
+        "terminal backend not detected. run inside tmux/wezterm to auto-launch provider CLIs."
+    );
+    println!(
+        "you can still ask via: rccb --project-dir . ask --instance default --provider {} --caller {} \"...\"",
+        normalized
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "codex".to_string()),
+        normalized
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "manual".to_string())
+    );
+    Ok(())
+}
+
+fn ensure_default_daemon_running(
+    project_dir: &Path,
+    providers: &[String],
+    debug_enabled: bool,
+) -> Result<()> {
+    if is_daemon_ready(project_dir, "default") {
+        return Ok(());
+    }
+
+    let exe = env::current_exe().context("resolve current executable failed")?;
+    let launch_log = logs_instance_dir(project_dir, "default").join("daemon.launch.log");
+    if let Some(parent) = launch_log.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let stdout = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&launch_log)
+        .with_context(|| format!("open launch log failed: {}", launch_log.display()))?;
+    let stderr = stdout
+        .try_clone()
+        .context("clone launch log handle failed")?;
+
+    let mut cmd = ProcessCommand::new(exe);
+    cmd.arg("--project-dir")
+        .arg(project_dir)
+        .arg("start")
+        .arg("--instance")
+        .arg("default")
+        .arg("--heartbeat-secs")
+        .arg("5")
+        .arg("--listen")
+        .arg("127.0.0.1:0");
+    if debug_enabled {
+        cmd.arg("--debug");
+    }
+    for provider in providers {
+        cmd.arg(provider);
+    }
+    cmd.stdout(Stdio::from(stdout))
+        .stderr(Stdio::from(stderr))
+        .stdin(Stdio::null());
+
+    let _child = cmd
+        .spawn()
+        .with_context(|| format!("spawn daemon failed, see {}", launch_log.display()))?;
+
+    let deadline = Instant::now() + Duration::from_secs(8);
+    while Instant::now() < deadline {
+        if is_daemon_ready(project_dir, "default") {
+            return Ok(());
+        }
+        thread::sleep(Duration::from_millis(120));
+    }
+
+    bail!(
+        "daemon startup timeout. inspect launch log: {}",
+        launch_log.display()
     )
+}
+
+fn is_daemon_ready(project_dir: &Path, instance: &str) -> bool {
+    let path = state_path(project_dir, instance);
+    if !path.exists() {
+        return false;
+    }
+    let state = match load_state(&path) {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+    if state.status != "running" {
+        return false;
+    }
+    if !is_process_alive(state.pid) {
+        return false;
+    }
+    ping_daemon_state(&state, 0.8).is_ok()
+}
+
+fn ping_daemon_state(state: &InstanceState, timeout_s: f64) -> Result<()> {
+    let host = state
+        .daemon_host
+        .clone()
+        .ok_or_else(|| anyhow!("missing daemon_host"))?;
+    let port = state
+        .daemon_port
+        .ok_or_else(|| anyhow!("missing daemon_port"))?;
+    let token = state
+        .daemon_token
+        .clone()
+        .ok_or_else(|| anyhow!("missing daemon_token"))?;
+
+    let req = json!({
+        "type": format!("{}.ping", PROTOCOL_PREFIX),
+        "v": PROTOCOL_VERSION,
+        "id": "probe",
+        "token": token,
+    });
+    let resp = send_wire_message(&host, port, req, timeout_s)?;
+    let msg_type = resp
+        .get("type")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    if msg_type != format!("{}.pong", PROTOCOL_PREFIX) {
+        bail!("unexpected probe response type: {}", msg_type);
+    }
+    Ok(())
+}
+
+fn launch_provider_clis(providers: &[String]) -> Result<bool> {
+    let wez_pane = env::var("WEZTERM_PANE").unwrap_or_default();
+    if !wez_pane.trim().is_empty() {
+        launch_in_wezterm(providers, &wez_pane)?;
+        return Ok(true);
+    }
+
+    let inside_tmux = env::var("TMUX")
+        .map(|v| !v.trim().is_empty())
+        .unwrap_or(false)
+        || env::var("TMUX_PANE")
+            .map(|v| !v.trim().is_empty())
+            .unwrap_or(false);
+    if inside_tmux {
+        launch_in_tmux(providers)?;
+        return Ok(true);
+    }
+
+    Ok(false)
+}
+
+fn launch_in_tmux(providers: &[String]) -> Result<()> {
+    let current_pane = run_capture(
+        "tmux",
+        &["display-message", "-p", "#{pane_id}"],
+        "resolve current tmux pane failed",
+    )?;
+    let mut parent = current_pane.trim().to_string();
+    if parent.is_empty() {
+        bail!("cannot resolve current tmux pane id");
+    }
+
+    let mut first_spawned = None::<String>;
+    for (idx, provider) in providers.iter().enumerate() {
+        let provider_cmd = provider_start_cmd(provider);
+        let full_cmd = wrap_shell_command(&provider_cmd);
+        let mut args = vec![
+            "split-window".to_string(),
+            "-P".to_string(),
+            "-F".to_string(),
+            "#{pane_id}".to_string(),
+            "-t".to_string(),
+            parent.clone(),
+        ];
+        if idx == 0 {
+            args.push("-h".to_string());
+        } else {
+            args.push("-v".to_string());
+        }
+        args.push(full_cmd);
+        let refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+        let pane_id = run_capture("tmux", &refs, "tmux split-window failed")?;
+        let pane_id = pane_id.trim().to_string();
+        if pane_id.is_empty() {
+            bail!("tmux split-window did not return pane id");
+        }
+        if first_spawned.is_none() {
+            first_spawned = Some(pane_id.clone());
+        }
+        parent = pane_id.clone();
+
+        let _ = run_simple(
+            "tmux",
+            &["set-option", "-p", "-t", &pane_id, "remain-on-exit", "on"],
+        );
+        let _ = run_simple(
+            "tmux",
+            &[
+                "select-pane",
+                "-t",
+                &pane_id,
+                "-T",
+                &format!("RCCB-{}", provider),
+            ],
+        );
+        println!(
+            "launched provider cli: provider={} backend=tmux pane={}",
+            provider, pane_id
+        );
+    }
+
+    if let Some(pane) = first_spawned {
+        let _ = run_simple("tmux", &["select-pane", "-t", &pane]);
+    }
+    Ok(())
+}
+
+fn launch_in_wezterm(providers: &[String], current_pane: &str) -> Result<()> {
+    let wezterm_bin = env::var("RCCB_WEZTERM_BIN").unwrap_or_else(|_| "wezterm".to_string());
+    let mut parent = current_pane.trim().to_string();
+    if parent.is_empty() {
+        bail!("WEZTERM_PANE is empty");
+    }
+
+    for (idx, provider) in providers.iter().enumerate() {
+        let provider_cmd = provider_start_cmd(provider);
+        let shell = resolve_shell_path();
+        let direction = if idx == 0 { "--right" } else { "--bottom" };
+        let args = vec![
+            "cli".to_string(),
+            "split-pane".to_string(),
+            "--pane-id".to_string(),
+            parent.clone(),
+            direction.to_string(),
+            "--percent".to_string(),
+            "50".to_string(),
+            "--".to_string(),
+            shell.clone(),
+            "-lc".to_string(),
+            provider_cmd.clone(),
+        ];
+        let refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+        let pane_id = run_capture(
+            &wezterm_bin,
+            &refs,
+            "wezterm split-pane failed (check WEZTERM_PANE / wezterm cli availability)",
+        )?;
+        let pane_id = pane_id.trim().to_string();
+        if pane_id.is_empty() {
+            bail!("wezterm split-pane did not return pane id");
+        }
+        parent = pane_id.clone();
+        println!(
+            "launched provider cli: provider={} backend=wezterm pane={}",
+            provider, pane_id
+        );
+    }
+    Ok(())
+}
+
+fn provider_start_cmd(provider: &str) -> String {
+    let key = format!("RCCB_{}_START_CMD", provider.trim().to_ascii_uppercase());
+    if let Ok(v) = env::var(&key) {
+        let v = v.trim();
+        if !v.is_empty() {
+            return v.to_string();
+        }
+    }
+
+    match provider.trim().to_ascii_lowercase().as_str() {
+        "claude" => "claude".to_string(),
+        "codex" => "codex".to_string(),
+        "gemini" => "gemini".to_string(),
+        "opencode" => "opencode".to_string(),
+        "droid" => "droid".to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn resolve_shell_path() -> String {
+    env::var("SHELL")
+        .map(|v| v.trim().to_string())
+        .ok()
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| "/bin/bash".to_string())
+}
+
+fn wrap_shell_command(cmd: &str) -> String {
+    format!("{} -lc {}", resolve_shell_path(), shell_quote(cmd))
+}
+
+fn shell_quote(input: &str) -> String {
+    format!("'{}'", input.replace('\'', "'\"'\"'"))
+}
+
+fn run_capture(bin: &str, args: &[&str], err_ctx: &str) -> Result<String> {
+    let out = ProcessCommand::new(bin)
+        .args(args)
+        .output()
+        .with_context(|| format!("{}: {} {:?}", err_ctx, bin, args))?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        bail!(
+            "{}: status={} stdout=`{}` stderr=`{}`",
+            err_ctx,
+            out.status,
+            stdout,
+            stderr
+        );
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
+fn run_simple(bin: &str, args: &[&str]) -> Result<()> {
+    let status = ProcessCommand::new(bin).args(args).status()?;
+    if status.success() {
+        return Ok(());
+    }
+    bail!("command failed: {} {:?} status={}", bin, args, status);
 }
 
 pub fn cmd_status(project_dir: &Path, instance: Option<&str>, as_json: bool) -> Result<()> {

@@ -32,6 +32,20 @@ rccb claude codex gemini opencode droid
 
 1. 第一个 provider 默认 `orchestrator`
 2. 其余 provider 默认 `executors`
+3. 自动后台拉起 `rccb start --instance default`（项目级 `.rccb` daemon）
+4. 若在 `tmux/wezterm` 内运行，会自动为 provider 拉起 CLI pane（不再只写状态文件）
+
+provider CLI 启动命令可覆盖：
+
+- `RCCB_CLAUDE_START_CMD`
+- `RCCB_CODEX_START_CMD`
+- `RCCB_GEMINI_START_CMD`
+- `RCCB_OPENCODE_START_CMD`
+- `RCCB_DROID_START_CMD`
+
+WezTerm CLI 可覆盖：
+
+- `RCCB_WEZTERM_BIN`（默认 `wezterm`）
 
 ### 2) 显式 start
 

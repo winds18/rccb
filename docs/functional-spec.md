@@ -183,6 +183,10 @@
 
 1. 快捷启动: `rccb claude codex gemini opencode droid`
 2. 显式启动: `rccb start [--instance] [--listen] [--task] [--debug] <providers...>`
+3. 快捷启动行为：
+   - 自动确保 `default` 实例 daemon 在线（后台启动）
+   - 在 `tmux/wezterm` 环境自动拉起 provider CLI pane
+   - 非 `tmux/wezterm` 环境仅确保 daemon 在线并提示如何继续
 
 ### 5.2 通信
 
