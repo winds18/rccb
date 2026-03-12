@@ -39,6 +39,22 @@ pub fn tmp_instance_dir(project_dir: &Path, instance: &str) -> PathBuf {
     tmp_root_dir(project_dir).join(sanitize_instance(instance))
 }
 
+pub fn launcher_dir(project_dir: &Path, instance: &str) -> PathBuf {
+    tmp_instance_dir(project_dir, instance).join("launcher")
+}
+
+pub fn launcher_meta_path(project_dir: &Path, instance: &str) -> PathBuf {
+    launcher_dir(project_dir, instance).join("meta.json")
+}
+
+pub fn launcher_feeds_dir(project_dir: &Path, instance: &str) -> PathBuf {
+    launcher_dir(project_dir, instance).join("feeds")
+}
+
+pub fn launcher_feed_path(project_dir: &Path, instance: &str, provider: &str) -> PathBuf {
+    launcher_feeds_dir(project_dir, instance).join(format!("{}.log", sanitize_filename(provider)))
+}
+
 pub fn logs_instance_dir(project_dir: &Path, instance: &str) -> PathBuf {
     logs_root_dir(project_dir).join(sanitize_instance(instance))
 }

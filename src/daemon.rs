@@ -22,8 +22,8 @@ use crate::io_utils::{
     update_task_status, write_json_pretty, write_line, write_state,
 };
 use crate::layout::{
-    ensure_project_layout, lock_path, logs_instance_dir, sanitize_filename, sanitize_instance,
-    session_instance_dir, state_path, tasks_instance_dir, tmp_instance_dir,
+    ensure_project_layout, launcher_feed_path, lock_path, logs_instance_dir, sanitize_filename,
+    sanitize_instance, session_instance_dir, state_path, tasks_instance_dir, tmp_instance_dir,
 };
 use crate::protocol::{write_json_event_line, write_json_line, write_json_value_line};
 use crate::provider::execute_provider_request;
@@ -430,6 +430,7 @@ fn handle_connection(
             debug_log_json(context, "[REQUEST]", &req);
             let req_id = req.req_id.clone().unwrap_or_else(make_req_id);
             let task_file = write_request_task(context, &req, &req_id)?;
+            relay_task_dispatched(context, &req, &req_id);
 
             {
                 let mut guard = context
@@ -961,6 +962,14 @@ fn worker_loop(
             Some(&reply),
         );
         let reply_for_debug = reply.clone();
+        relay_task_completed(
+            &context,
+            &req,
+            &task.req_id,
+            task_status,
+            exec.exit_code,
+            &reply,
+        );
 
         let resp = AskResponse {
             msg_type: format!("{}.response", PROTOCOL_PREFIX),
@@ -1203,6 +1212,94 @@ fn write_request_task(context: &DaemonContext, req: &AskRequest, req_id: &str) -
 
     write_json_pretty(&task_file, &content)?;
     Ok(task_file)
+}
+
+fn relay_task_dispatched(context: &DaemonContext, req: &AskRequest, req_id: &str) {
+    let preview = compact_preview(&req.message, 180);
+    relay_to_provider_feed(
+        context,
+        &req.provider,
+        &format!(
+            "[RCCB][任务下发] req_id={} caller={} timeout_s={:.3} msg={}",
+            req_id, req.caller, req.timeout_s, preview
+        ),
+    );
+
+    if let Some(orchestrator) = current_orchestrator(context) {
+        relay_to_provider_feed(
+            context,
+            &orchestrator,
+            &format!(
+                "[RCCB][已派发] req_id={} -> provider={} timeout_s={:.3}",
+                req_id, req.provider, req.timeout_s
+            ),
+        );
+    }
+}
+
+fn relay_task_completed(
+    context: &DaemonContext,
+    req: &AskRequest,
+    req_id: &str,
+    status: &str,
+    exit_code: i32,
+    reply: &str,
+) {
+    let reply_preview = compact_preview(reply, 200);
+    relay_to_provider_feed(
+        context,
+        &req.provider,
+        &format!(
+            "[RCCB][任务完成] req_id={} status={} exit_code={} reply={}",
+            req_id, status, exit_code, reply_preview
+        ),
+    );
+
+    if let Some(orchestrator) = current_orchestrator(context) {
+        relay_to_provider_feed(
+            context,
+            &orchestrator,
+            &format!(
+                "[RCCB][执行回传] req_id={} provider={} status={} exit_code={} reply={}",
+                req_id, req.provider, status, exit_code, reply_preview
+            ),
+        );
+    }
+}
+
+fn relay_to_provider_feed(context: &DaemonContext, provider: &str, line: &str) {
+    let feed = launcher_feed_path(&context.project_dir, &context.instance_id, provider);
+    if !feed.exists() {
+        return;
+    }
+    let _ = write_line(feed, line);
+}
+
+fn current_orchestrator(context: &DaemonContext) -> Option<String> {
+    context
+        .shared_state
+        .lock()
+        .ok()
+        .and_then(|s| s.orchestrator.clone())
+        .filter(|s| !s.trim().is_empty())
+}
+
+fn compact_preview(raw: &str, max_chars: usize) -> String {
+    if max_chars == 0 {
+        return String::new();
+    }
+    let flattened = raw
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim()
+        .to_string();
+    if flattened.chars().count() <= max_chars {
+        return flattened;
+    }
+    let mut out: String = flattened.chars().take(max_chars).collect();
+    out.push_str("...(截断)");
+    out
 }
 
 fn debug_log_path(context: &DaemonContext) -> PathBuf {

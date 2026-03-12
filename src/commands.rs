@@ -17,11 +17,12 @@ use crate::daemon::start_instance;
 use crate::im::{FeishuChannel, ImChannel, TelegramChannel};
 use crate::io_utils::{
     build_http_client, is_process_alive, load_all_states, load_state, normalize_provider,
-    normalize_provider_list, read_stdin_all, write_json_pretty,
+    normalize_provider_list, now_unix, read_stdin_all, write_json_pretty,
 };
 use crate::layout::{
-    ensure_project_layout, logs_instance_dir, rccb_dir, sanitize_filename, session_instance_dir,
-    state_path, tasks_instance_dir, tasks_root_dir, tmp_instance_dir,
+    ensure_project_layout, launcher_feed_path, launcher_feeds_dir, launcher_meta_path,
+    logs_instance_dir, rccb_dir, sanitize_filename, session_instance_dir, state_path,
+    tasks_instance_dir, tasks_root_dir, tmp_instance_dir,
 };
 use crate::protocol::{connect_and_send, send_wire_message};
 use crate::types::{AskEvent, AskResponse, InstanceState};
@@ -393,6 +394,25 @@ enum LaunchBackend {
     Wezterm { anchor_pane: String, bin: String },
 }
 
+const SHORTCUT_INSTANCE: &str = "default";
+
+#[derive(Debug, Clone, Serialize)]
+struct LauncherProviderMeta {
+    provider: String,
+    role: String,
+    feed_file: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct LauncherMeta {
+    schema_version: u32,
+    instance: String,
+    created_at_unix: u64,
+    backend: String,
+    orchestrator: String,
+    providers: Vec<LauncherProviderMeta>,
+}
+
 fn launch_provider_clis(project_dir: &Path, providers: &[String]) -> Result<bool> {
     let Some(backend) = detect_launch_backend()? else {
         return Ok(false);
@@ -446,20 +466,31 @@ fn run_interactive_layout(
     let (left_items, right_items) = split_layout_groups(&providers[1..]);
     let mut spawned_panes: Vec<String> = Vec::new();
 
+    prepare_launcher_runtime(project_dir, SHORTCUT_INSTANCE, providers, &backend)?;
+
     let run_result = match &backend {
         LaunchBackend::Tmux { anchor_pane } => {
-            spawn_tmux_layout(anchor_pane, &left_items, &right_items, &mut spawned_panes)?;
-            run_orchestrator_foreground(&orchestrator)
+            spawn_tmux_layout(
+                project_dir,
+                SHORTCUT_INSTANCE,
+                anchor_pane,
+                &left_items,
+                &right_items,
+                &mut spawned_panes,
+            )?;
+            run_orchestrator_foreground(project_dir, SHORTCUT_INSTANCE, &orchestrator)
         }
         LaunchBackend::Wezterm { anchor_pane, bin } => {
             spawn_wezterm_layout(
+                project_dir,
+                SHORTCUT_INSTANCE,
                 bin,
                 anchor_pane,
                 &left_items,
                 &right_items,
                 &mut spawned_panes,
             )?;
-            run_orchestrator_foreground(&orchestrator)
+            run_orchestrator_foreground(project_dir, SHORTCUT_INSTANCE, &orchestrator)
         }
     };
 
@@ -497,6 +528,8 @@ fn split_layout_groups(executors: &[String]) -> (Vec<String>, Vec<String>) {
 }
 
 fn spawn_tmux_layout(
+    project_dir: &Path,
+    instance: &str,
     anchor_pane: &str,
     left_items: &[String],
     right_items: &[String],
@@ -504,7 +537,7 @@ fn spawn_tmux_layout(
 ) -> Result<()> {
     let mut right_remainder: Option<String> = None;
     if let Some(first) = right_items.first() {
-        let pane = spawn_tmux_pane(anchor_pane, "right", first, Some(50))?;
+        let pane = spawn_tmux_pane(project_dir, instance, anchor_pane, "right", first, Some(50))?;
         spawned_panes.push(pane.clone());
         right_remainder = Some(pane);
     }
@@ -513,14 +546,28 @@ fn spawn_tmux_layout(
     for (i, provider) in right_items.iter().enumerate().skip(1) {
         let parent = right_remainder.as_deref().unwrap_or(anchor_pane);
         let percent = split_percent_for_equal_stack(right_total, i);
-        let pane = spawn_tmux_pane(parent, "bottom", provider, Some(percent))?;
+        let pane = spawn_tmux_pane(
+            project_dir,
+            instance,
+            parent,
+            "bottom",
+            provider,
+            Some(percent),
+        )?;
         spawned_panes.push(pane.clone());
         right_remainder = Some(pane);
     }
 
     let mut left_parent = anchor_pane.to_string();
     for provider in left_items {
-        let pane = spawn_tmux_pane(&left_parent, "bottom", provider, Some(50))?;
+        let pane = spawn_tmux_pane(
+            project_dir,
+            instance,
+            &left_parent,
+            "bottom",
+            provider,
+            Some(50),
+        )?;
         spawned_panes.push(pane.clone());
         left_parent = pane;
     }
@@ -529,12 +576,14 @@ fn spawn_tmux_layout(
 }
 
 fn spawn_tmux_pane(
+    project_dir: &Path,
+    instance: &str,
     parent: &str,
     direction: &str,
     provider: &str,
     percent: Option<u8>,
 ) -> Result<String> {
-    let provider_cmd = provider_start_cmd(provider);
+    let provider_cmd = provider_start_cmd(project_dir, instance, provider);
     let full_cmd = wrap_shell_command(&provider_cmd);
     let flag = match direction {
         "right" => "-h",
@@ -578,6 +627,8 @@ fn spawn_tmux_pane(
 }
 
 fn spawn_wezterm_layout(
+    project_dir: &Path,
+    instance: &str,
     wezterm_bin: &str,
     anchor_pane: &str,
     left_items: &[String],
@@ -586,7 +637,15 @@ fn spawn_wezterm_layout(
 ) -> Result<()> {
     let mut right_remainder: Option<String> = None;
     if let Some(first) = right_items.first() {
-        let pane = spawn_wezterm_pane(wezterm_bin, anchor_pane, "--right", first, 50)?;
+        let pane = spawn_wezterm_pane(
+            project_dir,
+            instance,
+            wezterm_bin,
+            anchor_pane,
+            "--right",
+            first,
+            50,
+        )?;
         spawned_panes.push(pane.clone());
         right_remainder = Some(pane);
     }
@@ -595,14 +654,30 @@ fn spawn_wezterm_layout(
     for (i, provider) in right_items.iter().enumerate().skip(1) {
         let parent = right_remainder.as_deref().unwrap_or(anchor_pane);
         let percent = split_percent_for_equal_stack(right_total, i);
-        let pane = spawn_wezterm_pane(wezterm_bin, parent, "--bottom", provider, percent)?;
+        let pane = spawn_wezterm_pane(
+            project_dir,
+            instance,
+            wezterm_bin,
+            parent,
+            "--bottom",
+            provider,
+            percent,
+        )?;
         spawned_panes.push(pane.clone());
         right_remainder = Some(pane);
     }
 
     let mut left_parent = anchor_pane.to_string();
     for provider in left_items {
-        let pane = spawn_wezterm_pane(wezterm_bin, &left_parent, "--bottom", provider, 50)?;
+        let pane = spawn_wezterm_pane(
+            project_dir,
+            instance,
+            wezterm_bin,
+            &left_parent,
+            "--bottom",
+            provider,
+            50,
+        )?;
         spawned_panes.push(pane.clone());
         left_parent = pane;
     }
@@ -611,13 +686,15 @@ fn spawn_wezterm_layout(
 }
 
 fn spawn_wezterm_pane(
+    project_dir: &Path,
+    instance: &str,
     wezterm_bin: &str,
     parent: &str,
     direction_flag: &str,
     provider: &str,
     percent: u8,
 ) -> Result<String> {
-    let provider_cmd = provider_start_cmd(provider);
+    let provider_cmd = provider_start_cmd(project_dir, instance, provider);
     let shell = resolve_shell_path();
     let args = vec![
         "cli".to_string(),
@@ -660,8 +737,8 @@ fn split_percent_for_equal_stack(total_items: usize, next_index: usize) -> u8 {
     pct.clamp(10, 90) as u8
 }
 
-fn run_orchestrator_foreground(provider: &str) -> Result<i32> {
-    let cmd = provider_start_cmd(provider);
+fn run_orchestrator_foreground(project_dir: &Path, instance: &str, provider: &str) -> Result<i32> {
+    let cmd = provider_start_cmd(project_dir, instance, provider);
     println!("编排者进入前台：provider={}", provider);
     let status = ProcessCommand::new(resolve_shell_path())
         .arg("-lc")
@@ -687,12 +764,73 @@ fn cleanup_after_orchestrator(
         }
     }
 
-    let _ = cmd_stop(project_dir, "default");
-    let _ = fs::remove_dir_all(tmp_instance_dir(project_dir, "default").join("launcher"));
+    let _ = cmd_stop(project_dir, SHORTCUT_INSTANCE);
+    let _ = fs::remove_dir_all(tmp_instance_dir(project_dir, SHORTCUT_INSTANCE).join("launcher"));
     Ok(())
 }
 
-fn provider_start_cmd(provider: &str) -> String {
+fn prepare_launcher_runtime(
+    project_dir: &Path,
+    instance: &str,
+    providers: &[String],
+    backend: &LaunchBackend,
+) -> Result<()> {
+    let feeds_dir = launcher_feeds_dir(project_dir, instance);
+    fs::create_dir_all(&feeds_dir)?;
+
+    let orchestrator = providers
+        .first()
+        .cloned()
+        .unwrap_or_else(|| "orchestrator".to_string());
+    let mut entries = Vec::new();
+    for provider in providers {
+        let feed = launcher_feed_path(project_dir, instance, provider);
+        if let Some(parent) = feed.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let _ = OpenOptions::new().create(true).append(true).open(&feed)?;
+        entries.push(LauncherProviderMeta {
+            provider: provider.clone(),
+            role: if provider == &orchestrator {
+                "orchestrator".to_string()
+            } else {
+                "executor".to_string()
+            },
+            feed_file: feed.display().to_string(),
+        });
+    }
+
+    let backend_name = match backend {
+        LaunchBackend::Tmux { .. } => "tmux".to_string(),
+        LaunchBackend::Wezterm { .. } => "wezterm".to_string(),
+    };
+    let meta = LauncherMeta {
+        schema_version: 1,
+        instance: instance.to_string(),
+        created_at_unix: now_unix(),
+        backend: backend_name,
+        orchestrator,
+        providers: entries,
+    };
+    write_json_pretty(&launcher_meta_path(project_dir, instance), &meta)
+}
+
+fn provider_start_cmd(project_dir: &Path, instance: &str, provider: &str) -> String {
+    let base = provider_raw_start_cmd(provider);
+    let feed_file = launcher_feed_path(project_dir, instance, provider);
+    let feed_dir = launcher_feeds_dir(project_dir, instance);
+    let feed_dir_q = shell_quote(&feed_dir.display().to_string());
+    let feed_q = shell_quote(&feed_file.display().to_string());
+
+    format!(
+        "mkdir -p {feed_dir}; touch {feed}; tail -n0 -F {feed} 2>/dev/null & RCCB_FEED_PID=$!; trap 'kill $RCCB_FEED_PID >/dev/null 2>&1 || true' EXIT INT TERM; {base}; RCCB_FEED_RC=$?; kill $RCCB_FEED_PID >/dev/null 2>&1 || true; wait $RCCB_FEED_PID >/dev/null 2>&1 || true; exit $RCCB_FEED_RC",
+        feed_dir = feed_dir_q,
+        feed = feed_q,
+        base = base,
+    )
+}
+
+fn provider_raw_start_cmd(provider: &str) -> String {
     let key = format!("RCCB_{}_START_CMD", provider.trim().to_ascii_uppercase());
     if let Ok(v) = env::var(&key) {
         let v = v.trim();
@@ -1908,8 +2046,8 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        is_in_flight_status, is_terminal_task_status, load_task_by_req_id, split_layout_groups,
-        split_percent_for_equal_stack, task_file_for_req_id,
+        is_in_flight_status, is_terminal_task_status, load_task_by_req_id, provider_start_cmd,
+        split_layout_groups, split_percent_for_equal_stack, task_file_for_req_id,
     };
     use crate::io_utils::{now_unix_ms, write_json_pretty};
     use crate::layout::{ensure_project_layout, tasks_instance_dir};
@@ -2012,5 +2150,13 @@ mod tests {
         assert_eq!(split_percent_for_equal_stack(4, 1), 75);
         assert_eq!(split_percent_for_equal_stack(4, 2), 67);
         assert_eq!(split_percent_for_equal_stack(4, 3), 50);
+    }
+
+    #[test]
+    fn provider_start_cmd_wraps_feed_tail() {
+        let cmd = provider_start_cmd(Path::new("/tmp/rccb-proj"), "default", "codex");
+        assert!(cmd.contains("tail -n0 -F"));
+        assert!(cmd.contains(".rccb/tmp/default/launcher/feeds/codex.log"));
+        assert!(cmd.contains("codex"));
     }
 }

@@ -39,6 +39,19 @@ enum ExecMode {
     Stub,
 }
 
+const CCB_AUTOSTART_ENV_KEYS: &[&str] = &[
+    "CCB_CASKD_AUTOSTART",
+    "CCB_GASKD_AUTOSTART",
+    "CCB_OASKD_AUTOSTART",
+    "CCB_LASKD_AUTOSTART",
+    "CCB_DASKD_AUTOSTART",
+    "CCB_AUTO_CASKD",
+    "CCB_AUTO_GASKD",
+    "CCB_AUTO_OASKD",
+    "CCB_AUTO_LASKD",
+    "CCB_AUTO_DASKD",
+];
+
 enum PipeMsg {
     Stdout(String),
     Stderr(String),
@@ -96,6 +109,7 @@ pub fn execute_provider_request(
                 .stderr(Stdio::piped())
                 .env("CCB_CALLER", &req.caller)
                 .env("CCB_REQ_ID", req_id);
+            apply_ccb_autostart_env(&mut cmd);
             if req.quiet {
                 cmd.arg("--quiet");
             }
@@ -214,6 +228,14 @@ fn execution_mode() -> ExecMode {
         "stub" => ExecMode::Stub,
         "native" => ExecMode::Native,
         _ => ExecMode::Ccb,
+    }
+}
+
+fn apply_ccb_autostart_env(cmd: &mut Command) {
+    for key in CCB_AUTOSTART_ENV_KEYS {
+        if env::var_os(key).is_none() {
+            cmd.env(key, "1");
+        }
     }
 }
 
@@ -1109,6 +1131,15 @@ mod tests {
                 "foo bar".to_string()
             ]
         );
+    }
+
+    #[test]
+    fn ccb_autostart_env_keys_cover_all_wrappers() {
+        assert!(CCB_AUTOSTART_ENV_KEYS.contains(&"CCB_CASKD_AUTOSTART"));
+        assert!(CCB_AUTOSTART_ENV_KEYS.contains(&"CCB_GASKD_AUTOSTART"));
+        assert!(CCB_AUTOSTART_ENV_KEYS.contains(&"CCB_OASKD_AUTOSTART"));
+        assert!(CCB_AUTOSTART_ENV_KEYS.contains(&"CCB_LASKD_AUTOSTART"));
+        assert!(CCB_AUTOSTART_ENV_KEYS.contains(&"CCB_DASKD_AUTOSTART"));
     }
 
     #[test]
