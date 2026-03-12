@@ -40,11 +40,17 @@ enum ExecMode {
 }
 
 const CCB_AUTOSTART_ENV_KEYS: &[&str] = &[
+    "CCB_ASKD_AUTOSTART",
     "CCB_CASKD_AUTOSTART",
     "CCB_GASKD_AUTOSTART",
     "CCB_OASKD_AUTOSTART",
     "CCB_LASKD_AUTOSTART",
     "CCB_DASKD_AUTOSTART",
+    "CCB_CASKD",
+    "CCB_GASKD",
+    "CCB_OASKD",
+    "CCB_LASKD",
+    "CCB_DASKD",
     "CCB_AUTO_CASKD",
     "CCB_AUTO_GASKD",
     "CCB_AUTO_OASKD",
@@ -233,9 +239,7 @@ fn execution_mode() -> ExecMode {
 
 fn apply_ccb_autostart_env(cmd: &mut Command) {
     for key in CCB_AUTOSTART_ENV_KEYS {
-        if env::var_os(key).is_none() {
-            cmd.env(key, "1");
-        }
+        cmd.env(key, "1");
     }
 }
 

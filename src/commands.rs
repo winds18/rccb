@@ -775,6 +775,10 @@ fn prepare_launcher_runtime(
     providers: &[String],
     backend: &LaunchBackend,
 ) -> Result<()> {
+    if !pane_feed_enabled() {
+        return Ok(());
+    }
+
     let feeds_dir = launcher_feeds_dir(project_dir, instance);
     fs::create_dir_all(&feeds_dir)?;
 
@@ -817,6 +821,9 @@ fn prepare_launcher_runtime(
 
 fn provider_start_cmd(project_dir: &Path, instance: &str, provider: &str) -> String {
     let base = provider_raw_start_cmd(provider);
+    if !pane_feed_enabled() {
+        return base;
+    }
     let feed_file = launcher_feed_path(project_dir, instance, provider);
     let feed_dir = launcher_feeds_dir(project_dir, instance);
     let feed_dir_q = shell_quote(&feed_dir.display().to_string());
@@ -839,6 +846,10 @@ fn provider_raw_start_cmd(provider: &str) -> String {
         }
     }
 
+    if let Some(ccb_cmd) = provider_ccb_start_cmd(provider) {
+        return ccb_cmd;
+    }
+
     match provider.trim().to_ascii_lowercase().as_str() {
         "claude" => "claude".to_string(),
         "codex" => "codex".to_string(),
@@ -847,6 +858,110 @@ fn provider_raw_start_cmd(provider: &str) -> String {
         "droid" => "droid".to_string(),
         other => other.to_string(),
     }
+}
+
+fn provider_ccb_start_cmd(provider: &str) -> Option<String> {
+    if env_bool("RCCB_DISABLE_CCB_LAUNCH", false) {
+        return None;
+    }
+    let launch = resolve_ccb_launch_cmd()?;
+    let provider = provider.trim().to_ascii_lowercase();
+    if provider.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "{} {} {}",
+        ccb_autostart_exports(),
+        launch,
+        shell_quote(&provider)
+    ))
+}
+
+fn resolve_ccb_launch_cmd() -> Option<String> {
+    if let Ok(v) = env::var("RCCB_CCB_LAUNCH_CMD") {
+        let v = v.trim();
+        if !v.is_empty() {
+            return Some(v.to_string());
+        }
+    }
+
+    if find_in_path("ccb").is_some() {
+        return Some("ccb".to_string());
+    }
+
+    let local = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .map(|p| p.join("claude_code_bridge").join("ccb"))?;
+    if is_executable_file(&local) {
+        return Some(shell_quote(&local.display().to_string()));
+    }
+    None
+}
+
+fn ccb_autostart_exports() -> String {
+    [
+        "CCB_ASKD_AUTOSTART=1",
+        "CCB_CASKD_AUTOSTART=1",
+        "CCB_GASKD_AUTOSTART=1",
+        "CCB_OASKD_AUTOSTART=1",
+        "CCB_LASKD_AUTOSTART=1",
+        "CCB_DASKD_AUTOSTART=1",
+        "CCB_CASKD=1",
+        "CCB_GASKD=1",
+        "CCB_OASKD=1",
+        "CCB_LASKD=1",
+        "CCB_DASKD=1",
+        "CCB_AUTO_CASKD=1",
+        "CCB_AUTO_GASKD=1",
+        "CCB_AUTO_OASKD=1",
+        "CCB_AUTO_LASKD=1",
+        "CCB_AUTO_DASKD=1",
+    ]
+    .join(" ")
+}
+
+fn pane_feed_enabled() -> bool {
+    env_bool("RCCB_PANE_FEED", false)
+}
+
+fn env_bool(key: &str, default: bool) -> bool {
+    let Ok(raw) = env::var(key) else {
+        return default;
+    };
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => true,
+        "0" | "false" | "no" | "off" => false,
+        _ => default,
+    }
+}
+
+fn is_executable_file(path: &Path) -> bool {
+    if !path.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(meta) = fs::metadata(path) {
+            return meta.permissions().mode() & 0o111 != 0;
+        }
+        false
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
+
+fn find_in_path(name: &str) -> Option<PathBuf> {
+    let path = env::var_os("PATH")?;
+    for dir in env::split_paths(&path) {
+        let candidate = dir.join(name);
+        if is_executable_file(&candidate) {
+            return Some(candidate);
+        }
+    }
+    None
 }
 
 fn resolve_shell_path() -> String {
@@ -2042,6 +2157,7 @@ fn env_debug_enabled() -> bool {
 mod tests {
     use std::fs;
     use std::path::Path;
+    use std::sync::{Mutex, OnceLock};
 
     use serde_json::json;
 
@@ -2051,6 +2167,11 @@ mod tests {
     };
     use crate::io_utils::{now_unix_ms, write_json_pretty};
     use crate::layout::{ensure_project_layout, tasks_instance_dir};
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
 
     #[test]
     fn status_helpers_match_expected_states() {
@@ -2154,9 +2275,39 @@ mod tests {
 
     #[test]
     fn provider_start_cmd_wraps_feed_tail() {
+        let _guard = env_lock().lock().unwrap();
+        let old = std::env::var("RCCB_PANE_FEED").ok();
+        unsafe {
+            std::env::remove_var("RCCB_PANE_FEED");
+        }
         let cmd = provider_start_cmd(Path::new("/tmp/rccb-proj"), "default", "codex");
+        if let Some(v) = old {
+            unsafe {
+                std::env::set_var("RCCB_PANE_FEED", v);
+            }
+        }
+        assert!(!cmd.contains("tail -n0 -F"));
+        assert!(cmd.contains("codex"));
+    }
+
+    #[test]
+    fn provider_start_cmd_feed_enabled_wraps_tail() {
+        let _guard = env_lock().lock().unwrap();
+        let old = std::env::var("RCCB_PANE_FEED").ok();
+        unsafe {
+            std::env::set_var("RCCB_PANE_FEED", "1");
+        }
+        let cmd = provider_start_cmd(Path::new("/tmp/rccb-proj"), "default", "codex");
+        if let Some(v) = old {
+            unsafe {
+                std::env::set_var("RCCB_PANE_FEED", v);
+            }
+        } else {
+            unsafe {
+                std::env::remove_var("RCCB_PANE_FEED");
+            }
+        }
         assert!(cmd.contains("tail -n0 -F"));
         assert!(cmd.contains(".rccb/tmp/default/launcher/feeds/codex.log"));
-        assert!(cmd.contains("codex"));
     }
 }
