@@ -66,6 +66,41 @@ pub enum Command {
         as_json: bool,
     },
 
+    Watch {
+        #[arg(long, default_value = "default")]
+        instance: String,
+
+        #[arg(long, help = "Request id to watch")]
+        req_id: String,
+
+        #[arg(long, default_value_t = 200, help = "Poll interval in milliseconds")]
+        poll_ms: u64,
+
+        #[arg(
+            long,
+            default_value_t = 120.0,
+            help = "Timeout in seconds; <=0 means no timeout"
+        )]
+        timeout_s: f64,
+
+        #[arg(
+            long,
+            default_value_t = false,
+            help = "Also tail provider log lines for req_id"
+        )]
+        with_provider_log: bool,
+
+        #[arg(
+            long,
+            default_value_t = false,
+            help = "Also tail debug log lines for req_id"
+        )]
+        with_debug_log: bool,
+
+        #[arg(long, default_value_t = false)]
+        as_json: bool,
+    },
+
     Stop {
         #[arg(long, default_value = "default")]
         instance: String,

@@ -154,6 +154,8 @@ PID7=$!
 sleep 1
 "$BIN" --project-dir "$PROJ_DIR" ask --instance s7 --provider codex --caller claude --async --req-id async-req-1 "async behavior check" >"$TMP_DIR/s7.ask.log"
 grep -qi "submitted: req_id=async-req-1" "$TMP_DIR/s7.ask.log"
+"$BIN" --project-dir "$PROJ_DIR" watch --instance s7 --req-id async-req-1 --timeout-s 10 >"$TMP_DIR/s7.watch.log"
+grep -q "status=completed" "$TMP_DIR/s7.watch.log"
 "$BIN" --project-dir "$PROJ_DIR" tasks --instance s7 --as-json >"$TMP_DIR/s7.tasks.0.json"
 grep -q '"req_id": "async-req-1"' "$TMP_DIR/s7.tasks.0.json"
 ok=0

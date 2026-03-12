@@ -146,7 +146,7 @@
 ### 4.6 可靠性机制
 
 1. provider 级 worker 串行队列
-2. 任务状态流转：`queued -> running -> completed`
+2. 任务状态流转：`queued -> running -> completed|failed|timeout|canceled|incomplete`
 3. 超时返回 `exit_code=2`
 4. state 文件原子写
 5. 心跳更新时间戳
@@ -197,6 +197,8 @@
 
 1. `rccb status [--instance <id>] [--as-json]`
 2. `rccb tasks [--instance <id>] [--limit N] [--as-json]`
+3. `rccb watch --instance <id> --req-id <rid> [--with-provider-log] [--with-debug-log] [--timeout-s <sec>]`
+4. `status --as-json` 额外返回 `in_flight_count` 与 `in_flight_req_ids`
 
 ### 5.4 调试
 

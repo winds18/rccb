@@ -111,6 +111,16 @@ rccb --project-dir . cancel --instance team-a --req-id req-123
 
 # 查看任务与 req_id（便于取消/排障）
 rccb --project-dir . tasks --instance team-a --limit 20
+
+# 实时观察某个 req_id 的状态变化（异步任务推荐）
+rccb --project-dir . watch --instance team-a --req-id req-123
+
+# 观察状态 + 关联日志（便于深度排障）
+rccb --project-dir . watch \
+  --instance team-a \
+  --req-id req-123 \
+  --with-provider-log \
+  --with-debug-log
 ```
 
 ### 调试开关与完整日志
@@ -305,6 +315,7 @@ cargo build --release
 4. Provider 执行三模式（`ccb`/`native`/`stub`）
 5. 调试开关与完整调试日志
 6. IM 通道
+7. 任务实时观察（watch）
 
 下一阶段：
 

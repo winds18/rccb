@@ -1,6 +1,9 @@
-use std::fs;
-use std::io::{self, BufRead, Write};
+use std::collections::HashMap;
+use std::fs::{self, File};
+use std::io::{self, BufRead, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde::Serialize;
@@ -15,11 +18,11 @@ use crate::io_utils::{
     normalize_provider_list, read_stdin_all, write_json_pretty,
 };
 use crate::layout::{
-    ensure_project_layout, logs_instance_dir, rccb_dir, state_path, tasks_instance_dir,
-    tasks_root_dir,
+    ensure_project_layout, logs_instance_dir, rccb_dir, sanitize_filename, state_path,
+    tasks_instance_dir, tasks_root_dir,
 };
 use crate::protocol::{connect_and_send, send_wire_message};
-use crate::types::{AskEvent, AskResponse};
+use crate::types::{AskEvent, AskResponse, InstanceState};
 
 pub fn cmd_init(project_dir: &Path, force: bool) -> Result<()> {
     ensure_project_layout(project_dir)?;
@@ -166,11 +169,25 @@ pub fn cmd_status(project_dir: &Path, instance: Option<&str>, as_json: bool) -> 
         }
         output.push(s);
     }
+    let in_flight_map = collect_in_flight_map(project_dir, &output)?;
 
     if as_json {
+        let mut instances = Vec::new();
+        for s in output {
+            let mut val = serde_json::to_value(&s)?;
+            if let Some(obj) = val.as_object_mut() {
+                let in_flight = in_flight_map
+                    .get(&s.instance_id)
+                    .cloned()
+                    .unwrap_or_default();
+                obj.insert("in_flight_count".to_string(), json!(in_flight.len()));
+                obj.insert("in_flight_req_ids".to_string(), json!(in_flight));
+            }
+            instances.push(val);
+        }
         let val = json!({
             "project": project_dir.display().to_string(),
-            "instances": output,
+            "instances": instances,
         });
         println!("{}", serde_json::to_string_pretty(&val)?);
         return Ok(());
@@ -222,12 +239,25 @@ pub fn cmd_status(project_dir: &Path, instance: Option<&str>, as_json: bool) -> 
                 s.session_file.unwrap_or_else(|| "-".to_string()),
                 s.last_task_id.unwrap_or_else(|| "-".to_string())
             );
+            let in_flight = in_flight_map
+                .get(&s.instance_id)
+                .cloned()
+                .unwrap_or_default();
+            println!(
+                "  in_flight={} req_ids={}",
+                in_flight.len(),
+                if in_flight.is_empty() {
+                    "-".to_string()
+                } else {
+                    in_flight.join(",")
+                }
+            );
         }
     }
     Ok(())
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 struct TaskView {
     instance: String,
     task_id: String,
@@ -238,6 +268,8 @@ struct TaskView {
     started_at_unix: Option<u64>,
     completed_at_unix: Option<u64>,
     exit_code: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reply: Option<String>,
 }
 
 pub fn cmd_tasks(
@@ -379,9 +411,309 @@ fn load_tasks_from_dir(dir: &Path, instance: &str) -> Result<Vec<TaskView>> {
                 .get("exit_code")
                 .and_then(|x| x.as_i64())
                 .map(|x| x as i32),
+            reply: v
+                .get("reply")
+                .and_then(|x| x.as_str())
+                .map(|s| s.to_string()),
         });
     }
     Ok(out)
+}
+
+fn collect_in_flight_map(
+    project_dir: &Path,
+    states: &[InstanceState],
+) -> Result<HashMap<String, Vec<String>>> {
+    let mut out = HashMap::new();
+    for state in states {
+        out.insert(
+            state.instance_id.clone(),
+            collect_in_flight_req_ids(project_dir, &state.instance_id)?,
+        );
+    }
+    Ok(out)
+}
+
+fn collect_in_flight_req_ids(project_dir: &Path, instance: &str) -> Result<Vec<String>> {
+    let mut ids = Vec::new();
+    for task in load_tasks_in_instance(project_dir, instance)? {
+        if !is_in_flight_status(&task.status) {
+            continue;
+        }
+        if let Some(req_id) = task.req_id {
+            if !ids.iter().any(|x| x == &req_id) {
+                ids.push(req_id);
+            }
+        }
+    }
+    ids.sort();
+    Ok(ids)
+}
+
+fn is_in_flight_status(status: &str) -> bool {
+    matches!(
+        status.trim().to_ascii_lowercase().as_str(),
+        "queued" | "running"
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn cmd_watch(
+    project_dir: &Path,
+    instance: &str,
+    req_id: &str,
+    poll_ms: u64,
+    timeout_s: f64,
+    with_provider_log: bool,
+    with_debug_log: bool,
+    as_json: bool,
+) -> Result<()> {
+    ensure_project_layout(project_dir)?;
+    let req_id = req_id.trim();
+    if req_id.is_empty() {
+        bail!("req_id cannot be empty");
+    }
+
+    let poll = Duration::from_millis(poll_ms.max(50));
+    let deadline = if timeout_s <= 0.0 {
+        None
+    } else {
+        Some(Instant::now() + Duration::from_secs_f64(timeout_s.max(0.1)))
+    };
+
+    let mut last_task: Option<TaskView> = None;
+    let mut provider_log_offset = 0u64;
+    let mut debug_log_offset = 0u64;
+    let mut printed_waiting = false;
+
+    loop {
+        if let Some(limit) = deadline {
+            if Instant::now() >= limit {
+                bail!(
+                    "watch timeout: instance={} req_id={} timeout_s={}",
+                    instance,
+                    req_id,
+                    timeout_s
+                );
+            }
+        }
+
+        let task = load_task_by_req_id(project_dir, instance, req_id)?;
+        match task {
+            Some(cur) => {
+                if last_task.as_ref() != Some(&cur) {
+                    emit_watch_task(&cur, as_json)?;
+                    last_task = Some(cur.clone());
+                }
+
+                if with_provider_log {
+                    if let Some(provider) = cur.provider.as_deref() {
+                        let provider_log = logs_instance_dir(project_dir, instance)
+                            .join(format!("{}.log", provider));
+                        tail_log_for_req(
+                            &provider_log,
+                            req_id,
+                            "provider",
+                            &mut provider_log_offset,
+                            as_json,
+                        )?;
+                    }
+                }
+
+                if with_debug_log {
+                    let debug_log = logs_instance_dir(project_dir, instance).join("debug.log");
+                    tail_log_for_req(&debug_log, req_id, "debug", &mut debug_log_offset, as_json)?;
+                }
+
+                if is_terminal_task_status(&cur.status) {
+                    return Ok(());
+                }
+            }
+            None => {
+                if !printed_waiting {
+                    if as_json {
+                        println!(
+                            "{}",
+                            serde_json::to_string(&json!({
+                                "event": "waiting",
+                                "instance": instance,
+                                "req_id": req_id
+                            }))?
+                        );
+                    } else {
+                        println!("watch waiting: instance={} req_id={}", instance, req_id);
+                    }
+                    printed_waiting = true;
+                }
+            }
+        }
+
+        thread::sleep(poll);
+    }
+}
+
+fn load_task_by_req_id(
+    project_dir: &Path,
+    instance: &str,
+    req_id: &str,
+) -> Result<Option<TaskView>> {
+    let exact_path = task_file_for_req_id(project_dir, instance, req_id);
+    if exact_path.exists() {
+        let raw = fs::read_to_string(&exact_path)
+            .with_context(|| format!("read task file failed: {}", exact_path.display()))?;
+        let v: Value = serde_json::from_str(&raw)
+            .with_context(|| format!("parse task file failed: {}", exact_path.display()))?;
+        let task_id = v
+            .get("task_id")
+            .and_then(|x| x.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| {
+                exact_path
+                    .file_stem()
+                    .and_then(|x| x.to_str())
+                    .unwrap_or("unknown")
+                    .to_string()
+            });
+        return Ok(Some(TaskView {
+            instance: instance.to_string(),
+            task_id,
+            req_id: v
+                .get("req_id")
+                .and_then(|x| x.as_str())
+                .map(|s| s.to_string()),
+            provider: v
+                .get("provider")
+                .and_then(|x| x.as_str())
+                .map(|s| s.to_string()),
+            status: v
+                .get("status")
+                .and_then(|x| x.as_str())
+                .unwrap_or("unknown")
+                .to_string(),
+            created_at_unix: v.get("created_at_unix").and_then(|x| x.as_u64()),
+            started_at_unix: v.get("started_at_unix").and_then(|x| x.as_u64()),
+            completed_at_unix: v.get("completed_at_unix").and_then(|x| x.as_u64()),
+            exit_code: v
+                .get("exit_code")
+                .and_then(|x| x.as_i64())
+                .map(|x| x as i32),
+            reply: v
+                .get("reply")
+                .and_then(|x| x.as_str())
+                .map(|s| s.to_string()),
+        }));
+    }
+
+    for task in load_tasks_in_instance(project_dir, instance)? {
+        if task.req_id.as_deref() == Some(req_id) {
+            return Ok(Some(task));
+        }
+    }
+
+    Ok(None)
+}
+
+fn task_file_for_req_id(project_dir: &Path, instance: &str, req_id: &str) -> PathBuf {
+    tasks_instance_dir(project_dir, instance)
+        .join(format!("task-{}.json", sanitize_filename(req_id)))
+}
+
+fn emit_watch_task(task: &TaskView, as_json: bool) -> Result<()> {
+    if as_json {
+        println!(
+            "{}",
+            serde_json::to_string(&json!({
+                "event": "task",
+                "task": task
+            }))?
+        );
+        return Ok(());
+    }
+
+    println!(
+        "watch: instance={} req_id={} provider={} status={} exit={} created={} started={} completed={}",
+        task.instance,
+        task.req_id.clone().unwrap_or_else(|| "-".to_string()),
+        task.provider.clone().unwrap_or_else(|| "-".to_string()),
+        task.status,
+        task.exit_code
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "-".to_string()),
+        task.created_at_unix
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "-".to_string()),
+        task.started_at_unix
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "-".to_string()),
+        task.completed_at_unix
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "-".to_string()),
+    );
+    if is_terminal_task_status(&task.status) {
+        if let Some(reply) = task.reply.as_deref() {
+            if !reply.trim().is_empty() {
+                println!("reply: {}", reply);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn tail_log_for_req(
+    path: &Path,
+    req_id: &str,
+    source: &str,
+    offset: &mut u64,
+    as_json: bool,
+) -> Result<()> {
+    let mut file = match File::open(path) {
+        Ok(f) => f,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => {
+            return Err(err).with_context(|| format!("open log failed: {}", path.display()));
+        }
+    };
+
+    let len = file.metadata()?.len();
+    if *offset > len {
+        *offset = 0;
+    }
+
+    file.seek(SeekFrom::Start(*offset))?;
+    let mut buf = Vec::new();
+    file.read_to_end(&mut buf)?;
+    *offset = len;
+    if buf.is_empty() {
+        return Ok(());
+    }
+
+    let txt = String::from_utf8_lossy(&buf);
+    for line in txt.lines() {
+        if !line.contains(req_id) {
+            continue;
+        }
+        if as_json {
+            println!(
+                "{}",
+                serde_json::to_string(&json!({
+                    "event": "log",
+                    "source": source,
+                    "path": path.display().to_string(),
+                    "line": line
+                }))?
+            );
+        } else {
+            println!("[{}] {}", source, line);
+        }
+    }
+    Ok(())
+}
+
+fn is_terminal_task_status(status: &str) -> bool {
+    matches!(
+        status.trim().to_ascii_lowercase().as_str(),
+        "completed" | "failed" | "timeout" | "canceled" | "cancelled" | "incomplete" | "rejected"
+    )
 }
 
 pub fn cmd_stop(project_dir: &Path, instance: &str) -> Result<()> {
@@ -841,4 +1173,90 @@ fn resolve_start_debug(project_dir: &Path, instance: &str, cli_debug: bool) -> b
     load_state(&existing_state)
         .map(|s| s.debug_enabled)
         .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::path::Path;
+
+    use serde_json::json;
+
+    use super::{
+        is_in_flight_status, is_terminal_task_status, load_task_by_req_id, task_file_for_req_id,
+    };
+    use crate::io_utils::{now_unix_ms, write_json_pretty};
+    use crate::layout::{ensure_project_layout, tasks_instance_dir};
+
+    #[test]
+    fn status_helpers_match_expected_states() {
+        assert!(is_in_flight_status("queued"));
+        assert!(is_in_flight_status("running"));
+        assert!(!is_in_flight_status("completed"));
+
+        assert!(is_terminal_task_status("completed"));
+        assert!(is_terminal_task_status("canceled"));
+        assert!(is_terminal_task_status("incomplete"));
+        assert!(!is_terminal_task_status("running"));
+    }
+
+    #[test]
+    fn task_file_path_sanitizes_req_id() {
+        let path = task_file_for_req_id(Path::new("/tmp/rccb-x"), "team-a", "req/1 a");
+        assert_eq!(
+            path.file_name().and_then(|x| x.to_str()),
+            Some("task-req_1_a.json")
+        );
+    }
+
+    #[test]
+    fn load_task_by_req_id_supports_exact_and_fallback_lookup() {
+        let project = std::env::temp_dir().join(format!("rccb-test-{}", now_unix_ms()));
+        let instance = "demo";
+        ensure_project_layout(&project).unwrap();
+        let task_dir = tasks_instance_dir(&project, instance);
+        fs::create_dir_all(&task_dir).unwrap();
+
+        let req_exact = "req-exact";
+        let exact_file = task_file_for_req_id(&project, instance, req_exact);
+        write_json_pretty(
+            &exact_file,
+            &json!({
+                "task_id": "task-req-exact",
+                "req_id": req_exact,
+                "provider": "codex",
+                "status": "running",
+                "created_at_unix": 1
+            }),
+        )
+        .unwrap();
+
+        let req_fallback = "req-fallback";
+        let fallback_file = task_dir.join("task-custom-name.json");
+        write_json_pretty(
+            &fallback_file,
+            &json!({
+                "task_id": "task-custom-name",
+                "req_id": req_fallback,
+                "provider": "claude",
+                "status": "queued",
+                "created_at_unix": 2
+            }),
+        )
+        .unwrap();
+
+        let t1 = load_task_by_req_id(&project, instance, req_exact)
+            .unwrap()
+            .expect("exact req should exist");
+        assert_eq!(t1.req_id.as_deref(), Some(req_exact));
+        assert_eq!(t1.provider.as_deref(), Some("codex"));
+
+        let t2 = load_task_by_req_id(&project, instance, req_fallback)
+            .unwrap()
+            .expect("fallback req should exist");
+        assert_eq!(t2.req_id.as_deref(), Some(req_fallback));
+        assert_eq!(t2.provider.as_deref(), Some("claude"));
+
+        let _ = fs::remove_dir_all(&project);
+    }
 }

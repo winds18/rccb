@@ -16,7 +16,7 @@ use clap::Parser;
 use crate::cli::{Cli, Command};
 use crate::commands::{
     cmd_ask, cmd_cancel, cmd_debug, cmd_external_provider_launch, cmd_init, cmd_ping, cmd_send,
-    cmd_start, cmd_status, cmd_stop, cmd_tasks,
+    cmd_start, cmd_status, cmd_stop, cmd_tasks, cmd_watch,
 };
 use crate::io_utils::resolve_project_dir;
 
@@ -50,6 +50,24 @@ fn main() -> Result<()> {
             limit,
             as_json,
         } => cmd_tasks(&project_dir, instance.as_deref(), limit, as_json),
+        Command::Watch {
+            instance,
+            req_id,
+            poll_ms,
+            timeout_s,
+            with_provider_log,
+            with_debug_log,
+            as_json,
+        } => cmd_watch(
+            &project_dir,
+            &instance,
+            &req_id,
+            poll_ms,
+            timeout_s,
+            with_provider_log,
+            with_debug_log,
+            as_json,
+        ),
         Command::Stop { instance } => cmd_stop(&project_dir, &instance),
         Command::Ping {
             instance,
