@@ -196,6 +196,10 @@
 4. `rccb ask --instance <id> --provider <p> --caller <c> --async "..."`
 5. `rccb cancel --instance <id> --req-id <rid>`
 6. `rccb stop --instance <id>`（优先 graceful shutdown）
+7. 兼容旧快捷后端指令（统一入口）：
+   - ask: `rccb cask|gask|oask|lask|dask "..."`
+   - ping: `rccb cping|gping|oping|lping|dping`
+   - pend: `rccb cpend|gpend|opend|lpend|dpend`
 
 ### 5.3 状态
 

@@ -137,6 +137,31 @@ rccb --project-dir . watch \
   --with-debug-log
 ```
 
+兼容旧习惯后端指令（统一到 `rccb`）：
+
+```bash
+# ask
+rccb cask "..."
+rccb gask "..."
+rccb oask "..."
+rccb lask "..."
+rccb dask "..."
+
+# ping
+rccb cping
+rccb gping
+rccb oping
+rccb lping
+rccb dping
+
+# pend（读取 default 实例下该 provider 最近任务回复）
+rccb cpend
+rccb gpend
+rccb opend
+rccb lpend
+rccb dpend
+```
+
 ### 调试开关与完整日志
 
 ```bash

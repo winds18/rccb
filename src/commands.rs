@@ -127,6 +127,17 @@ pub fn cmd_external_provider_launch(project_dir: &Path, raw: Vec<String>) -> Res
         bail!("missing providers. example: rccb claude codex gemini opencode droid");
     }
 
+    let op = raw[0].trim().to_ascii_lowercase();
+    if let Some(provider) = legacy_ask_alias_provider(&op) {
+        return cmd_legacy_ask_alias(project_dir, provider, raw[1..].to_vec());
+    }
+    if let Some(provider) = legacy_ping_alias_provider(&op) {
+        return cmd_legacy_ping_alias(project_dir, provider);
+    }
+    if let Some(provider) = legacy_pend_alias_provider(&op) {
+        return cmd_legacy_pend_alias(project_dir, provider);
+    }
+
     if raw.iter().any(|x| x.starts_with('-')) {
         bail!(
             "external provider shortcut accepts providers only. use `rccb start --instance <id> <providers...>` for options"
@@ -164,6 +175,113 @@ pub fn cmd_external_provider_launch(project_dir: &Path, raw: Vec<String>) -> Res
             .cloned()
             .unwrap_or_else(|| "manual".to_string())
     );
+    Ok(())
+}
+
+fn legacy_ask_alias_provider(op: &str) -> Option<&'static str> {
+    match op {
+        "cask" => Some("codex"),
+        "gask" => Some("gemini"),
+        "oask" => Some("opencode"),
+        "lask" => Some("claude"),
+        "dask" => Some("droid"),
+        _ => None,
+    }
+}
+
+fn legacy_ping_alias_provider(op: &str) -> Option<&'static str> {
+    match op {
+        "cping" => Some("codex"),
+        "gping" => Some("gemini"),
+        "oping" => Some("opencode"),
+        "lping" => Some("claude"),
+        "dping" => Some("droid"),
+        _ => None,
+    }
+}
+
+fn legacy_pend_alias_provider(op: &str) -> Option<&'static str> {
+    match op {
+        "cpend" => Some("codex"),
+        "gpend" => Some("gemini"),
+        "opend" | "opend-pend" | "opend_pend" => Some("opencode"),
+        "lpend" => Some("claude"),
+        "dpend" => Some("droid"),
+        _ => None,
+    }
+}
+
+fn cmd_legacy_ask_alias(
+    project_dir: &Path,
+    provider: &str,
+    message_parts: Vec<String>,
+) -> Result<()> {
+    let provider_vec = vec![provider.to_string()];
+    ensure_default_daemon_running(
+        project_dir,
+        &provider_vec,
+        resolve_start_debug(project_dir, "default", false),
+    )?;
+
+    cmd_ask(
+        project_dir,
+        "default",
+        provider,
+        "manual",
+        300.0,
+        false,
+        false,
+        false,
+        None,
+        message_parts,
+    )
+}
+
+fn cmd_legacy_ping_alias(project_dir: &Path, provider: &str) -> Result<()> {
+    let provider_vec = vec![provider.to_string()];
+    ensure_default_daemon_running(
+        project_dir,
+        &provider_vec,
+        resolve_start_debug(project_dir, "default", false),
+    )?;
+    cmd_ping(project_dir, "default", 1.0)?;
+    println!("provider={} ready", provider);
+    Ok(())
+}
+
+fn cmd_legacy_pend_alias(project_dir: &Path, provider: &str) -> Result<()> {
+    let tasks = load_tasks_in_instance(project_dir, "default")?;
+    let mut latest: Option<TaskView> = None;
+    for task in tasks {
+        if task.provider.as_deref() != Some(provider) {
+            continue;
+        }
+        if latest
+            .as_ref()
+            .map(|x| x.created_at_unix.unwrap_or(0) < task.created_at_unix.unwrap_or(0))
+            .unwrap_or(true)
+        {
+            latest = Some(task);
+        }
+    }
+
+    if let Some(task) = latest {
+        if let Some(reply) = task.reply {
+            if !reply.trim().is_empty() {
+                println!("{}", reply);
+                return Ok(());
+            }
+        }
+        println!(
+            "latest task has no reply yet: provider={} req_id={} status={}",
+            provider,
+            task.req_id.unwrap_or_else(|| "-".to_string()),
+            task.status
+        );
+        return Ok(());
+    }
+
+    println!("no task found for provider={} instance=default", provider);
     Ok(())
 }
 
