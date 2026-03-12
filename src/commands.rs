@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, Read, Seek, SeekFrom, Write};
@@ -1574,6 +1574,9 @@ pub fn cmd_watch(
     let mut printed_waiting = false;
     let mut current_req_id = fixed_req_id.clone();
     let mut announced_req_id: Option<String> = None;
+    let follow_started_at = now_unix();
+    let mut followed_done_req_ids: HashSet<String> = HashSet::new();
+    let tail_like_quiet = follow && with_provider_log && !as_json;
 
     loop {
         if let Some(limit) = deadline {
@@ -1590,8 +1593,17 @@ pub fn cmd_watch(
 
         if fixed_req_id.is_none() {
             if let Some(provider_name) = watch_provider.as_deref() {
-                let next_req_id =
-                    select_watch_req_for_provider(project_dir, instance, provider_name)?;
+                let next_req_id = if follow {
+                    select_watch_req_for_provider_follow(
+                        project_dir,
+                        instance,
+                        provider_name,
+                        &followed_done_req_ids,
+                        follow_started_at,
+                    )?
+                } else {
+                    select_watch_req_for_provider(project_dir, instance, provider_name)?
+                };
                 if next_req_id != current_req_id {
                     current_req_id = next_req_id;
                     announced_req_id = None;
@@ -1604,7 +1616,7 @@ pub fn cmd_watch(
         }
 
         let Some(active_req_id) = current_req_id.as_deref() else {
-            if !printed_waiting {
+            if !printed_waiting && !tail_like_quiet {
                 if as_json {
                     println!(
                         "{}",
@@ -1639,6 +1651,10 @@ pub fn cmd_watch(
                     }))?
                 );
             } else if let Some(provider_name) = watch_provider.as_deref() {
+                if tail_like_quiet {
+                    announced_req_id = Some(active_req_id.to_string());
+                    continue;
+                }
                 println!(
                     "watch tracking: instance={} provider={} req_id={}",
                     instance, provider_name, active_req_id
@@ -1650,7 +1666,7 @@ pub fn cmd_watch(
         let task = load_task_by_req_id(project_dir, instance, active_req_id)?;
         match task {
             Some(cur) => {
-                if last_task.as_ref() != Some(&cur) {
+                if last_task.as_ref() != Some(&cur) && !tail_like_quiet {
                     emit_watch_task(&cur, as_json)?;
                     last_task = Some(cur.clone());
                 }
@@ -1682,6 +1698,9 @@ pub fn cmd_watch(
 
                 if is_terminal_task_status(&cur.status) {
                     if follow && fixed_req_id.is_none() && watch_provider.is_some() {
+                        if let Some(done_req_id) = cur.req_id.clone() {
+                            followed_done_req_ids.insert(done_req_id);
+                        }
                         current_req_id = None;
                         announced_req_id = None;
                         last_task = None;
@@ -1694,7 +1713,7 @@ pub fn cmd_watch(
                 }
             }
             None => {
-                if !printed_waiting {
+                if !printed_waiting && !tail_like_quiet {
                     if as_json {
                         println!(
                             "{}",
@@ -1801,6 +1820,53 @@ fn select_watch_req_for_provider(
         return Ok(inflight.req_id.clone());
     }
     Ok(tasks[0].req_id.clone())
+}
+
+fn select_watch_req_for_provider_follow(
+    project_dir: &Path,
+    instance: &str,
+    provider: &str,
+    done_req_ids: &HashSet<String>,
+    follow_started_at: u64,
+) -> Result<Option<String>> {
+    let mut tasks = load_tasks_in_instance(project_dir, instance)?
+        .into_iter()
+        .filter(|t| t.provider.as_deref() == Some(provider))
+        .filter(|t| t.req_id.as_ref().map(|x| !x.trim().is_empty()).unwrap_or(false))
+        .collect::<Vec<_>>();
+    if tasks.is_empty() {
+        return Ok(None);
+    }
+
+    tasks.sort_by(|a, b| {
+        b.created_at_unix
+            .unwrap_or(0)
+            .cmp(&a.created_at_unix.unwrap_or(0))
+    });
+
+    if let Some(inflight) = tasks.iter().find(|t| {
+        is_in_flight_status(&t.status)
+            && t.req_id
+                .as_ref()
+                .map(|rid| !done_req_ids.contains(rid))
+                .unwrap_or(false)
+    }) {
+        return Ok(inflight.req_id.clone());
+    }
+
+    for task in tasks {
+        let Some(req_id) = task.req_id.clone() else {
+            continue;
+        };
+        if done_req_ids.contains(&req_id) {
+            continue;
+        }
+        if task.created_at_unix.unwrap_or(0) < follow_started_at {
+            continue;
+        }
+        return Ok(Some(req_id));
+    }
+    Ok(None)
 }
 
 fn task_file_for_req_id(project_dir: &Path, instance: &str, req_id: &str) -> PathBuf {
@@ -2474,6 +2540,7 @@ fn env_debug_enabled() -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
     use std::fs;
     use std::path::Path;
     use std::sync::{Mutex, OnceLock};
@@ -2482,8 +2549,8 @@ mod tests {
 
     use super::{
         cleanup_inflight_tasks, is_in_flight_status, is_terminal_task_status, load_task_by_req_id,
-        provider_start_cmd, select_watch_req_for_provider, split_layout_groups,
-        split_percent_for_equal_stack,
+        provider_start_cmd, select_watch_req_for_provider, select_watch_req_for_provider_follow,
+        split_layout_groups, split_percent_for_equal_stack,
         task_file_for_req_id,
     };
     use crate::io_utils::{now_unix, now_unix_ms, update_task_status, write_json_pretty};
@@ -2616,6 +2683,54 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(req2, "req-a");
+
+        let _ = fs::remove_dir_all(&project);
+    }
+
+    #[test]
+    fn select_watch_req_for_provider_follow_skips_done_and_old_tasks() {
+        let project = std::env::temp_dir().join(format!("rccb-watch-follow-{}", now_unix_ms()));
+        let instance = "default";
+        ensure_project_layout(&project).unwrap();
+        let task_dir = tasks_instance_dir(&project, instance);
+        fs::create_dir_all(&task_dir).unwrap();
+
+        write_json_pretty(
+            &task_dir.join("task-old.json"),
+            &json!({
+                "task_id":"task-old",
+                "req_id":"req-old",
+                "provider":"opencode",
+                "status":"completed",
+                "created_at_unix": 10
+            }),
+        )
+        .unwrap();
+        write_json_pretty(
+            &task_dir.join("task-new-running.json"),
+            &json!({
+                "task_id":"task-new-running",
+                "req_id":"req-new-running",
+                "provider":"opencode",
+                "status":"running",
+                "created_at_unix": 200
+            }),
+        )
+        .unwrap();
+
+        let mut done = HashSet::<String>::new();
+        done.insert("req-new-running".to_string());
+
+        let req = select_watch_req_for_provider_follow(&project, instance, "opencode", &done, 100)
+            .unwrap();
+        assert_eq!(req, None);
+
+        done.clear();
+        let req2 =
+            select_watch_req_for_provider_follow(&project, instance, "opencode", &done, 100)
+                .unwrap()
+                .unwrap();
+        assert_eq!(req2, "req-new-running");
 
         let _ = fs::remove_dir_all(&project);
     }
