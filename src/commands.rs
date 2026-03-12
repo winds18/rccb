@@ -20,8 +20,8 @@ use crate::io_utils::{
     normalize_provider_list, read_stdin_all, write_json_pretty,
 };
 use crate::layout::{
-    ensure_project_layout, logs_instance_dir, rccb_dir, sanitize_filename, state_path,
-    tasks_instance_dir, tasks_root_dir, tmp_instance_dir,
+    ensure_project_layout, logs_instance_dir, rccb_dir, sanitize_filename, session_instance_dir,
+    state_path, tasks_instance_dir, tasks_root_dir, tmp_instance_dir,
 };
 use crate::protocol::{connect_and_send, send_wire_message};
 use crate::types::{AskEvent, AskResponse, InstanceState};
@@ -864,6 +864,114 @@ pub fn cmd_status(project_dir: &Path, instance: Option<&str>, as_json: bool) -> 
                 } else {
                     in_flight.join(",")
                 }
+            );
+        }
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct MountedProviderView {
+    provider: String,
+    role: String,
+    session_file: String,
+    session_exists: bool,
+    mounted: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct MountedInstanceView {
+    instance: String,
+    status: String,
+    daemon_online: bool,
+    providers: Vec<MountedProviderView>,
+}
+
+pub fn cmd_mounted(project_dir: &Path, instance: Option<&str>, as_json: bool) -> Result<()> {
+    ensure_project_layout(project_dir)?;
+
+    let items = if let Some(name) = instance {
+        let path = state_path(project_dir, name);
+        if !path.exists() {
+            vec![]
+        } else {
+            vec![load_state(&path)?]
+        }
+    } else {
+        load_all_states(project_dir)?
+    };
+
+    let mut mounted_views = Vec::new();
+    for mut s in items {
+        if s.status == "running" && !is_process_alive(s.pid) {
+            s.status = "stale".to_string();
+        }
+        let daemon_online = s.status == "running" && ping_daemon_state(&s, 0.8).is_ok();
+
+        let providers_dir = session_instance_dir(project_dir, &s.instance_id).join("providers");
+        let providers = s
+            .providers
+            .iter()
+            .map(|provider| {
+                let session_file = providers_dir.join(format!("{}.json", provider));
+                let session_exists = session_file.exists();
+                let role = if s.orchestrator.as_deref() == Some(provider.as_str()) {
+                    "orchestrator"
+                } else {
+                    "executor"
+                };
+                MountedProviderView {
+                    provider: provider.clone(),
+                    role: role.to_string(),
+                    session_file: session_file.display().to_string(),
+                    session_exists,
+                    mounted: daemon_online && session_exists,
+                }
+            })
+            .collect::<Vec<_>>();
+
+        mounted_views.push(MountedInstanceView {
+            instance: s.instance_id,
+            status: s.status,
+            daemon_online,
+            providers,
+        });
+    }
+
+    if as_json {
+        let val = json!({
+            "project": project_dir.display().to_string(),
+            "instances": mounted_views,
+        });
+        println!("{}", serde_json::to_string_pretty(&val)?);
+        return Ok(());
+    }
+
+    if mounted_views.is_empty() {
+        println!("no instances found for project={}", project_dir.display());
+        return Ok(());
+    }
+
+    println!("project={}", project_dir.display());
+    for item in mounted_views {
+        println!(
+            "- instance={} status={} daemon_online={}",
+            item.instance,
+            item.status,
+            if item.daemon_online { "yes" } else { "no" }
+        );
+        if item.providers.is_empty() {
+            println!("  providers=-");
+            continue;
+        }
+        for p in item.providers {
+            println!(
+                "  - provider={} role={} mounted={} session_exists={} session_file={}",
+                p.provider,
+                p.role,
+                if p.mounted { "yes" } else { "no" },
+                if p.session_exists { "yes" } else { "no" },
+                p.session_file
             );
         }
     }

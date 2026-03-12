@@ -206,9 +206,10 @@
 ### 5.3 状态
 
 1. `rccb status [--instance <id>] [--as-json]`
-2. `rccb tasks [--instance <id>] [--limit N] [--as-json]`
-3. `rccb watch --instance <id> --req-id <rid> [--with-provider-log] [--with-debug-log] [--timeout-s <sec>]`
-4. `status --as-json` 额外返回 `in_flight_count` 与 `in_flight_req_ids`
+2. `rccb mounted [--instance <id>] [--as-json]`
+3. `rccb tasks [--instance <id>] [--limit N] [--as-json]`
+4. `rccb watch --instance <id> --req-id <rid> [--with-provider-log] [--with-debug-log] [--timeout-s <sec>]`
+5. `status --as-json` 额外返回 `in_flight_count` 与 `in_flight_req_ids`
 
 ### 5.4 调试
 

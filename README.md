@@ -136,6 +136,9 @@ rccb --project-dir . cancel --instance team-a --req-id req-123
 # 查看任务与 req_id（便于取消/排障）
 rccb --project-dir . tasks --instance team-a --limit 20
 
+# 查看 mounted 状态（session exists && daemon online）
+rccb --project-dir . mounted --instance team-a --as-json
+
 # 实时观察某个 req_id 的状态变化（异步任务推荐）
 rccb --project-dir . watch --instance team-a --req-id req-123
 
