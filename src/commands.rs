@@ -1392,6 +1392,10 @@ fn collect_in_flight_map(
 ) -> Result<HashMap<String, Vec<String>>> {
     let mut out = HashMap::new();
     for state in states {
+        if state.status != "running" {
+            out.insert(state.instance_id.clone(), Vec::new());
+            continue;
+        }
         out.insert(
             state.instance_id.clone(),
             collect_in_flight_req_ids(project_dir, &state.instance_id)?,
