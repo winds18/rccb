@@ -186,7 +186,7 @@
 3. 快捷启动行为：
    - 自动确保 `default` 实例 daemon 在线（后台启动）
    - 在 `tmux/wezterm` 环境自动拉起 provider CLI pane
-   - pane 规则：`<=4` 左侧仅 orchestrator；`=5` 左侧分上下，其余在右侧
+   - pane 规则：`<=4` 左侧仅 orchestrator；`=5` 左侧分上下，其余在右侧且右侧等分
    - orchestrator 退出即结束本次 `rccb` 进程，并执行清理（停止 daemon + 回收派生 pane）
    - 非 `tmux/wezterm` 环境仅确保 daemon 在线并提示如何继续
 

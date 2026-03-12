@@ -35,8 +35,8 @@ rccb claude codex gemini opencode droid
 3. 自动后台拉起 `rccb start --instance default`（项目级 `.rccb` daemon）
 4. 若在 `tmux/wezterm` 内运行，会自动为 provider 拉起 CLI pane（不再只写状态文件）
 5. pane 布局规则：
-   - `<=4` 个 provider：左侧保留 orchestrator，右侧放其余
-   - `=5` 个 provider：左侧上下两块（orchestrator + 1），右侧放其余
+   - `<=4` 个 provider：左侧保留 orchestrator，右侧放其余（右侧等分）
+   - `=5` 个 provider：左侧上下两块（orchestrator + 1），右侧放其余（右侧等分）
 6. orchestrator 退出后：`rccb` 自动退出，并停止 default 实例 daemon，清理本次派生 pane
 
 provider CLI 启动命令可覆盖：

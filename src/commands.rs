@@ -509,22 +509,25 @@ fn spawn_tmux_layout(
     right_items: &[String],
     spawned_panes: &mut Vec<String>,
 ) -> Result<()> {
-    let mut right_parent: Option<String> = None;
+    let mut right_remainder: Option<String> = None;
     if let Some(first) = right_items.first() {
-        let pane = spawn_tmux_pane(anchor_pane, "right", first)?;
+        let pane = spawn_tmux_pane(anchor_pane, "right", first, Some(50))?;
         spawned_panes.push(pane.clone());
-        right_parent = Some(pane);
+        right_remainder = Some(pane);
     }
-    for provider in &right_items[1..] {
-        let parent = right_parent.as_deref().unwrap_or(anchor_pane);
-        let pane = spawn_tmux_pane(parent, "bottom", provider)?;
+
+    let right_total = right_items.len();
+    for (i, provider) in right_items.iter().enumerate().skip(1) {
+        let parent = right_remainder.as_deref().unwrap_or(anchor_pane);
+        let percent = split_percent_for_equal_stack(right_total, i);
+        let pane = spawn_tmux_pane(parent, "bottom", provider, Some(percent))?;
         spawned_panes.push(pane.clone());
-        right_parent = Some(pane);
+        right_remainder = Some(pane);
     }
 
     let mut left_parent = anchor_pane.to_string();
     for provider in left_items {
-        let pane = spawn_tmux_pane(&left_parent, "bottom", provider)?;
+        let pane = spawn_tmux_pane(&left_parent, "bottom", provider, Some(50))?;
         spawned_panes.push(pane.clone());
         left_parent = pane;
     }
@@ -532,7 +535,12 @@ fn spawn_tmux_layout(
     Ok(())
 }
 
-fn spawn_tmux_pane(parent: &str, direction: &str, provider: &str) -> Result<String> {
+fn spawn_tmux_pane(
+    parent: &str,
+    direction: &str,
+    provider: &str,
+    percent: Option<u8>,
+) -> Result<String> {
     let provider_cmd = provider_start_cmd(provider);
     let full_cmd = wrap_shell_command(&provider_cmd);
     let flag = match direction {
@@ -541,17 +549,15 @@ fn spawn_tmux_pane(parent: &str, direction: &str, provider: &str) -> Result<Stri
         other => bail!("unsupported tmux split direction: {}", other),
     };
 
-    let args = vec![
-        "split-window",
-        "-P",
-        "-F",
-        "#{pane_id}",
-        "-t",
-        parent,
-        flag,
-        &full_cmd,
-    ];
-    let pane_id = run_capture("tmux", &args, "tmux split-window failed")?;
+    let base = vec!["split-window", "-P", "-F", "#{pane_id}", "-t", parent, flag];
+    let mut args: Vec<String> = base.iter().map(|s| s.to_string()).collect();
+    if let Some(p) = percent {
+        args.push("-p".to_string());
+        args.push(p.to_string());
+    }
+    args.push(full_cmd);
+    let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    let pane_id = run_capture("tmux", &arg_refs, "tmux split-window failed")?;
     let pane_id = pane_id.trim().to_string();
     if pane_id.is_empty() {
         bail!("tmux split-window did not return pane id");
@@ -585,22 +591,25 @@ fn spawn_wezterm_layout(
     right_items: &[String],
     spawned_panes: &mut Vec<String>,
 ) -> Result<()> {
-    let mut right_parent: Option<String> = None;
+    let mut right_remainder: Option<String> = None;
     if let Some(first) = right_items.first() {
-        let pane = spawn_wezterm_pane(wezterm_bin, anchor_pane, "--right", first)?;
+        let pane = spawn_wezterm_pane(wezterm_bin, anchor_pane, "--right", first, 50)?;
         spawned_panes.push(pane.clone());
-        right_parent = Some(pane);
+        right_remainder = Some(pane);
     }
-    for provider in &right_items[1..] {
-        let parent = right_parent.as_deref().unwrap_or(anchor_pane);
-        let pane = spawn_wezterm_pane(wezterm_bin, parent, "--bottom", provider)?;
+
+    let right_total = right_items.len();
+    for (i, provider) in right_items.iter().enumerate().skip(1) {
+        let parent = right_remainder.as_deref().unwrap_or(anchor_pane);
+        let percent = split_percent_for_equal_stack(right_total, i);
+        let pane = spawn_wezterm_pane(wezterm_bin, parent, "--bottom", provider, percent)?;
         spawned_panes.push(pane.clone());
-        right_parent = Some(pane);
+        right_remainder = Some(pane);
     }
 
     let mut left_parent = anchor_pane.to_string();
     for provider in left_items {
-        let pane = spawn_wezterm_pane(wezterm_bin, &left_parent, "--bottom", provider)?;
+        let pane = spawn_wezterm_pane(wezterm_bin, &left_parent, "--bottom", provider, 50)?;
         spawned_panes.push(pane.clone());
         left_parent = pane;
     }
@@ -613,25 +622,27 @@ fn spawn_wezterm_pane(
     parent: &str,
     direction_flag: &str,
     provider: &str,
+    percent: u8,
 ) -> Result<String> {
     let provider_cmd = provider_start_cmd(provider);
     let shell = resolve_shell_path();
     let args = vec![
-        "cli",
-        "split-pane",
-        "--pane-id",
-        parent,
-        direction_flag,
-        "--percent",
-        "50",
-        "--",
-        &shell,
-        "-lc",
-        &provider_cmd,
+        "cli".to_string(),
+        "split-pane".to_string(),
+        "--pane-id".to_string(),
+        parent.to_string(),
+        direction_flag.to_string(),
+        "--percent".to_string(),
+        percent.to_string(),
+        "--".to_string(),
+        shell,
+        "-lc".to_string(),
+        provider_cmd,
     ];
+    let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
     let pane_id = run_capture(
         wezterm_bin,
-        &args,
+        &arg_refs,
         "wezterm split-pane failed (check WEZTERM_PANE / wezterm cli availability)",
     )?;
     let pane_id = pane_id.trim().to_string();
@@ -643,6 +654,17 @@ fn spawn_wezterm_pane(
         provider, pane_id
     );
     Ok(pane_id)
+}
+
+fn split_percent_for_equal_stack(total_items: usize, next_index: usize) -> u8 {
+    // Split current remainder pane so all panes in the stack converge to equal height.
+    // `next_index` is the index (>=1) of the provider being created in that stack.
+    let m = total_items.saturating_sub(next_index).saturating_add(1);
+    if m <= 1 {
+        return 50;
+    }
+    let pct = ((m - 1) * 100 + m / 2) / m;
+    pct.clamp(10, 90) as u8
 }
 
 fn run_orchestrator_foreground(provider: &str) -> Result<i32> {
@@ -1786,7 +1808,7 @@ mod tests {
 
     use super::{
         is_in_flight_status, is_terminal_task_status, load_task_by_req_id, split_layout_groups,
-        task_file_for_req_id,
+        split_percent_for_equal_stack, task_file_for_req_id,
     };
     use crate::io_utils::{now_unix_ms, write_json_pretty};
     use crate::layout::{ensure_project_layout, tasks_instance_dir};
@@ -1879,5 +1901,15 @@ mod tests {
         let (l4, r4) = split_layout_groups(&exec4);
         assert_eq!(l4, vec!["b".to_string()]);
         assert_eq!(r4, vec!["c".to_string(), "d".to_string(), "e".to_string()]);
+    }
+
+    #[test]
+    fn split_percent_for_equal_stack_matches_equal_distribution() {
+        assert_eq!(split_percent_for_equal_stack(3, 1), 67);
+        assert_eq!(split_percent_for_equal_stack(3, 2), 50);
+
+        assert_eq!(split_percent_for_equal_stack(4, 1), 75);
+        assert_eq!(split_percent_for_equal_stack(4, 2), 67);
+        assert_eq!(split_percent_for_equal_stack(4, 3), 50);
     }
 }
