@@ -151,7 +151,7 @@ pub enum Command {
         #[arg(long, help = "按 provider 追踪最新任务（与 --req-id 二选一）")]
         provider: Option<String>,
 
-        #[arg(long, default_value_t = 200, help = "轮询间隔（毫秒）")]
+        #[arg(long, default_value_t = 800, help = "轮询间隔（毫秒）")]
         poll_ms: u64,
 
         #[arg(long, default_value_t = 120.0, help = "超时时间（秒，<=0 表示不超时）")]

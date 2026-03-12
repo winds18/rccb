@@ -1878,11 +1878,20 @@ fn tail_log_for_req(
     }
 
     let txt = String::from_utf8_lossy(&buf);
+    let mut matched = Vec::<String>::new();
     for line in txt.lines() {
         if !line.contains(req_id) {
             continue;
         }
-        if as_json {
+        matched.push(line.to_string());
+    }
+
+    if matched.is_empty() {
+        return Ok(());
+    }
+
+    if as_json {
+        for line in matched {
             println!(
                 "{}",
                 serde_json::to_string(&json!({
@@ -1892,11 +1901,64 @@ fn tail_log_for_req(
                     "line": line
                 }))?
             );
-        } else {
-            println!("[{}] {}", source, line);
+        }
+        return Ok(());
+    }
+
+    let max_lines = watch_max_log_lines();
+    let total = matched.len();
+    let start = total.saturating_sub(max_lines);
+    if start > 0 {
+        println!(
+            "[{}] +{} 行省略（可设置 RCCB_WATCH_MAX_LOG_LINES 调整）",
+            source, start
+        );
+    }
+    let view = &matched[start..];
+    emit_compact_text_lines(source, view);
+    Ok(())
+}
+
+fn watch_max_log_lines() -> usize {
+    let raw = std::env::var("RCCB_WATCH_MAX_LOG_LINES").unwrap_or_default();
+    raw.trim()
+        .parse::<usize>()
+        .ok()
+        .filter(|v| *v > 0)
+        .unwrap_or(10)
+}
+
+fn emit_compact_text_lines(source: &str, lines: &[String]) {
+    let mut prev: Option<&str> = None;
+    let mut count = 0usize;
+    for line in lines {
+        let cur = line.as_str();
+        match prev {
+            Some(p) if p == cur => {
+                count += 1;
+            }
+            Some(p) => {
+                print_compact_line(source, p, count);
+                prev = Some(cur);
+                count = 1;
+            }
+            None => {
+                prev = Some(cur);
+                count = 1;
+            }
         }
     }
-    Ok(())
+    if let Some(p) = prev {
+        print_compact_line(source, p, count);
+    }
+}
+
+fn print_compact_line(source: &str, line: &str, count: usize) {
+    if count <= 1 {
+        println!("[{}] {}", source, line);
+    } else {
+        println!("[{}] {} (x{})", source, line, count);
+    }
 }
 
 fn is_terminal_task_status(status: &str) -> bool {

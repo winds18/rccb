@@ -42,6 +42,7 @@ rccb claude codex gemini opencode droid
 8. 可选开关：
    - `RCCB_PANE_FEED=1`：启用 feed tail 镜像（调试用，默认关闭）
    - `RCCB_PANE_STATUS_MIRROR=1`：将任务状态镜像到 pane（调试用，默认关闭）
+   - `RCCB_WATCH_MAX_LOG_LINES=<N>`：`watch` 每次刷新最多展示 N 行日志（默认 10，避免刷屏）
 
 provider CLI 启动命令可覆盖：
 
