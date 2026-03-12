@@ -1536,7 +1536,8 @@ fn is_in_flight_status(status: &str) -> bool {
 pub fn cmd_watch(
     project_dir: &Path,
     instance: &str,
-    req_id: &str,
+    req_id: Option<&str>,
+    provider: Option<&str>,
     poll_ms: u64,
     timeout_s: f64,
     with_provider_log: bool,
@@ -1544,9 +1545,19 @@ pub fn cmd_watch(
     as_json: bool,
 ) -> Result<()> {
     ensure_project_layout(project_dir)?;
-    let req_id = req_id.trim();
-    if req_id.is_empty() {
-        bail!("req_id cannot be empty");
+    let fixed_req_id = req_id
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty());
+    let watch_provider = provider
+        .map(normalize_provider)
+        .transpose()?
+        .map(|v| v.to_string());
+
+    if fixed_req_id.is_some() && watch_provider.is_some() {
+        bail!("--req-id 与 --provider 不能同时使用");
+    }
+    if fixed_req_id.is_none() && watch_provider.is_none() {
+        bail!("需要提供 --req-id 或 --provider");
     }
 
     let poll = Duration::from_millis(poll_ms.max(50));
@@ -1560,20 +1571,82 @@ pub fn cmd_watch(
     let mut provider_log_offset = 0u64;
     let mut debug_log_offset = 0u64;
     let mut printed_waiting = false;
+    let mut current_req_id = fixed_req_id.clone();
+    let mut announced_req_id: Option<String> = None;
 
     loop {
         if let Some(limit) = deadline {
             if Instant::now() >= limit {
                 bail!(
-                    "watch timeout: instance={} req_id={} timeout_s={}",
+                    "watch timeout: instance={} req_id={} provider={} timeout_s={}",
                     instance,
-                    req_id,
+                    current_req_id.unwrap_or_else(|| "-".to_string()),
+                    watch_provider.clone().unwrap_or_else(|| "-".to_string()),
                     timeout_s
                 );
             }
         }
 
-        let task = load_task_by_req_id(project_dir, instance, req_id)?;
+        if fixed_req_id.is_none() {
+            if let Some(provider_name) = watch_provider.as_deref() {
+                let next_req_id =
+                    select_watch_req_for_provider(project_dir, instance, provider_name)?;
+                if next_req_id != current_req_id {
+                    current_req_id = next_req_id;
+                    announced_req_id = None;
+                    last_task = None;
+                    provider_log_offset = 0;
+                    debug_log_offset = 0;
+                    printed_waiting = false;
+                }
+            }
+        }
+
+        let Some(active_req_id) = current_req_id.as_deref() else {
+            if !printed_waiting {
+                if as_json {
+                    println!(
+                        "{}",
+                        serde_json::to_string(&json!({
+                            "event": "waiting",
+                            "instance": instance,
+                            "provider": watch_provider.clone().unwrap_or_default(),
+                        }))?
+                    );
+                } else {
+                    println!(
+                        "watch waiting: instance={} provider={} req_id=-",
+                        instance,
+                        watch_provider.clone().unwrap_or_else(|| "-".to_string())
+                    );
+                }
+                printed_waiting = true;
+            }
+            thread::sleep(poll);
+            continue;
+        };
+
+        if announced_req_id.as_deref() != Some(active_req_id) {
+            if as_json {
+                println!(
+                    "{}",
+                    serde_json::to_string(&json!({
+                        "event": "track",
+                        "instance": instance,
+                        "provider": watch_provider.clone().unwrap_or_default(),
+                        "req_id": active_req_id,
+                    }))?
+                );
+            } else if let Some(provider_name) = watch_provider.as_deref() {
+                println!(
+                    "watch tracking: instance={} provider={} req_id={}",
+                    instance, provider_name, active_req_id
+                );
+            }
+            announced_req_id = Some(active_req_id.to_string());
+        }
+
+        let task = load_task_by_req_id(project_dir, instance, active_req_id)?;
         match task {
             Some(cur) => {
                 if last_task.as_ref() != Some(&cur) {
@@ -1587,7 +1660,7 @@ pub fn cmd_watch(
                             .join(format!("{}.log", provider));
                         tail_log_for_req(
                             &provider_log,
-                            req_id,
+                            active_req_id,
                             "provider",
                             &mut provider_log_offset,
                             as_json,
@@ -1597,7 +1670,13 @@ pub fn cmd_watch(
 
                 if with_debug_log {
                     let debug_log = logs_instance_dir(project_dir, instance).join("debug.log");
-                    tail_log_for_req(&debug_log, req_id, "debug", &mut debug_log_offset, as_json)?;
+                    tail_log_for_req(
+                        &debug_log,
+                        active_req_id,
+                        "debug",
+                        &mut debug_log_offset,
+                        as_json,
+                    )?;
                 }
 
                 if is_terminal_task_status(&cur.status) {
@@ -1610,17 +1689,17 @@ pub fn cmd_watch(
                         println!(
                             "{}",
                             serde_json::to_string(&json!({
-                                "event": "waiting",
-                                "instance": instance,
-                                "req_id": req_id
-                            }))?
-                        );
-                    } else {
-                        println!("watch waiting: instance={} req_id={}", instance, req_id);
-                    }
-                    printed_waiting = true;
+                            "event": "waiting",
+                            "instance": instance,
+                            "req_id": active_req_id
+                        }))?
+                    );
+                } else {
+                    println!("watch waiting: instance={} req_id={}", instance, active_req_id);
                 }
+                printed_waiting = true;
             }
+        }
         }
 
         thread::sleep(poll);
@@ -1686,6 +1765,32 @@ fn load_task_by_req_id(
     }
 
     Ok(None)
+}
+
+fn select_watch_req_for_provider(
+    project_dir: &Path,
+    instance: &str,
+    provider: &str,
+) -> Result<Option<String>> {
+    let mut tasks = load_tasks_in_instance(project_dir, instance)?
+        .into_iter()
+        .filter(|t| t.provider.as_deref() == Some(provider))
+        .filter(|t| t.req_id.as_ref().map(|x| !x.trim().is_empty()).unwrap_or(false))
+        .collect::<Vec<_>>();
+    if tasks.is_empty() {
+        return Ok(None);
+    }
+
+    tasks.sort_by(|a, b| {
+        b.created_at_unix
+            .unwrap_or(0)
+            .cmp(&a.created_at_unix.unwrap_or(0))
+    });
+
+    if let Some(inflight) = tasks.iter().find(|t| is_in_flight_status(&t.status)) {
+        return Ok(inflight.req_id.clone());
+    }
+    Ok(tasks[0].req_id.clone())
 }
 
 fn task_file_for_req_id(project_dir: &Path, instance: &str, req_id: &str) -> PathBuf {
@@ -2099,12 +2204,22 @@ pub fn cmd_ask(
 
     if parsed.exit_code == 0 {
         if async_submit {
+            let req_id_print = parsed.req_id.unwrap_or_else(|| "-".to_string());
+            let provider_print = parsed.provider.unwrap_or_else(|| provider.to_string());
             println!(
                 "submitted: req_id={} provider={} instance={}",
-                parsed.req_id.unwrap_or_else(|| "-".to_string()),
-                parsed.provider.unwrap_or_else(|| provider.to_string()),
+                req_id_print,
+                provider_print,
                 instance
             );
+            if req_id_print != "-" {
+                println!(
+                    "watch: rccb --project-dir {} watch --instance {} --req-id {} --with-provider-log",
+                    project_dir.display(),
+                    instance,
+                    req_id_print
+                );
+            }
             return Ok(());
         }
         if !parsed.reply.is_empty() {
@@ -2295,10 +2410,11 @@ mod tests {
 
     use super::{
         cleanup_inflight_tasks, is_in_flight_status, is_terminal_task_status, load_task_by_req_id,
-        provider_start_cmd, split_layout_groups, split_percent_for_equal_stack,
+        provider_start_cmd, select_watch_req_for_provider, split_layout_groups,
+        split_percent_for_equal_stack,
         task_file_for_req_id,
     };
-    use crate::io_utils::{now_unix_ms, write_json_pretty};
+    use crate::io_utils::{now_unix, now_unix_ms, update_task_status, write_json_pretty};
     use crate::layout::{ensure_project_layout, tasks_instance_dir};
 
     fn env_lock() -> &'static Mutex<()> {
@@ -2374,6 +2490,60 @@ mod tests {
             .expect("fallback req should exist");
         assert_eq!(t2.req_id.as_deref(), Some(req_fallback));
         assert_eq!(t2.provider.as_deref(), Some("claude"));
+
+        let _ = fs::remove_dir_all(&project);
+    }
+
+    #[test]
+    fn select_watch_req_for_provider_prefers_inflight_then_latest() {
+        let project = std::env::temp_dir().join(format!("rccb-watch-provider-{}", now_unix_ms()));
+        let instance = "default";
+        ensure_project_layout(&project).unwrap();
+        let task_dir = tasks_instance_dir(&project, instance);
+        fs::create_dir_all(&task_dir).unwrap();
+
+        write_json_pretty(
+            &task_dir.join("task-a.json"),
+            &json!({
+                "task_id":"task-a",
+                "req_id":"req-a",
+                "provider":"opencode",
+                "status":"completed",
+                "created_at_unix": 100
+            }),
+        )
+        .unwrap();
+        write_json_pretty(
+            &task_dir.join("task-b.json"),
+            &json!({
+                "task_id":"task-b",
+                "req_id":"req-b",
+                "provider":"opencode",
+                "status":"running",
+                "created_at_unix": 90
+            }),
+        )
+        .unwrap();
+
+        let req = select_watch_req_for_provider(&project, instance, "opencode")
+            .unwrap()
+            .unwrap();
+        assert_eq!(req, "req-b");
+
+        update_task_status(
+            &task_dir.join("task-b.json"),
+            "completed",
+            None,
+            Some(now_unix()),
+            Some(0),
+            Some("ok"),
+        )
+        .unwrap();
+
+        let req2 = select_watch_req_for_provider(&project, instance, "opencode")
+            .unwrap()
+            .unwrap();
+        assert_eq!(req2, "req-a");
 
         let _ = fs::remove_dir_all(&project);
     }

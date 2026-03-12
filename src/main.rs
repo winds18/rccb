@@ -56,6 +56,7 @@ fn main() -> Result<()> {
         Command::Watch {
             instance,
             req_id,
+            provider,
             poll_ms,
             timeout_s,
             with_provider_log,
@@ -64,7 +65,8 @@ fn main() -> Result<()> {
         } => cmd_watch(
             &project_dir,
             &instance,
-            &req_id,
+            req_id.as_deref(),
+            provider.as_deref(),
             poll_ms,
             timeout_s,
             with_provider_log,

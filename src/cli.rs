@@ -21,6 +21,7 @@ const HELP_EXAMPLES: &str = r#"示例：
   6) 异步请求 + 追踪：
      rccb --project-dir . ask --instance team-a --provider opencode --caller claude --async --req-id req-1 "后台执行"
      rccb --project-dir . watch --instance team-a --req-id req-1 --with-provider-log --with-debug-log
+     rccb --project-dir . watch --instance team-a --provider opencode --with-provider-log
 
   7) 查看运行态：
      rccb --project-dir . status --as-json
@@ -143,8 +144,11 @@ pub enum Command {
         #[arg(long, default_value = "default", help = "实例 ID")]
         instance: String,
 
-        #[arg(long, help = "要追踪的 req_id")]
-        req_id: String,
+        #[arg(long, help = "要追踪的 req_id（可选）")]
+        req_id: Option<String>,
+
+        #[arg(long, help = "按 provider 追踪最新任务（与 --req-id 二选一）")]
+        provider: Option<String>,
 
         #[arg(long, default_value_t = 200, help = "轮询间隔（毫秒）")]
         poll_ms: u64,

@@ -38,7 +38,10 @@ rccb claude codex gemini opencode droid
    - `<=4` 个 provider：左侧保留 orchestrator，右侧放其余（右侧等分）
    - `=5` 个 provider：左侧上下两块（orchestrator + 1），右侧放其余（右侧等分）
 6. orchestrator 退出后：`rccb` 自动退出，并停止 default 实例 daemon，清理本次派生 pane
-7. 任务下发/完成会按 pane 元数据回传到对应窗口；`RCCB_PANE_FEED=1` 时额外启用 feed tail（默认关闭，避免打乱全屏 CLI）
+7. 默认采用静默后台通信：任务下发/回传不打扰 CLI 输入区；可通过命令查看状态和输出
+8. 可选开关：
+   - `RCCB_PANE_FEED=1`：启用 feed tail 镜像（调试用，默认关闭）
+   - `RCCB_PANE_STATUS_MIRROR=1`：将任务状态镜像到 pane（调试用，默认关闭）
 
 provider CLI 启动命令可覆盖：
 
@@ -142,6 +145,9 @@ rccb --project-dir . mounted --instance team-a --as-json
 
 # 实时观察某个 req_id 的状态变化（异步任务推荐）
 rccb --project-dir . watch --instance team-a --req-id req-123
+
+# 按 provider 追踪最新任务（无需手动传 req_id）
+rccb --project-dir . watch --instance team-a --provider opencode --with-provider-log
 
 # 观察状态 + 关联日志（便于深度排障）
 rccb --project-dir . watch \

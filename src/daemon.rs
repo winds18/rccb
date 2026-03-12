@@ -898,6 +898,7 @@ fn worker_loop(
                 if chunk.is_empty() {
                     return;
                 }
+                append_provider_stream_chunk(&provider_log, &task.req_id, &chunk);
                 debug_log(
                     &context,
                     &format!(
@@ -1047,6 +1048,32 @@ fn worker_loop(
         log_file,
         &format!("[INFO] worker stopped key={}", worker_key),
     );
+}
+
+fn append_provider_stream_chunk(provider_log: &Path, req_id: &str, chunk: &str) {
+    let normalized = chunk.replace('\r', "");
+    let mut emitted = false;
+    for line in normalized.lines() {
+        let line = line.trim_end();
+        if line.is_empty() {
+            continue;
+        }
+        emitted = true;
+        let _ = write_line(
+            provider_log.to_path_buf(),
+            &format!("[STREAM] req_id={} {}", req_id, line),
+        );
+    }
+
+    if !emitted {
+        let tail = normalized.trim();
+        if !tail.is_empty() {
+            let _ = write_line(
+                provider_log.to_path_buf(),
+                &format!("[STREAM] req_id={} {}", req_id, tail),
+            );
+        }
+    }
 }
 
 fn build_orchestration_plan(providers: &[String]) -> Result<OrchestrationPlan> {
@@ -1228,7 +1255,9 @@ fn relay_task_dispatched(context: &DaemonContext, req: &AskRequest, req_id: &str
         &req.provider,
         &provider_line,
     );
-    let _ = relay_to_provider_pane_status(context, &req.provider, &provider_line);
+    if pane_status_mirror_enabled() {
+        let _ = relay_to_provider_pane_status(context, &req.provider, &provider_line);
+    }
 
     if let Some(orchestrator) = current_orchestrator(context) {
         let orchestrator_line = format!(
@@ -1240,7 +1269,9 @@ fn relay_task_dispatched(context: &DaemonContext, req: &AskRequest, req_id: &str
             &orchestrator,
             &orchestrator_line,
         );
-        let _ = relay_to_provider_pane_status(context, &orchestrator, &orchestrator_line);
+        if pane_status_mirror_enabled() {
+            let _ = relay_to_provider_pane_status(context, &orchestrator, &orchestrator_line);
+        }
     }
 }
 
@@ -1262,7 +1293,9 @@ fn relay_task_completed(
         &req.provider,
         &provider_line,
     );
-    let _ = relay_to_provider_pane_status(context, &req.provider, &provider_line);
+    if pane_status_mirror_enabled() {
+        let _ = relay_to_provider_pane_status(context, &req.provider, &provider_line);
+    }
 
     if let Some(orchestrator) = current_orchestrator(context) {
         let orchestrator_line = format!(
@@ -1274,7 +1307,9 @@ fn relay_task_completed(
             &orchestrator,
             &orchestrator_line,
         );
-        let _ = relay_to_provider_pane_status(context, &orchestrator, &orchestrator_line);
+        if pane_status_mirror_enabled() {
+            let _ = relay_to_provider_pane_status(context, &orchestrator, &orchestrator_line);
+        }
     }
 }
 
@@ -1404,6 +1439,21 @@ fn resolve_provider_pane_target(
     };
 
     Ok(Some(PaneRelayTarget { backend, pane_id }))
+}
+
+fn pane_status_mirror_enabled() -> bool {
+    env_bool("RCCB_PANE_STATUS_MIRROR", false)
+}
+
+fn env_bool(key: &str, default: bool) -> bool {
+    let Ok(raw) = std::env::var(key) else {
+        return default;
+    };
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => true,
+        "0" | "false" | "no" | "off" => false,
+        _ => default,
+    }
 }
 
 fn current_orchestrator(context: &DaemonContext) -> Option<String> {
