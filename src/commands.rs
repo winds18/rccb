@@ -153,7 +153,7 @@ pub fn cmd_external_provider_launch(project_dir: &Path, raw: Vec<String>) -> Res
     ensure_project_layout(project_dir)?;
     ensure_default_daemon_running(project_dir, &normalized, effective_debug)?;
 
-    if launch_provider_clis(project_dir, &normalized)? {
+    if launch_provider_clis(project_dir, &normalized, effective_debug)? {
         return Ok(());
     }
 
@@ -417,12 +417,16 @@ struct LauncherMeta {
     providers: Vec<LauncherProviderMeta>,
 }
 
-fn launch_provider_clis(project_dir: &Path, providers: &[String]) -> Result<bool> {
+fn launch_provider_clis(
+    project_dir: &Path,
+    providers: &[String],
+    debug_enabled: bool,
+) -> Result<bool> {
     let Some(backend) = detect_launch_backend()? else {
         return Ok(false);
     };
 
-    run_interactive_layout(project_dir, providers, backend)?;
+    run_interactive_layout(project_dir, providers, backend, debug_enabled)?;
     Ok(true)
 }
 
@@ -461,6 +465,7 @@ fn run_interactive_layout(
     project_dir: &Path,
     providers: &[String],
     backend: LaunchBackend,
+    debug_enabled: bool,
 ) -> Result<()> {
     if providers.is_empty() {
         bail!("至少需要一个 provider");
@@ -483,6 +488,17 @@ fn run_interactive_layout(
                 &mut spawned_panes,
                 &mut provider_panes,
             )?;
+            if debug_enabled {
+                if let Some(debug_pane) = maybe_spawn_debug_watch_pane(
+                    project_dir,
+                    SHORTCUT_INSTANCE,
+                    providers,
+                    &backend,
+                    anchor_pane,
+                )? {
+                    spawned_panes.push(debug_pane);
+                }
+            }
             prepare_launcher_runtime(
                 project_dir,
                 SHORTCUT_INSTANCE,
@@ -505,6 +521,17 @@ fn run_interactive_layout(
                 &mut spawned_panes,
                 &mut provider_panes,
             )?;
+            if debug_enabled {
+                if let Some(debug_pane) = maybe_spawn_debug_watch_pane(
+                    project_dir,
+                    SHORTCUT_INSTANCE,
+                    providers,
+                    &backend,
+                    anchor_pane,
+                )? {
+                    spawned_panes.push(debug_pane);
+                }
+            }
             prepare_launcher_runtime(
                 project_dir,
                 SHORTCUT_INSTANCE,
@@ -629,41 +656,13 @@ fn spawn_tmux_pane(
     percent: Option<u8>,
 ) -> Result<String> {
     let provider_cmd = provider_start_cmd(project_dir, instance, provider);
-    let full_cmd = wrap_shell_command(&provider_cmd);
-    let flag = match direction {
-        "right" => "-h",
-        "bottom" => "-v",
-        other => bail!("不支持的 tmux 分屏方向：{}", other),
-    };
-
-    let base = vec!["split-window", "-P", "-F", "#{pane_id}", "-t", parent, flag];
-    let mut args: Vec<String> = base.iter().map(|s| s.to_string()).collect();
-    if let Some(p) = percent {
-        args.push("-p".to_string());
-        args.push(p.to_string());
-    }
-    args.push(full_cmd);
-    let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-    let pane_id = run_capture("tmux", &arg_refs, "tmux split-window 失败")?;
-    let pane_id = pane_id.trim().to_string();
-    if pane_id.is_empty() {
-        bail!("tmux split-window 未返回 pane id");
-    }
-
-    let _ = run_simple(
-        "tmux",
-        &["set-option", "-p", "-t", &pane_id, "remain-on-exit", "on"],
-    );
-    let _ = run_simple(
-        "tmux",
-        &[
-            "select-pane",
-            "-t",
-            &pane_id,
-            "-T",
-            &format!("RCCB-{}", provider),
-        ],
-    );
+    let pane_id = spawn_tmux_custom_pane(
+        parent,
+        direction,
+        percent,
+        &provider_cmd,
+        &format!("RCCB-{}", provider),
+    )?;
     println!(
         "已拉起 provider CLI：provider={} backend=tmux pane={}",
         provider, pane_id
@@ -744,30 +743,8 @@ fn spawn_wezterm_pane(
     percent: u8,
 ) -> Result<String> {
     let provider_cmd = provider_start_cmd(project_dir, instance, provider);
-    let shell = resolve_shell_path();
-    let args = vec![
-        "cli".to_string(),
-        "split-pane".to_string(),
-        "--pane-id".to_string(),
-        parent.to_string(),
-        direction_flag.to_string(),
-        "--percent".to_string(),
-        percent.to_string(),
-        "--".to_string(),
-        shell,
-        "-lc".to_string(),
-        provider_cmd,
-    ];
-    let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-    let pane_id = run_capture(
-        wezterm_bin,
-        &arg_refs,
-        "wezterm split-pane 失败（请检查 WEZTERM_PANE 和 wezterm cli 可用性）",
-    )?;
-    let pane_id = pane_id.trim().to_string();
-    if pane_id.is_empty() {
-        bail!("wezterm split-pane 未返回 pane id");
-    }
+    let pane_id =
+        spawn_wezterm_custom_pane(wezterm_bin, parent, direction_flag, percent, &provider_cmd)?;
     println!(
         "已拉起 provider CLI：provider={} backend=wezterm pane={}",
         provider, pane_id
@@ -784,6 +761,188 @@ fn split_percent_for_equal_stack(total_items: usize, next_index: usize) -> u8 {
     }
     let pct = ((m - 1) * 100 + m / 2) / m;
     pct.clamp(10, 90) as u8
+}
+
+fn spawn_tmux_custom_pane(
+    parent: &str,
+    direction: &str,
+    percent: Option<u8>,
+    command: &str,
+    title: &str,
+) -> Result<String> {
+    let full_cmd = wrap_shell_command(command);
+    let (flag, before) = match direction {
+        "right" => ("-h", false),
+        "bottom" => ("-v", false),
+        "top" => ("-v", true),
+        other => bail!("不支持的 tmux 分屏方向：{}", other),
+    };
+
+    let mut args: Vec<String> = vec![
+        "split-window".to_string(),
+        "-P".to_string(),
+        "-F".to_string(),
+        "#{pane_id}".to_string(),
+        "-t".to_string(),
+        parent.to_string(),
+    ];
+    if before {
+        args.push("-b".to_string());
+    }
+    args.push(flag.to_string());
+    if let Some(p) = percent {
+        args.push("-p".to_string());
+        args.push(p.to_string());
+    }
+    args.push(full_cmd);
+
+    let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    let pane_id = run_capture("tmux", &arg_refs, "tmux split-window 失败")?;
+    let pane_id = pane_id.trim().to_string();
+    if pane_id.is_empty() {
+        bail!("tmux split-window 未返回 pane id");
+    }
+
+    let _ = run_simple(
+        "tmux",
+        &["set-option", "-p", "-t", &pane_id, "remain-on-exit", "on"],
+    );
+    if !title.trim().is_empty() {
+        let _ = run_simple("tmux", &["select-pane", "-t", &pane_id, "-T", title]);
+    }
+    Ok(pane_id)
+}
+
+fn spawn_wezterm_custom_pane(
+    wezterm_bin: &str,
+    parent: &str,
+    direction_flag: &str,
+    percent: u8,
+    command: &str,
+) -> Result<String> {
+    let shell = resolve_shell_path();
+    let args = vec![
+        "cli".to_string(),
+        "split-pane".to_string(),
+        "--pane-id".to_string(),
+        parent.to_string(),
+        direction_flag.to_string(),
+        "--percent".to_string(),
+        percent.to_string(),
+        "--".to_string(),
+        shell,
+        "-lc".to_string(),
+        command.to_string(),
+    ];
+    let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    let pane_id = run_capture(
+        wezterm_bin,
+        &arg_refs,
+        "wezterm split-pane 失败（请检查 WEZTERM_PANE 和 wezterm cli 可用性）",
+    )?;
+    let pane_id = pane_id.trim().to_string();
+    if pane_id.is_empty() {
+        bail!("wezterm split-pane 未返回 pane id");
+    }
+    Ok(pane_id)
+}
+
+fn maybe_spawn_debug_watch_pane(
+    project_dir: &Path,
+    instance: &str,
+    providers: &[String],
+    backend: &LaunchBackend,
+    orchestrator_pane: &str,
+) -> Result<Option<String>> {
+    if !debug_watch_pane_enabled() {
+        return Ok(None);
+    }
+    if providers.is_empty() {
+        return Ok(None);
+    }
+
+    let watch_provider = resolve_debug_watch_provider(providers);
+    let watch_cmd = build_debug_watch_command(project_dir, instance, &watch_provider)?;
+    let pane_percent = debug_watch_pane_percent();
+    let pane = match backend {
+        LaunchBackend::Tmux { .. } => spawn_tmux_custom_pane(
+            orchestrator_pane,
+            "top",
+            Some(pane_percent),
+            &watch_cmd,
+            &format!("RCCB-LOG-{}", watch_provider),
+        )?,
+        LaunchBackend::Wezterm { bin, .. } => {
+            spawn_wezterm_custom_pane(bin, orchestrator_pane, "--top", pane_percent, &watch_cmd)?
+        }
+    };
+    println!(
+        "已拉起 debug 日志 pane：provider={} pane={}",
+        watch_provider, pane
+    );
+    Ok(Some(pane))
+}
+
+fn build_debug_watch_command(project_dir: &Path, instance: &str, provider: &str) -> Result<String> {
+    let exe = env::current_exe().context("获取当前 rccb 可执行文件路径失败")?;
+    Ok(format!(
+        "{exe} --project-dir {project} watch --instance {instance} --provider {provider} --with-provider-log --with-debug-log --follow",
+        exe = shell_quote(&exe.display().to_string()),
+        project = shell_quote(&project_dir.display().to_string()),
+        instance = shell_quote(instance),
+        provider = shell_quote(provider),
+    ))
+}
+
+fn resolve_debug_watch_provider(providers: &[String]) -> String {
+    let fallback = if providers.len() > 1 {
+        providers[1].clone()
+    } else {
+        providers[0].clone()
+    };
+    let Ok(raw) = env::var("RCCB_DEBUG_WATCH_PROVIDER") else {
+        return fallback;
+    };
+    let candidate = raw.trim();
+    if candidate.is_empty() {
+        return fallback;
+    }
+
+    let normalized = match normalize_provider(candidate) {
+        Ok(v) => v.to_string(),
+        Err(err) => {
+            eprintln!(
+                "警告：RCCB_DEBUG_WATCH_PROVIDER 无效（{}），回退为 {}",
+                err, fallback
+            );
+            return fallback;
+        }
+    };
+    if providers.iter().any(|p| p == &normalized) {
+        normalized
+    } else {
+        eprintln!(
+            "警告：RCCB_DEBUG_WATCH_PROVIDER={} 不在当前 provider 列表中，回退为 {}",
+            normalized, fallback
+        );
+        fallback
+    }
+}
+
+fn debug_watch_pane_enabled() -> bool {
+    env_bool("RCCB_DEBUG_WATCH_PANE", true)
+}
+
+fn debug_watch_pane_percent() -> u8 {
+    let default = 25u8;
+    let Ok(raw) = env::var("RCCB_DEBUG_WATCH_PANE_PERCENT") else {
+        return default;
+    };
+    let value = match raw.trim().parse::<u16>() {
+        Ok(v) => v,
+        Err(_) => return default,
+    };
+    value.clamp(10, 80) as u8
 }
 
 fn run_orchestrator_foreground(project_dir: &Path, instance: &str, provider: &str) -> Result<i32> {
@@ -1724,17 +1883,20 @@ pub fn cmd_watch(
                         println!(
                             "{}",
                             serde_json::to_string(&json!({
-                            "event": "waiting",
-                            "instance": instance,
-                            "req_id": active_req_id
-                        }))?
-                    );
-                } else {
-                    println!("watch waiting: instance={} req_id={}", instance, active_req_id);
+                                "event": "waiting",
+                                "instance": instance,
+                                "req_id": active_req_id
+                            }))?
+                        );
+                    } else {
+                        println!(
+                            "watch waiting: instance={} req_id={}",
+                            instance, active_req_id
+                        );
+                    }
+                    printed_waiting = true;
                 }
-                printed_waiting = true;
             }
-        }
         }
 
         thread::sleep(poll);
@@ -1810,7 +1972,12 @@ fn select_watch_req_for_provider(
     let mut tasks = load_tasks_in_instance(project_dir, instance)?
         .into_iter()
         .filter(|t| t.provider.as_deref() == Some(provider))
-        .filter(|t| t.req_id.as_ref().map(|x| !x.trim().is_empty()).unwrap_or(false))
+        .filter(|t| {
+            t.req_id
+                .as_ref()
+                .map(|x| !x.trim().is_empty())
+                .unwrap_or(false)
+        })
         .collect::<Vec<_>>();
     if tasks.is_empty() {
         return Ok(None);
@@ -1838,7 +2005,12 @@ fn select_watch_req_for_provider_follow(
     let mut tasks = load_tasks_in_instance(project_dir, instance)?
         .into_iter()
         .filter(|t| t.provider.as_deref() == Some(provider))
-        .filter(|t| t.req_id.as_ref().map(|x| !x.trim().is_empty()).unwrap_or(false))
+        .filter(|t| {
+            t.req_id
+                .as_ref()
+                .map(|x| !x.trim().is_empty())
+                .unwrap_or(false)
+        })
         .collect::<Vec<_>>();
     if tasks.is_empty() {
         return Ok(None);
@@ -2352,9 +2524,7 @@ pub fn cmd_ask(
             let provider_print = parsed.provider.unwrap_or_else(|| provider.to_string());
             println!(
                 "submitted: req_id={} provider={} instance={}",
-                req_id_print,
-                provider_print,
-                instance
+                req_id_print, provider_print, instance
             );
             if req_id_print != "-" {
                 println!(
@@ -2554,9 +2724,10 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        cleanup_inflight_tasks, is_in_flight_status, is_terminal_task_status, load_task_by_req_id,
-        provider_start_cmd, select_watch_req_for_provider, select_watch_req_for_provider_follow,
-        split_layout_groups, split_percent_for_equal_stack,
+        cleanup_inflight_tasks, debug_watch_pane_percent, is_in_flight_status,
+        is_terminal_task_status, load_task_by_req_id, provider_start_cmd,
+        resolve_debug_watch_provider, select_watch_req_for_provider,
+        select_watch_req_for_provider_follow, split_layout_groups, split_percent_for_equal_stack,
         task_file_for_req_id,
     };
     use crate::io_utils::{now_unix, now_unix_ms, update_task_status, write_json_pretty};
@@ -2732,10 +2903,9 @@ mod tests {
         assert_eq!(req, None);
 
         done.clear();
-        let req2 =
-            select_watch_req_for_provider_follow(&project, instance, "opencode", &done, 100)
-                .unwrap()
-                .unwrap();
+        let req2 = select_watch_req_for_provider_follow(&project, instance, "opencode", &done, 100)
+            .unwrap()
+            .unwrap();
         assert_eq!(req2, "req-new-running");
 
         let _ = fs::remove_dir_all(&project);
@@ -2767,6 +2937,83 @@ mod tests {
         assert_eq!(split_percent_for_equal_stack(4, 1), 75);
         assert_eq!(split_percent_for_equal_stack(4, 2), 67);
         assert_eq!(split_percent_for_equal_stack(4, 3), 50);
+    }
+
+    #[test]
+    fn resolve_debug_watch_provider_defaults_to_first_executor() {
+        let _guard = env_lock().lock().unwrap();
+        let old = std::env::var("RCCB_DEBUG_WATCH_PROVIDER").ok();
+        unsafe {
+            std::env::remove_var("RCCB_DEBUG_WATCH_PROVIDER");
+        }
+        let providers = vec![
+            "claude".to_string(),
+            "gemini".to_string(),
+            "opencode".to_string(),
+        ];
+        let resolved = resolve_debug_watch_provider(&providers);
+        if let Some(v) = old {
+            unsafe {
+                std::env::set_var("RCCB_DEBUG_WATCH_PROVIDER", v);
+            }
+        }
+        assert_eq!(resolved, "gemini");
+    }
+
+    #[test]
+    fn resolve_debug_watch_provider_honors_env_if_present_in_list() {
+        let _guard = env_lock().lock().unwrap();
+        let old = std::env::var("RCCB_DEBUG_WATCH_PROVIDER").ok();
+        unsafe {
+            std::env::set_var("RCCB_DEBUG_WATCH_PROVIDER", "opencode");
+        }
+        let providers = vec![
+            "claude".to_string(),
+            "gemini".to_string(),
+            "opencode".to_string(),
+        ];
+        let resolved = resolve_debug_watch_provider(&providers);
+        if let Some(v) = old {
+            unsafe {
+                std::env::set_var("RCCB_DEBUG_WATCH_PROVIDER", v);
+            }
+        } else {
+            unsafe {
+                std::env::remove_var("RCCB_DEBUG_WATCH_PROVIDER");
+            }
+        }
+        assert_eq!(resolved, "opencode");
+    }
+
+    #[test]
+    fn debug_watch_pane_percent_uses_default_and_clamp() {
+        let _guard = env_lock().lock().unwrap();
+        let old = std::env::var("RCCB_DEBUG_WATCH_PANE_PERCENT").ok();
+
+        unsafe {
+            std::env::remove_var("RCCB_DEBUG_WATCH_PANE_PERCENT");
+        }
+        assert_eq!(debug_watch_pane_percent(), 25);
+
+        unsafe {
+            std::env::set_var("RCCB_DEBUG_WATCH_PANE_PERCENT", "2");
+        }
+        assert_eq!(debug_watch_pane_percent(), 10);
+
+        unsafe {
+            std::env::set_var("RCCB_DEBUG_WATCH_PANE_PERCENT", "120");
+        }
+        assert_eq!(debug_watch_pane_percent(), 80);
+
+        if let Some(v) = old {
+            unsafe {
+                std::env::set_var("RCCB_DEBUG_WATCH_PANE_PERCENT", v);
+            }
+        } else {
+            unsafe {
+                std::env::remove_var("RCCB_DEBUG_WATCH_PANE_PERCENT");
+            }
+        }
     }
 
     #[test]
