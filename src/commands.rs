@@ -17,7 +17,7 @@ use crate::daemon::start_instance;
 use crate::im::{FeishuChannel, ImChannel, TelegramChannel};
 use crate::io_utils::{
     build_http_client, is_process_alive, load_all_states, load_state, normalize_provider,
-    normalize_provider_list, now_unix, read_stdin_all, write_json_pretty,
+    normalize_provider_list, now_unix, read_stdin_all, update_task_status, write_json_pretty,
 };
 use crate::layout::{
     ensure_project_layout, launcher_feed_path, launcher_feeds_dir, launcher_meta_path,
@@ -765,8 +765,57 @@ fn cleanup_after_orchestrator(
     }
 
     let _ = cmd_stop(project_dir, SHORTCUT_INSTANCE);
+    if let Ok(cleaned) = cleanup_inflight_tasks(project_dir, SHORTCUT_INSTANCE) {
+        if cleaned > 0 {
+            println!("编排者退出清理：已终止 {} 个未完成任务", cleaned);
+        }
+    }
     let _ = fs::remove_dir_all(tmp_instance_dir(project_dir, SHORTCUT_INSTANCE).join("launcher"));
     Ok(())
+}
+
+fn cleanup_inflight_tasks(project_dir: &Path, instance: &str) -> Result<usize> {
+    let dir = tasks_instance_dir(project_dir, instance);
+    if !dir.exists() {
+        return Ok(0);
+    }
+
+    let done_at = now_unix();
+    let mut cleaned = 0usize;
+    for entry in fs::read_dir(&dir)? {
+        let path = entry?.path();
+        if !path.is_file() || path.extension().and_then(|x| x.to_str()) != Some("json") {
+            continue;
+        }
+
+        let raw = match fs::read_to_string(&path) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let val: Value = match serde_json::from_str(&raw) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let status = val
+            .get("status")
+            .and_then(|x| x.as_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        if status != "queued" && status != "running" {
+            continue;
+        }
+
+        let _ = update_task_status(
+            &path,
+            "canceled",
+            None,
+            Some(done_at),
+            Some(130),
+            Some("orchestrator exited; task canceled during cleanup"),
+        );
+        cleaned += 1;
+    }
+    Ok(cleaned)
 }
 
 fn prepare_launcher_runtime(
@@ -2189,8 +2238,9 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        is_in_flight_status, is_terminal_task_status, load_task_by_req_id, provider_start_cmd,
-        split_layout_groups, split_percent_for_equal_stack, task_file_for_req_id,
+        cleanup_inflight_tasks, is_in_flight_status, is_terminal_task_status, load_task_by_req_id,
+        provider_start_cmd, split_layout_groups, split_percent_for_equal_stack,
+        task_file_for_req_id,
     };
     use crate::io_utils::{now_unix_ms, write_json_pretty};
     use crate::layout::{ensure_project_layout, tasks_instance_dir};
@@ -2343,5 +2393,48 @@ mod tests {
         }
         assert!(cmd.contains("tail -n0 -F"));
         assert!(cmd.contains(".rccb/tmp/default/launcher/feeds/codex.log"));
+    }
+
+    #[test]
+    fn cleanup_inflight_tasks_marks_running_and_queued_canceled() {
+        let project = std::env::temp_dir().join(format!("rccb-clean-{}", now_unix_ms()));
+        let instance = "default";
+        ensure_project_layout(&project).unwrap();
+        let task_dir = tasks_instance_dir(&project, instance);
+        fs::create_dir_all(&task_dir).unwrap();
+
+        let running = task_dir.join("task-running.json");
+        let queued = task_dir.join("task-queued.json");
+        let done = task_dir.join("task-done.json");
+        write_json_pretty(
+            &running,
+            &json!({"task_id":"task-running","req_id":"r1","status":"running"}),
+        )
+        .unwrap();
+        write_json_pretty(
+            &queued,
+            &json!({"task_id":"task-queued","req_id":"q1","status":"queued"}),
+        )
+        .unwrap();
+        write_json_pretty(
+            &done,
+            &json!({"task_id":"task-done","req_id":"d1","status":"completed"}),
+        )
+        .unwrap();
+
+        let cleaned = cleanup_inflight_tasks(&project, instance).unwrap();
+        assert_eq!(cleaned, 2);
+
+        let r: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&running).unwrap()).unwrap();
+        let q: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&queued).unwrap()).unwrap();
+        let d: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&done).unwrap()).unwrap();
+        assert_eq!(r.get("status").and_then(|x| x.as_str()), Some("canceled"));
+        assert_eq!(q.get("status").and_then(|x| x.as_str()), Some("canceled"));
+        assert_eq!(d.get("status").and_then(|x| x.as_str()), Some("completed"));
+
+        let _ = fs::remove_dir_all(&project);
     }
 }
