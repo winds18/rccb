@@ -401,6 +401,8 @@ struct LauncherProviderMeta {
     provider: String,
     role: String,
     feed_file: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pane_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -409,6 +411,8 @@ struct LauncherMeta {
     instance: String,
     created_at_unix: u64,
     backend: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    backend_bin: Option<String>,
     orchestrator: String,
     providers: Vec<LauncherProviderMeta>,
 }
@@ -465,11 +469,11 @@ fn run_interactive_layout(
     let orchestrator = providers[0].clone();
     let (left_items, right_items) = split_layout_groups(&providers[1..]);
     let mut spawned_panes: Vec<String> = Vec::new();
-
-    prepare_launcher_runtime(project_dir, SHORTCUT_INSTANCE, providers, &backend)?;
+    let mut provider_panes: HashMap<String, String> = HashMap::new();
 
     let run_result = match &backend {
         LaunchBackend::Tmux { anchor_pane } => {
+            provider_panes.insert(orchestrator.clone(), anchor_pane.clone());
             spawn_tmux_layout(
                 project_dir,
                 SHORTCUT_INSTANCE,
@@ -477,10 +481,19 @@ fn run_interactive_layout(
                 &left_items,
                 &right_items,
                 &mut spawned_panes,
+                &mut provider_panes,
+            )?;
+            prepare_launcher_runtime(
+                project_dir,
+                SHORTCUT_INSTANCE,
+                providers,
+                &backend,
+                &provider_panes,
             )?;
             run_orchestrator_foreground(project_dir, SHORTCUT_INSTANCE, &orchestrator)
         }
         LaunchBackend::Wezterm { anchor_pane, bin } => {
+            provider_panes.insert(orchestrator.clone(), anchor_pane.clone());
             spawn_wezterm_layout(
                 project_dir,
                 SHORTCUT_INSTANCE,
@@ -489,6 +502,14 @@ fn run_interactive_layout(
                 &left_items,
                 &right_items,
                 &mut spawned_panes,
+                &mut provider_panes,
+            )?;
+            prepare_launcher_runtime(
+                project_dir,
+                SHORTCUT_INSTANCE,
+                providers,
+                &backend,
+                &provider_panes,
             )?;
             run_orchestrator_foreground(project_dir, SHORTCUT_INSTANCE, &orchestrator)
         }
@@ -534,11 +555,13 @@ fn spawn_tmux_layout(
     left_items: &[String],
     right_items: &[String],
     spawned_panes: &mut Vec<String>,
+    provider_panes: &mut HashMap<String, String>,
 ) -> Result<()> {
     let mut right_remainder: Option<String> = None;
     if let Some(first) = right_items.first() {
         let pane = spawn_tmux_pane(project_dir, instance, anchor_pane, "right", first, Some(50))?;
         spawned_panes.push(pane.clone());
+        provider_panes.insert(first.clone(), pane.clone());
         right_remainder = Some(pane);
     }
 
@@ -555,6 +578,7 @@ fn spawn_tmux_layout(
             Some(percent),
         )?;
         spawned_panes.push(pane.clone());
+        provider_panes.insert(provider.clone(), pane.clone());
         right_remainder = Some(pane);
     }
 
@@ -569,6 +593,7 @@ fn spawn_tmux_layout(
             Some(50),
         )?;
         spawned_panes.push(pane.clone());
+        provider_panes.insert(provider.clone(), pane.clone());
         left_parent = pane;
     }
 
@@ -634,6 +659,7 @@ fn spawn_wezterm_layout(
     left_items: &[String],
     right_items: &[String],
     spawned_panes: &mut Vec<String>,
+    provider_panes: &mut HashMap<String, String>,
 ) -> Result<()> {
     let mut right_remainder: Option<String> = None;
     if let Some(first) = right_items.first() {
@@ -647,6 +673,7 @@ fn spawn_wezterm_layout(
             50,
         )?;
         spawned_panes.push(pane.clone());
+        provider_panes.insert(first.clone(), pane.clone());
         right_remainder = Some(pane);
     }
 
@@ -664,6 +691,7 @@ fn spawn_wezterm_layout(
             percent,
         )?;
         spawned_panes.push(pane.clone());
+        provider_panes.insert(provider.clone(), pane.clone());
         right_remainder = Some(pane);
     }
 
@@ -679,6 +707,7 @@ fn spawn_wezterm_layout(
             50,
         )?;
         spawned_panes.push(pane.clone());
+        provider_panes.insert(provider.clone(), pane.clone());
         left_parent = pane;
     }
 
@@ -823,13 +852,16 @@ fn prepare_launcher_runtime(
     instance: &str,
     providers: &[String],
     backend: &LaunchBackend,
+    provider_panes: &HashMap<String, String>,
 ) -> Result<()> {
-    if !pane_feed_enabled() {
-        return Ok(());
+    let launcher_meta = launcher_meta_path(project_dir, instance);
+    if let Some(parent) = launcher_meta.parent() {
+        fs::create_dir_all(parent)?;
     }
-
     let feeds_dir = launcher_feeds_dir(project_dir, instance);
-    fs::create_dir_all(&feeds_dir)?;
+    if pane_feed_enabled() {
+        fs::create_dir_all(&feeds_dir)?;
+    }
 
     let orchestrator = providers
         .first()
@@ -838,10 +870,12 @@ fn prepare_launcher_runtime(
     let mut entries = Vec::new();
     for provider in providers {
         let feed = launcher_feed_path(project_dir, instance, provider);
-        if let Some(parent) = feed.parent() {
-            fs::create_dir_all(parent)?;
+        if pane_feed_enabled() {
+            if let Some(parent) = feed.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            let _ = OpenOptions::new().create(true).append(true).open(&feed)?;
         }
-        let _ = OpenOptions::new().create(true).append(true).open(&feed)?;
         entries.push(LauncherProviderMeta {
             provider: provider.clone(),
             role: if provider == &orchestrator {
@@ -850,22 +884,24 @@ fn prepare_launcher_runtime(
                 "executor".to_string()
             },
             feed_file: feed.display().to_string(),
+            pane_id: provider_panes.get(provider).cloned(),
         });
     }
 
-    let backend_name = match backend {
-        LaunchBackend::Tmux { .. } => "tmux".to_string(),
-        LaunchBackend::Wezterm { .. } => "wezterm".to_string(),
+    let (backend_name, backend_bin) = match backend {
+        LaunchBackend::Tmux { .. } => ("tmux".to_string(), None),
+        LaunchBackend::Wezterm { bin, .. } => ("wezterm".to_string(), Some(bin.clone())),
     };
     let meta = LauncherMeta {
         schema_version: 1,
         instance: instance.to_string(),
         created_at_unix: now_unix(),
         backend: backend_name,
+        backend_bin,
         orchestrator,
         providers: entries,
     };
-    write_json_pretty(&launcher_meta_path(project_dir, instance), &meta)
+    write_json_pretty(&launcher_meta, &meta)
 }
 
 fn provider_start_cmd(project_dir: &Path, instance: &str, provider: &str) -> String {
@@ -969,7 +1005,7 @@ fn ccb_autostart_exports() -> String {
 }
 
 fn pane_feed_enabled() -> bool {
-    env_bool("RCCB_PANE_FEED", true)
+    env_bool("RCCB_PANE_FEED", false)
 }
 
 fn env_bool(key: &str, default: bool) -> bool {
@@ -2370,17 +2406,16 @@ mod tests {
                 std::env::set_var("RCCB_USE_CCB_PROVIDER_LAUNCH", v);
             }
         }
-        assert!(cmd.contains("tail -n0 -F"));
-        assert!(cmd.contains(".rccb/tmp/default/launcher/feeds/codex.log"));
+        assert!(!cmd.contains("tail -n0 -F"));
         assert!(cmd.contains("codex"));
     }
 
     #[test]
-    fn provider_start_cmd_feed_can_be_disabled() {
+    fn provider_start_cmd_feed_enabled_wraps_tail() {
         let _guard = env_lock().lock().unwrap();
         let old = std::env::var("RCCB_PANE_FEED").ok();
         unsafe {
-            std::env::set_var("RCCB_PANE_FEED", "0");
+            std::env::set_var("RCCB_PANE_FEED", "1");
         }
         let cmd = provider_start_cmd(Path::new("/tmp/rccb-proj"), "default", "codex");
         if let Some(v) = old {
@@ -2392,8 +2427,8 @@ mod tests {
                 std::env::remove_var("RCCB_PANE_FEED");
             }
         }
-        assert!(!cmd.contains("tail -n0 -F"));
-        assert!(cmd.contains("codex"));
+        assert!(cmd.contains("tail -n0 -F"));
+        assert!(cmd.contains(".rccb/tmp/default/launcher/feeds/codex.log"));
     }
 
     #[test]
