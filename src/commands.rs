@@ -490,6 +490,7 @@ fn run_interactive_layout(
                 &backend,
                 &provider_panes,
             )?;
+            ensure_orchestrator_focus(&backend, anchor_pane);
             run_orchestrator_foreground(project_dir, SHORTCUT_INSTANCE, &orchestrator)
         }
         LaunchBackend::Wezterm { anchor_pane, bin } => {
@@ -511,6 +512,7 @@ fn run_interactive_layout(
                 &backend,
                 &provider_panes,
             )?;
+            ensure_orchestrator_focus(&backend, anchor_pane);
             run_orchestrator_foreground(project_dir, SHORTCUT_INSTANCE, &orchestrator)
         }
     };
@@ -524,6 +526,24 @@ fn run_interactive_layout(
         bail!("编排者 `{}` 已退出，退出码 {}", orchestrator, code);
     }
     Ok(())
+}
+
+fn ensure_orchestrator_focus(backend: &LaunchBackend, pane_id: &str) {
+    let pane = pane_id.trim();
+    if pane.is_empty() {
+        return;
+    }
+
+    let result = match backend {
+        LaunchBackend::Tmux { .. } => run_simple("tmux", &["select-pane", "-t", pane]),
+        LaunchBackend::Wezterm { bin, .. } => {
+            run_simple(bin, &["cli", "activate-pane", "--pane-id", pane])
+        }
+    };
+
+    if let Err(err) = result {
+        eprintln!("警告：无法聚焦编排者 pane={} err={}", pane, err);
+    }
 }
 
 fn split_layout_groups(executors: &[String]) -> (Vec<String>, Vec<String>) {
