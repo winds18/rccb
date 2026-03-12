@@ -1706,29 +1706,53 @@ pub fn cmd_stop(project_dir: &Path, instance: &str) -> Result<()> {
         }
     }
 
-    if !graceful {
-        let mut sys = System::new_all();
-        sys.refresh_processes();
-
-        let pid = Pid::from_u32(state.pid);
-        if let Some(process) = sys.process(pid) {
-            let _ = process.kill();
+    let mut stop_mode = if graceful { "graceful" } else { "kill" };
+    if graceful {
+        let waited = wait_process_exit(state.pid, Duration::from_secs_f64(2.0));
+        if !waited {
+            force_kill_process(state.pid);
+            stop_mode = "graceful+kill";
         }
+    } else {
+        force_kill_process(state.pid);
     }
 
-    state.status = "stopping".to_string();
+    let stopped = wait_process_exit(state.pid, Duration::from_secs_f64(1.5));
+    state.status = if stopped { "stopped" } else { "stopping" }.to_string();
     state.stopped_at_unix = Some(crate::io_utils::now_unix());
     state.last_heartbeat_unix = state.stopped_at_unix.unwrap_or(state.last_heartbeat_unix);
     crate::io_utils::write_state(&path, &state)?;
 
     println!(
-        "stop signal sent for project={} instance={} pid={} mode={}",
+        "stop signal sent for project={} instance={} pid={} mode={} status={}",
         project_dir.display(),
         instance,
         state.pid,
-        if graceful { "graceful" } else { "kill" }
+        stop_mode,
+        state.status
     );
     Ok(())
+}
+
+fn force_kill_process(pid: u32) {
+    let mut sys = System::new_all();
+    sys.refresh_processes();
+
+    let pid = Pid::from_u32(pid);
+    if let Some(process) = sys.process(pid) {
+        let _ = process.kill();
+    }
+}
+
+fn wait_process_exit(pid: u32, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if !is_process_alive(pid) {
+            return true;
+        }
+        thread::sleep(Duration::from_millis(80));
+    }
+    !is_process_alive(pid)
 }
 
 pub fn cmd_ping(project_dir: &Path, instance: &str, timeout_s: f64) -> Result<()> {
