@@ -212,6 +212,11 @@ rccb --project-dir . debug off --instance team-a
    - 原生参数覆盖：
      - `RCCB_<PROVIDER>_NATIVE_ARGS`
      - `RCCB_NATIVE_ARGS`
+   - 默认原生参数（未配置 args 时）：
+     - `codex`: `exec`（消息走 stdin）
+     - `gemini`: `--prompt {message}`
+     - `opencode`: `run {message}`
+     - `claude`: `--print {message}`
    - 默认不做 prompt 包装；可显式开启：
      - `RCCB_NATIVE_WRAP=1`
      - `RCCB_<PROVIDER>_NATIVE_WRAP=1`
@@ -234,10 +239,11 @@ rccb --project-dir . debug off --instance team-a
    - 原生执行策略覆盖：
      - `RCCB_NATIVE_TIMEOUT_S` / `RCCB_<PROVIDER>_NATIVE_TIMEOUT_S`
      - `RCCB_NATIVE_QUIET` / `RCCB_<PROVIDER>_NATIVE_QUIET`
+     - `RCCB_NATIVE_STDIN` / `RCCB_<PROVIDER>_NATIVE_STDIN`
    - `args` 支持模板变量：
-     - `{req_id}`、`{caller}`、`{provider}`、`{timeout_s}`、`{work_dir}`
+     - `{req_id}`、`{caller}`、`{provider}`、`{timeout_s}`、`{work_dir}`、`{message}`
    - `env` 值同样支持模板变量：
-     - `{req_id}`、`{caller}`、`{provider}`、`{timeout_s}`、`{work_dir}`
+     - `{req_id}`、`{caller}`、`{provider}`、`{timeout_s}`、`{work_dir}`、`{message}`
 
    生效优先级（从高到低）：
    - 命令：`RCCB_<PROVIDER>_NATIVE_CMD` > profile `cmd` > `RCCB_NATIVE_BIN_DIR` > 项目 `.rccb/bin` > 项目 `bin` > `PATH`

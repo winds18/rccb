@@ -176,13 +176,14 @@ pub fn execute_provider_request(
                 .env("CCB_REQ_ID", req_id)
                 .env("RCCB_NATIVE_PROVIDER", &req.provider);
 
-            for arg in native_args_for_provider(
+            let (native_args, used_default_args) = native_args_for_provider(
                 &req.provider,
                 req,
                 req_id,
                 effective_timeout_s,
                 profile.as_ref(),
-            ) {
+            );
+            for arg in native_args {
                 cmd.arg(arg);
             }
             for (k, v) in native_env_for_provider(
@@ -195,7 +196,11 @@ pub fn execute_provider_request(
                 cmd.env(k, v);
             }
 
-            let input = format!("{}\n", prompt);
+            let input = if native_should_use_stdin(&req.provider, used_default_args) {
+                format!("{}\n", prompt)
+            } else {
+                String::new()
+            };
             let timeout = timeout_for_request(effective_timeout_s);
             let mut maybe_emit_delta = |chunk: String| {
                 if !effective_quiet {
@@ -684,30 +689,48 @@ fn native_args_for_provider(
     req_id: &str,
     effective_timeout_s: f64,
     profile: Option<&NativeProviderProfile>,
-) -> Vec<String> {
+) -> (Vec<String>, bool) {
     let key = format!("RCCB_{}_NATIVE_ARGS", provider.to_ascii_uppercase());
     if let Ok(v) = env::var(&key) {
         let parsed = split_shell_like(&v);
         if !parsed.is_empty() {
-            return apply_arg_templates(parsed, provider, req, req_id, effective_timeout_s);
+            return (
+                apply_arg_templates(parsed, provider, req, req_id, effective_timeout_s),
+                false,
+            );
         }
     }
 
     if let Ok(v) = env::var("RCCB_NATIVE_ARGS") {
-        return apply_arg_templates(
-            split_shell_like(&v),
-            provider,
-            req,
-            req_id,
-            effective_timeout_s,
+        return (
+            apply_arg_templates(
+                split_shell_like(&v),
+                provider,
+                req,
+                req_id,
+                effective_timeout_s,
+            ),
+            false,
         );
     }
 
     if let Some(args) = profile.and_then(|p| p.args.as_ref()) {
-        return apply_arg_templates(args.clone(), provider, req, req_id, effective_timeout_s);
+        return (
+            apply_arg_templates(args.clone(), provider, req, req_id, effective_timeout_s),
+            false,
+        );
     }
 
-    Vec::new()
+    (
+        apply_arg_templates(
+            default_native_args_for_provider(provider),
+            provider,
+            req,
+            req_id,
+            effective_timeout_s,
+        ),
+        true,
+    )
 }
 
 fn native_env_for_provider(
@@ -814,6 +837,34 @@ fn render_arg_template(
         .replace("{provider}", provider.trim())
         .replace("{timeout_s}", &format!("{:.3}", effective_timeout_s))
         .replace("{work_dir}", req.work_dir.trim())
+        .replace("{message}", req.message.trim_end())
+}
+
+fn default_native_args_for_provider(provider: &str) -> Vec<String> {
+    match provider.trim().to_ascii_lowercase().as_str() {
+        "codex" => vec!["exec".to_string()],
+        "gemini" => vec!["--prompt".to_string(), "{message}".to_string()],
+        "opencode" => vec!["run".to_string(), "{message}".to_string()],
+        "claude" => vec!["--print".to_string(), "{message}".to_string()],
+        _ => Vec::new(),
+    }
+}
+
+fn native_should_use_stdin(provider: &str, used_default_args: bool) -> bool {
+    let provider_key = format!("RCCB_{}_NATIVE_STDIN", provider.to_ascii_uppercase());
+    if let Some(v) = parse_env_bool(&provider_key) {
+        return v;
+    }
+    if let Some(v) = parse_env_bool("RCCB_NATIVE_STDIN") {
+        return v;
+    }
+    if used_default_args {
+        return matches!(
+            provider.trim().to_ascii_lowercase().as_str(),
+            "codex" | "droid"
+        );
+    }
+    true
 }
 
 fn load_native_profile(provider: &str, work_dir: &Path) -> Result<Option<NativeProviderProfile>> {
@@ -1147,6 +1198,22 @@ mod tests {
         assert!(CCB_AUTOSTART_ENV_KEYS.contains(&"CCB_OASKD_AUTOSTART"));
         assert!(CCB_AUTOSTART_ENV_KEYS.contains(&"CCB_LASKD_AUTOSTART"));
         assert!(CCB_AUTOSTART_ENV_KEYS.contains(&"CCB_DASKD_AUTOSTART"));
+    }
+
+    #[test]
+    fn default_native_args_match_headless_modes() {
+        assert_eq!(
+            default_native_args_for_provider("opencode"),
+            vec!["run", "{message}"]
+        );
+        assert_eq!(
+            default_native_args_for_provider("gemini"),
+            vec!["--prompt", "{message}"]
+        );
+        assert_eq!(
+            default_native_args_for_provider("claude"),
+            vec!["--print", "{message}"]
+        );
     }
 
     #[test]

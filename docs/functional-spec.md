@@ -56,6 +56,11 @@
      - `RCCB_<PROVIDER>_NATIVE_ARGS`
      - `RCCB_NATIVE_BIN_DIR`
      - `RCCB_NATIVE_ARGS`
+   - 默认原生参数（未配置 args 时）：
+      - `codex`: `exec`（消息走 stdin）
+      - `gemini`: `--prompt {message}`
+      - `opencode`: `run {message}`
+      - `claude`: `--print {message}`
    - 默认不做 prompt 包装；可开启：
       - `RCCB_NATIVE_WRAP`
       - `RCCB_<PROVIDER>_NATIVE_WRAP`
@@ -65,10 +70,11 @@
    - 可覆盖原生执行策略：
       - `RCCB_NATIVE_TIMEOUT_S` / `RCCB_<PROVIDER>_NATIVE_TIMEOUT_S`
       - `RCCB_NATIVE_QUIET` / `RCCB_<PROVIDER>_NATIVE_QUIET`
+      - `RCCB_NATIVE_STDIN` / `RCCB_<PROVIDER>_NATIVE_STDIN`
    - `args` 模板变量：
-      - `{req_id}` / `{caller}` / `{provider}` / `{timeout_s}` / `{work_dir}`
+      - `{req_id}` / `{caller}` / `{provider}` / `{timeout_s}` / `{work_dir}` / `{message}`
    - `env` 值模板变量：
-      - `{req_id}` / `{caller}` / `{provider}` / `{timeout_s}` / `{work_dir}`
+      - `{req_id}` / `{caller}` / `{provider}` / `{timeout_s}` / `{work_dir}` / `{message}`
    - 优先级（高 -> 低）：
       - cmd: `RCCB_<PROVIDER>_NATIVE_CMD` -> profile `cmd` -> `RCCB_NATIVE_BIN_DIR` -> `.rccb/bin` -> `bin` -> `PATH`
       - args: `RCCB_<PROVIDER>_NATIVE_ARGS` -> `RCCB_NATIVE_ARGS` -> profile `args`
