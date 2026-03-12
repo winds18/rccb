@@ -42,19 +42,7 @@
 
 `RCCB_EXEC_MODE` 支持三种模式：
 
-1. `ccb`（默认）
-   - 通过 CCB 包装命令执行 provider：
-     - `codex -> cask`
-     - `gemini -> gask`
-     - `opencode -> oask`
-     - `droid -> dask`
-     - `claude -> lask`
-   - 继承 CCB 会话发现/路由能力，兼容 wezterm 与 tmux 会话。
-   - 命令路径可覆盖：
-     - `RCCB_<PROVIDER>_CMD`
-     - `RCCB_CCB_BIN_DIR`
-     - `RCCB_CCB_ROOT`
-2. `native`（实验中）
+1. `native`（默认）
    - Rust 直接启动 provider 本地进程（`claude/codex/gemini/opencode/droid`）。
    - 路径解析优先项目内绑定：
      - `<project>/.rccb/bin/<provider>`
@@ -68,7 +56,10 @@
      - `RCCB_<PROVIDER>_NATIVE_ARGS`
      - `RCCB_NATIVE_BIN_DIR`
      - `RCCB_NATIVE_ARGS`
-   - 可关闭自动 prompt 包装（高级用法）：
+   - 默认不做 prompt 包装；可开启：
+      - `RCCB_NATIVE_WRAP`
+      - `RCCB_<PROVIDER>_NATIVE_WRAP`
+   - 可关闭 prompt 包装：
       - `RCCB_NATIVE_NO_WRAP`
       - `RCCB_<PROVIDER>_NATIVE_NO_WRAP`
    - 可覆盖原生执行策略：
@@ -84,7 +75,19 @@
       - timeout: `RCCB_<PROVIDER>_NATIVE_TIMEOUT_S` -> `RCCB_NATIVE_TIMEOUT_S` -> profile `timeout_s` -> request `timeout_s`
       - quiet: `RCCB_<PROVIDER>_NATIVE_QUIET` -> `RCCB_NATIVE_QUIET` -> profile `quiet` -> request `quiet`
       - wrap: `RCCB_<PROVIDER>_NATIVE_NO_WRAP` -> `RCCB_NATIVE_NO_WRAP` -> profile `no_wrap`
-   - 成功判定更严格：`exit_code=0` 且输出包含 `CCB_DONE: <req_id>` 才视为 `completed`；否则记为 `incomplete`（`exit_code=2`）。
+   - 成功判定：`exit_code=0` 即视为 `completed`（`CCB_DONE` 仅作为辅助标记）。
+2. `ccb`（兼容模式）
+   - 通过 CCB 包装命令执行 provider：
+     - `codex -> cask`
+     - `gemini -> gask`
+     - `opencode -> oask`
+     - `droid -> dask`
+     - `claude -> lask`
+   - 继承 CCB 会话发现/路由能力，兼容 wezterm 与 tmux 会话。
+   - 命令路径可覆盖：
+     - `RCCB_<PROVIDER>_CMD`
+     - `RCCB_CCB_BIN_DIR`
+     - `RCCB_CCB_ROOT`
 3. `stub`（开发联调）
    - 仅用于通信链路调试，不用于真实 provider 执行。
 

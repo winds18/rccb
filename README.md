@@ -197,19 +197,8 @@ rccb --project-dir . debug off --instance team-a
 
 支持三种执行模式（`RCCB_EXEC_MODE`）：
 
-1. `ccb`（默认，推荐生产）
-   - 调用 CCB 包装命令：`cask/gask/oask/dask/lask`
-   - 继承 CCB 会话路由能力，支持 **wezterm / tmux**
-   - 命令覆盖：
-     - `RCCB_CODEX_CMD`
-     - `RCCB_GEMINI_CMD`
-     - `RCCB_OPENCODE_CMD`
-     - `RCCB_DROID_CMD`
-     - `RCCB_CLAUDE_CMD`
-   - CCB 安装路径：
-     - `RCCB_CCB_BIN_DIR`
-     - `RCCB_CCB_ROOT`
-2. `native`（纯 Rust 直连 provider 进程，实验中）
+1. `native`（默认，推荐）
+   - 纯 Rust 直连 provider 进程，不依赖外部 `ccb` 主入口。
    - 按 provider 查找本地二进制：`claude/codex/gemini/opencode/droid`
    - 优先支持项目内相对绑定：
      - `<project>/.rccb/bin/<provider>`
@@ -223,9 +212,25 @@ rccb --project-dir . debug off --instance team-a
    - 原生参数覆盖：
      - `RCCB_<PROVIDER>_NATIVE_ARGS`
      - `RCCB_NATIVE_ARGS`
-   - 可关闭自动 prompt 包装（高级用法）：
+   - 默认不做 prompt 包装；可显式开启：
+     - `RCCB_NATIVE_WRAP=1`
+     - `RCCB_<PROVIDER>_NATIVE_WRAP=1`
+   - 可关闭包装（对齐 profile）：
      - `RCCB_NATIVE_NO_WRAP=1`
      - `RCCB_<PROVIDER>_NATIVE_NO_WRAP=1`
+   - 成功判定：`exit_code=0` 即视为 `completed`（`CCB_DONE` 仅作为附加标记）。
+2. `ccb`（兼容模式，可选）
+   - 调用 CCB 包装命令：`cask/gask/oask/dask/lask`
+   - 继承 CCB 会话路由能力，支持 **wezterm / tmux**
+   - 命令覆盖：
+     - `RCCB_CODEX_CMD`
+     - `RCCB_GEMINI_CMD`
+     - `RCCB_OPENCODE_CMD`
+     - `RCCB_DROID_CMD`
+     - `RCCB_CLAUDE_CMD`
+   - CCB 安装路径：
+     - `RCCB_CCB_BIN_DIR`
+     - `RCCB_CCB_ROOT`
    - 原生执行策略覆盖：
      - `RCCB_NATIVE_TIMEOUT_S` / `RCCB_<PROVIDER>_NATIVE_TIMEOUT_S`
      - `RCCB_NATIVE_QUIET` / `RCCB_<PROVIDER>_NATIVE_QUIET`
@@ -233,7 +238,6 @@ rccb --project-dir . debug off --instance team-a
      - `{req_id}`、`{caller}`、`{provider}`、`{timeout_s}`、`{work_dir}`
    - `env` 值同样支持模板变量：
      - `{req_id}`、`{caller}`、`{provider}`、`{timeout_s}`、`{work_dir}`
-   - `native` 模式下，provider 成功返回必须包含 `CCB_DONE: <req_id>`；否则标记为 `incomplete`（`exit_code=2`）
 
    生效优先级（从高到低）：
    - 命令：`RCCB_<PROVIDER>_NATIVE_CMD` > profile `cmd` > `RCCB_NATIVE_BIN_DIR` > 项目 `.rccb/bin` > 项目 `bin` > `PATH`
@@ -247,10 +251,7 @@ rccb --project-dir . debug off --instance team-a
 示例：
 
 ```bash
-# 默认（ccb）
-export RCCB_EXEC_MODE=ccb
-
-# 纯 Rust 原生执行（实验）
+# 默认（native）
 export RCCB_EXEC_MODE=native
 export RCCB_CODEX_NATIVE_CMD=/usr/local/bin/codex
 export RCCB_CODEX_NATIVE_ARGS='--model gpt-5-codex'

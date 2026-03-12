@@ -229,11 +229,11 @@ pub fn execute_provider_request(
 }
 
 fn execution_mode() -> ExecMode {
-    let raw = env::var("RCCB_EXEC_MODE").unwrap_or_else(|_| "ccb".to_string());
+    let raw = env::var("RCCB_EXEC_MODE").unwrap_or_else(|_| "native".to_string());
     match raw.trim().to_ascii_lowercase().as_str() {
         "stub" => ExecMode::Stub,
-        "native" => ExecMode::Native,
-        _ => ExecMode::Ccb,
+        "ccb" => ExecMode::Ccb,
+        _ => ExecMode::Native,
     }
 }
 
@@ -426,12 +426,7 @@ fn build_exec_result(
         }
         ExecMode::Native => {
             if outcome.exit_code == 0 {
-                if done_seen_marker {
-                    (0, true, "completed")
-                } else {
-                    // Native mode enforces done-marker to guarantee deterministic completion.
-                    (2, false, "incomplete")
-                }
+                (0, done_seen_marker, "completed")
             } else {
                 (outcome.exit_code, done_seen_marker, "failed")
             }
@@ -777,6 +772,14 @@ fn effective_native_quiet(
 }
 
 fn should_wrap_native_prompt(provider: &str, profile: Option<&NativeProviderProfile>) -> bool {
+    let provider_wrap_key = format!("RCCB_{}_NATIVE_WRAP", provider.to_ascii_uppercase());
+    if env_bool(&provider_wrap_key, false) {
+        return true;
+    }
+    if env_bool("RCCB_NATIVE_WRAP", false) {
+        return true;
+    }
+
     let provider_key = format!("RCCB_{}_NATIVE_NO_WRAP", provider.to_ascii_uppercase());
     if env_bool(&provider_key, false) {
         return false;
@@ -784,7 +787,7 @@ fn should_wrap_native_prompt(provider: &str, profile: Option<&NativeProviderProf
     if env_bool("RCCB_NATIVE_NO_WRAP", false) {
         return false;
     }
-    !profile.and_then(|p| p.no_wrap).unwrap_or(false)
+    !profile.and_then(|p| p.no_wrap).unwrap_or(true)
 }
 
 fn apply_arg_templates(
@@ -1158,7 +1161,7 @@ mod tests {
     }
 
     #[test]
-    fn native_mode_requires_done_marker_on_success_exit() {
+    fn native_mode_without_done_marker_still_completes() {
         let req = sample_request();
         let req_id = "req-native";
         let outcome = ProcessOutcome {
@@ -1170,9 +1173,9 @@ mod tests {
             elapsed_ms: 15,
         };
         let result = build_exec_result(ExecMode::Native, req_id, outcome, req.timeout_s, req.quiet);
-        assert_eq!(result.exit_code, 2);
+        assert_eq!(result.exit_code, 0);
         assert!(!result.done_seen);
-        assert_eq!(result.status, "incomplete");
+        assert_eq!(result.status, "completed");
     }
 
     #[test]
