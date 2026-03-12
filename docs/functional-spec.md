@@ -100,8 +100,9 @@
 1. `ask.ping` -> `ask.pong`
 2. `ask.request` -> `ask.response`（非流式）
 3. `ask.request(stream=true)` -> `ask.event(start|delta|done|error)`（流式）
-4. `ask.shutdown` -> `ask.response`
-5. `ask.debug` -> `ask.response`
+4. `ask.cancel` -> `ask.response`
+5. `ask.shutdown` -> `ask.response`
+6. `ask.debug` -> `ask.response`
 
 ### 4.2 鉴权
 
@@ -186,7 +187,8 @@
 1. `rccb ping --instance <id>`
 2. `rccb ask --instance <id> --provider <p> --caller <c> "..."`
 3. `rccb ask --instance <id> --provider <p> --caller <c> --stream "..."`
-4. `rccb stop --instance <id>`（优先 graceful shutdown）
+4. `rccb cancel --instance <id> --req-id <rid>`
+5. `rccb stop --instance <id>`（优先 graceful shutdown）
 
 ### 5.3 状态
 
@@ -221,7 +223,7 @@
 
 1. 仅使用项目 `.rccb`，不污染全局主状态
 2. 同实例互斥、不同实例并发
-3. `ask.ping/ask.request/ask.event/ask.debug/ask.shutdown` 全部可用
+3. `ask.ping/ask.request/ask.event/ask.cancel/ask.debug/ask.shutdown` 全部可用
 4. 请求生命周期可追踪（tasks 文件）
 5. 编排角色与落盘一致
 6. 单二进制可运行

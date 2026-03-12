@@ -15,8 +15,8 @@ use clap::Parser;
 
 use crate::cli::{Cli, Command};
 use crate::commands::{
-    cmd_ask, cmd_debug, cmd_external_provider_launch, cmd_init, cmd_ping, cmd_send, cmd_start,
-    cmd_status, cmd_stop,
+    cmd_ask, cmd_cancel, cmd_debug, cmd_external_provider_launch, cmd_init, cmd_ping, cmd_send,
+    cmd_start, cmd_status, cmd_stop,
 };
 use crate::io_utils::resolve_project_dir;
 
@@ -50,6 +50,7 @@ fn main() -> Result<()> {
             instance,
             timeout_s,
         } => cmd_ping(&project_dir, &instance, timeout_s),
+        Command::Cancel { instance, req_id } => cmd_cancel(&project_dir, &instance, &req_id),
         Command::Ask {
             instance,
             provider,

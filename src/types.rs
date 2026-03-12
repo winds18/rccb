@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
@@ -215,6 +216,7 @@ pub struct WorkerTask {
     pub request: AskRequest,
     pub req_id: String,
     pub task_file: PathBuf,
+    pub cancel_flag: Arc<AtomicBool>,
     pub response_tx: Option<mpsc::Sender<AskResponse>>,
     pub stream_tx: Option<mpsc::Sender<WorkerEvent>>,
 }

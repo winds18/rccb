@@ -68,6 +68,14 @@ pub enum Command {
         timeout_s: f64,
     },
 
+    Cancel {
+        #[arg(long, default_value = "default")]
+        instance: String,
+
+        #[arg(long, help = "Request id to cancel")]
+        req_id: String,
+    },
+
     Ask {
         #[arg(long, default_value = "default")]
         instance: String,

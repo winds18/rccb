@@ -51,6 +51,7 @@ struct ProcessOutcome {
     stderr: String,
     exit_code: i32,
     timed_out: bool,
+    canceled: bool,
     elapsed_ms: u64,
 }
 
@@ -74,6 +75,7 @@ pub fn execute_provider_request(
     req: &AskRequest,
     req_id: &str,
     mut on_delta: impl FnMut(String),
+    should_cancel: impl Fn() -> bool,
 ) -> Result<ProviderExecResult> {
     let mode = execution_mode();
     match mode {
@@ -104,14 +106,15 @@ pub fn execute_provider_request(
 
             let input = format!("{}\n", req.message);
             let timeout = timeout_for_request(req.timeout_s);
-            let outcome = run_process_with_stream(cmd, &input, timeout, &mut on_delta)
-                .with_context(|| {
-                    format!(
-                        "spawn wrapper failed for provider={} wrapper={}",
-                        req.provider,
-                        wrapper.display()
-                    )
-                })?;
+            let outcome =
+                run_process_with_stream(cmd, &input, timeout, &mut on_delta, &should_cancel)
+                    .with_context(|| {
+                        format!(
+                            "spawn wrapper failed for provider={} wrapper={}",
+                            req.provider,
+                            wrapper.display()
+                        )
+                    })?;
             Ok(build_exec_result(
                 mode,
                 req_id,
@@ -179,14 +182,20 @@ pub fn execute_provider_request(
                     on_delta(chunk);
                 }
             };
-            let outcome = run_process_with_stream(cmd, &input, timeout, &mut maybe_emit_delta)
-                .with_context(|| {
-                    format!(
-                        "spawn native provider failed: provider={} cmd={}",
-                        req.provider,
-                        binary.display()
-                    )
-                })?;
+            let outcome = run_process_with_stream(
+                cmd,
+                &input,
+                timeout,
+                &mut maybe_emit_delta,
+                &should_cancel,
+            )
+            .with_context(|| {
+                format!(
+                    "spawn native provider failed: provider={} cmd={}",
+                    req.provider,
+                    binary.display()
+                )
+            })?;
 
             Ok(build_exec_result(
                 mode,
@@ -241,6 +250,7 @@ fn run_process_with_stream(
     input: &str,
     timeout: Option<Duration>,
     on_delta: &mut dyn FnMut(String),
+    should_cancel: &dyn Fn() -> bool,
 ) -> Result<ProcessOutcome> {
     let started = Instant::now();
     let mut child = cmd.spawn().context("spawn process failed")?;
@@ -262,8 +272,15 @@ fn run_process_with_stream(
     let mut stderr_eof = false;
     let mut exit_code: Option<i32> = None;
     let mut timed_out = false;
+    let mut canceled = false;
 
     loop {
+        if should_cancel() {
+            canceled = true;
+            kill_child(&mut child);
+            break;
+        }
+
         if let Some(limit) = timeout {
             if started.elapsed() >= limit {
                 timed_out = true;
@@ -308,8 +325,15 @@ fn run_process_with_stream(
     Ok(ProcessOutcome {
         stdout: stdout_all,
         stderr: stderr_all,
-        exit_code: if timed_out { 2 } else { exit_code.unwrap_or(1) },
+        exit_code: if canceled {
+            130
+        } else if timed_out {
+            2
+        } else {
+            exit_code.unwrap_or(1)
+        },
         timed_out,
+        canceled,
         elapsed_ms: started.elapsed().as_millis() as u64,
     })
 }
@@ -321,6 +345,22 @@ fn build_exec_result(
     effective_timeout_s: f64,
     effective_quiet: bool,
 ) -> ProviderExecResult {
+    if outcome.canceled {
+        return ProviderExecResult {
+            exit_code: 130,
+            reply: "request canceled".to_string(),
+            done_seen: false,
+            done_ms: None,
+            anchor_seen: true,
+            anchor_ms: Some(0),
+            fallback_scan: false,
+            status: "canceled".to_string(),
+            stderr: outcome.stderr,
+            effective_timeout_s,
+            effective_quiet,
+        };
+    }
+
     if outcome.timed_out {
         return ProviderExecResult {
             exit_code: 2,
@@ -1090,6 +1130,7 @@ mod tests {
             stderr: String::new(),
             exit_code: 0,
             timed_out: false,
+            canceled: false,
             elapsed_ms: 15,
         };
         let result = build_exec_result(ExecMode::Native, req_id, outcome, req.timeout_s, req.quiet);
@@ -1107,6 +1148,7 @@ mod tests {
             stderr: String::new(),
             exit_code: 0,
             timed_out: false,
+            canceled: false,
             elapsed_ms: 21,
         };
         let result = build_exec_result(ExecMode::Native, req_id, outcome, req.timeout_s, req.quiet);

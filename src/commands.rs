@@ -301,6 +301,51 @@ pub fn cmd_ping(project_dir: &Path, instance: &str, timeout_s: f64) -> Result<()
     Ok(())
 }
 
+pub fn cmd_cancel(project_dir: &Path, instance: &str, req_id: &str) -> Result<()> {
+    let req_id = req_id.trim();
+    if req_id.is_empty() {
+        bail!("req_id cannot be empty");
+    }
+
+    let state = load_state(&state_path(project_dir, instance))?;
+    let host = state
+        .daemon_host
+        .ok_or_else(|| anyhow!("missing daemon_host in state"))?;
+    let port = state
+        .daemon_port
+        .ok_or_else(|| anyhow!("missing daemon_port in state"))?;
+    let token = state
+        .daemon_token
+        .ok_or_else(|| anyhow!("missing daemon_token in state"))?;
+
+    let req = json!({
+        "type": format!("{}.cancel", PROTOCOL_PREFIX),
+        "v": PROTOCOL_VERSION,
+        "id": format!("cancel-{}-{}", std::process::id(), crate::io_utils::now_unix_ms()),
+        "token": token,
+        "req_id": req_id,
+    });
+
+    let value = send_wire_message(&host, port, req, 2.0)?;
+    let resp: AskResponse =
+        serde_json::from_value(value).context("invalid ask.cancel response payload")?;
+
+    if resp.exit_code == 0 {
+        println!(
+            "cancel requested: instance={} req_id={}",
+            instance,
+            resp.req_id.unwrap_or_else(|| req_id.to_string())
+        );
+        return Ok(());
+    }
+
+    bail!(
+        "cancel failed: req_id={} reply={}",
+        resp.req_id.unwrap_or_else(|| req_id.to_string()),
+        resp.reply
+    )
+}
+
 pub fn cmd_debug(project_dir: &Path, action: crate::cli::DebugAction) -> Result<()> {
     match action {
         crate::cli::DebugAction::On { instance } => cmd_debug_set(project_dir, &instance, "on"),

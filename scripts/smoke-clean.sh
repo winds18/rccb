@@ -7,7 +7,7 @@ TMP_DIR="$(mktemp -d)"
 PROJ_DIR="$TMP_DIR/proj"
 
 cleanup() {
-  for instance in s1 s2 s3 s4 s5; do
+  for instance in s1 s2 s3 s4 s5 s6; do
     "$BIN" --project-dir "$PROJ_DIR" stop --instance "$instance" >/dev/null 2>&1 || true
   done
   rm -rf "$TMP_DIR"
@@ -108,5 +108,34 @@ wait "$PID5"
 grep -q "ARGS:profile codex claude" "$TMP_DIR/s5.ask.log"
 grep -q "ENV:codex:claude:" "$TMP_DIR/s5.ask.log"
 echo "MODE_NATIVE_PROFILE_OK"
+
+# 6) cancel in-flight request by req_id
+cat > "$PROJ_DIR/.rccb/bin/codex-cancel" <<'EOF'
+#!/usr/bin/env bash
+sleep 5
+echo "late reply"
+echo "CCB_DONE: ${CCB_REQ_ID}"
+EOF
+chmod +x "$PROJ_DIR/.rccb/bin/codex-cancel"
+RCCB_EXEC_MODE=native RCCB_CODEX_NATIVE_CMD="$PROJ_DIR/.rccb/bin/codex-cancel" "$BIN" --project-dir "$PROJ_DIR" start --instance s6 claude codex >/dev/null 2>&1 &
+PID6=$!
+sleep 1
+set +e
+"$BIN" --project-dir "$PROJ_DIR" ask --instance s6 --provider codex --caller claude --req-id cancel-req-1 "please cancel" >"$TMP_DIR/s6.ask.log" 2>&1 &
+ASKPID6=$!
+sleep 1
+"$BIN" --project-dir "$PROJ_DIR" cancel --instance s6 --req-id cancel-req-1 >"$TMP_DIR/s6.cancel.log" 2>&1
+wait "$ASKPID6"
+EC6=$?
+set -e
+"$BIN" --project-dir "$PROJ_DIR" stop --instance s6 >/dev/null || true
+wait "$PID6" || true
+if [ "$EC6" -eq 0 ]; then
+  echo "MODE_CANCEL_UNEXPECTED_OK"
+  exit 1
+fi
+grep -qi "cancel requested" "$TMP_DIR/s6.cancel.log"
+grep -Eqi "request canceled|exit_code=130" "$TMP_DIR/s6.ask.log"
+echo "MODE_CANCEL_OK"
 
 echo "[smoke] all checks passed and temp files cleaned."

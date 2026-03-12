@@ -364,6 +364,50 @@ fn handle_connection(
             write_json_line(&mut stream, &resp)?;
             Ok(())
         }
+        "ask.cancel" => {
+            let target_req_id = value
+                .get("req_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+            if target_req_id.is_empty() {
+                let resp = AskResponse {
+                    msg_type: format!("{}.response", PROTOCOL_PREFIX),
+                    v: PROTOCOL_VERSION,
+                    id: request_id,
+                    req_id: None,
+                    exit_code: 1,
+                    reply: "Bad request: req_id is required".to_string(),
+                    provider: None,
+                    meta: Some(json!({"status":"bad_request"})),
+                };
+                debug_wire_out_response(context, &resp);
+                write_json_line(&mut stream, &resp)?;
+                return Ok(());
+            }
+
+            let found = pool.cancel(&target_req_id);
+            let resp = AskResponse {
+                msg_type: format!("{}.response", PROTOCOL_PREFIX),
+                v: PROTOCOL_VERSION,
+                id: request_id,
+                req_id: Some(target_req_id.clone()),
+                exit_code: if found { 0 } else { 1 },
+                reply: if found {
+                    "cancel signal submitted".to_string()
+                } else {
+                    "request not found or already finished".to_string()
+                },
+                provider: None,
+                meta: Some(json!({
+                    "status": if found { "cancel_requested" } else { "not_found" }
+                })),
+            };
+            debug_wire_out_response(context, &resp);
+            write_json_line(&mut stream, &resp)?;
+            Ok(())
+        }
         "ask.request" => {
             let req: AskRequest = match serde_json::from_value(value) {
                 Ok(v) => v,
@@ -514,6 +558,7 @@ fn forward_stream_events(
 struct WorkerPool {
     context: DaemonContext,
     workers: Mutex<HashMap<String, mpsc::Sender<WorkerTask>>>,
+    cancel_flags: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
 }
 
 impl WorkerPool {
@@ -521,6 +566,7 @@ impl WorkerPool {
         Self {
             context,
             workers: Mutex::new(HashMap::new()),
+            cancel_flags: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -546,16 +592,19 @@ impl WorkerPool {
         } else {
             Duration::from_secs_f64(request.timeout_s + 5.0)
         };
+        let cancel_flag = self.register_cancel_flag(&req_id)?;
 
-        sender
-            .send(WorkerTask {
-                request,
-                req_id: req_id.clone(),
-                task_file,
-                response_tx: Some(resp_tx),
-                stream_tx: None,
-            })
-            .context("enqueue worker task failed")?;
+        if let Err(err) = sender.send(WorkerTask {
+            request,
+            req_id: req_id.clone(),
+            task_file,
+            cancel_flag,
+            response_tx: Some(resp_tx),
+            stream_tx: None,
+        }) {
+            self.remove_cancel_flag(&req_id);
+            return Err(anyhow!("enqueue worker task failed: {}", err));
+        }
 
         match resp_rx.recv_timeout(timeout) {
             Ok(resp) => Ok(resp),
@@ -598,16 +647,19 @@ impl WorkerPool {
         let timeout_s = request.timeout_s;
         let sender = self.get_worker_sender(&request.provider)?;
         let (event_tx, event_rx) = mpsc::channel::<WorkerEvent>();
+        let cancel_flag = self.register_cancel_flag(&req_id)?;
 
-        sender
-            .send(WorkerTask {
-                request,
-                req_id,
-                task_file,
-                response_tx: None,
-                stream_tx: Some(event_tx),
-            })
-            .context("enqueue streaming worker task failed")?;
+        if let Err(err) = sender.send(WorkerTask {
+            request,
+            req_id: req_id.clone(),
+            task_file,
+            cancel_flag,
+            response_tx: None,
+            stream_tx: Some(event_tx),
+        }) {
+            self.remove_cancel_flag(&req_id);
+            return Err(anyhow!("enqueue streaming worker task failed: {}", err));
+        }
 
         Ok(PendingStream {
             event_rx,
@@ -635,13 +687,44 @@ impl WorkerPool {
                 let (tx, rx) = mpsc::channel::<WorkerTask>();
                 let context_cloned = self.context.clone();
                 let key_cloned = worker_key.clone();
-                thread::spawn(move || worker_loop(key_cloned, context_cloned, rx));
+                let cancel_flags_cloned = Arc::clone(&self.cancel_flags);
+                thread::spawn(move || {
+                    worker_loop(key_cloned, context_cloned, rx, cancel_flags_cloned)
+                });
                 guard.insert(worker_key, tx.clone());
                 tx
             }
         };
 
         Ok(sender)
+    }
+
+    fn register_cancel_flag(&self, req_id: &str) -> Result<Arc<AtomicBool>> {
+        let mut guard = self
+            .cancel_flags
+            .lock()
+            .map_err(|_| anyhow!("cancel flag map lock poisoned"))?;
+        let flag = Arc::new(AtomicBool::new(false));
+        guard.insert(req_id.to_string(), Arc::clone(&flag));
+        Ok(flag)
+    }
+
+    fn cancel(&self, req_id: &str) -> bool {
+        let guard = match self.cancel_flags.lock() {
+            Ok(g) => g,
+            Err(_) => return false,
+        };
+        if let Some(flag) = guard.get(req_id) {
+            flag.store(true, Ordering::Relaxed);
+            return true;
+        }
+        false
+    }
+
+    fn remove_cancel_flag(&self, req_id: &str) {
+        if let Ok(mut guard) = self.cancel_flags.lock() {
+            guard.remove(req_id);
+        }
     }
 }
 
@@ -661,7 +744,12 @@ fn rejected_response(instance_id: &str, request: AskRequest, req_id: String) -> 
     }
 }
 
-fn worker_loop(worker_key: String, context: DaemonContext, rx: mpsc::Receiver<WorkerTask>) {
+fn worker_loop(
+    worker_key: String,
+    context: DaemonContext,
+    rx: mpsc::Receiver<WorkerTask>,
+    cancel_flags: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
+) {
     let log_file = logs_instance_dir(&context.project_dir, &context.instance_id).join("daemon.log");
     let _ = write_line(
         log_file.clone(),
@@ -732,30 +820,36 @@ fn worker_loop(worker_key: String, context: DaemonContext, rx: mpsc::Receiver<Wo
 
         let req_id_for_stream = task.req_id.clone();
         let provider_for_stream = req.provider.clone();
+        let cancel_flag = Arc::clone(&task.cancel_flag);
         let mut stream_delta_idx = 0usize;
-        let exec = execute_provider_request(&req, &task.req_id, |chunk| {
-            if chunk.is_empty() {
-                return;
-            }
-            debug_log(
-                &context,
-                &format!(
-                    "[WORKER][STREAM][delta] req_id={} provider={} idx={} chars={}",
-                    req_id_for_stream,
-                    provider_for_stream,
-                    stream_delta_idx,
-                    chunk.chars().count()
-                ),
-            );
-            stream_delta_idx += 1;
-            if let Some(tx) = &task.stream_tx {
-                let _ = tx.send(WorkerEvent::Delta {
-                    provider: provider_for_stream.clone(),
-                    req_id: req_id_for_stream.clone(),
-                    delta: chunk,
-                });
-            }
-        });
+        let exec = execute_provider_request(
+            &req,
+            &task.req_id,
+            |chunk| {
+                if chunk.is_empty() {
+                    return;
+                }
+                debug_log(
+                    &context,
+                    &format!(
+                        "[WORKER][STREAM][delta] req_id={} provider={} idx={} chars={}",
+                        req_id_for_stream,
+                        provider_for_stream,
+                        stream_delta_idx,
+                        chunk.chars().count()
+                    ),
+                );
+                stream_delta_idx += 1;
+                if let Some(tx) = &task.stream_tx {
+                    let _ = tx.send(WorkerEvent::Delta {
+                        provider: provider_for_stream.clone(),
+                        req_id: req_id_for_stream.clone(),
+                        delta: chunk,
+                    });
+                }
+            },
+            || cancel_flag.load(Ordering::Relaxed),
+        );
 
         let done_at = now_unix();
         let elapsed_ms = now_unix_ms().saturating_sub(started_at.saturating_mul(1000));
@@ -785,10 +879,12 @@ fn worker_loop(worker_key: String, context: DaemonContext, rx: mpsc::Receiver<Wo
             }
         };
         let reply = exec.reply.clone();
-        let task_status = if exec.exit_code == 0 {
-            "completed"
-        } else {
-            "failed"
+        let task_status = match exec.status.as_str() {
+            "completed" => "completed",
+            "timeout" => "timeout",
+            "canceled" => "canceled",
+            "incomplete" => "incomplete",
+            _ => "failed",
         };
 
         let _ = update_task_status(
@@ -858,12 +954,16 @@ fn worker_loop(worker_key: String, context: DaemonContext, rx: mpsc::Receiver<Wo
             &context,
             "[WORKER][TASK][done]",
             &json!({
-                "req_id": task.req_id,
+                "req_id": task.req_id.clone(),
                 "provider": req.provider,
                 "reply": reply_for_debug,
                 "elapsed_ms": elapsed_ms
             }),
         );
+
+        if let Ok(mut guard) = cancel_flags.lock() {
+            guard.remove(&task.req_id);
+        }
     }
 
     let _ = write_line(

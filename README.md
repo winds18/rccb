@@ -61,6 +61,7 @@ rccb --project-dir . start --instance team-a \
 - `ask.request`
 - `ask.event`（`start|delta|done|error`，仅流式请求）
 - `ask.shutdown`
+- `ask.cancel`
 - `ask.response`
 - `ask.debug`（调试开关）
 
@@ -95,6 +96,9 @@ rccb --project-dir . ask \
 
 # 停止 daemon（优先 graceful shutdown）
 rccb --project-dir . stop --instance team-a
+
+# 取消执行中的请求（按 req_id）
+rccb --project-dir . cancel --instance team-a --req-id req-123
 ```
 
 ### 调试开关与完整日志

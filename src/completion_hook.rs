@@ -184,6 +184,7 @@ fn env_bool(name: &str, default: bool) -> bool {
 fn normalize_status(status: &str, done_seen: bool) -> &'static str {
     match status.trim().to_ascii_lowercase().as_str() {
         "completed" => "completed",
+        "canceled" => "cancelled",
         "cancelled" => "cancelled",
         "timeout" => "cancelled",
         "failed" => "failed",
@@ -257,6 +258,7 @@ mod tests {
     #[test]
     fn normalize_status_maps_timeout_and_unknown() {
         assert_eq!(normalize_status("timeout", false), "cancelled");
+        assert_eq!(normalize_status("canceled", false), "cancelled");
         assert_eq!(normalize_status("completed", false), "completed");
         assert_eq!(normalize_status("unknown", true), "completed");
         assert_eq!(normalize_status("unknown", false), "incomplete");
