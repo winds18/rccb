@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fs::{self, OpenOptions};
 use std::io::{self, BufRead, BufReader};
 use std::net::{TcpListener, TcpStream};
@@ -33,9 +33,210 @@ use crate::provider::{
     execute_provider_request, PaneBackend as ProviderPaneBackend, PaneDispatchTarget,
 };
 use crate::types::{
-    AskEvent, AskRequest, AskResponse, DaemonContext, InstanceState, OrchestrationArtifacts,
-    OrchestrationPlan, PendingStream, WorkerEvent, WorkerTask,
+    AskBusEvent, AskEvent, AskRequest, AskResponse, DaemonContext, InstanceState,
+    OrchestrationArtifacts, OrchestrationPlan, PendingStream, WorkerEvent, WorkerTask,
 };
+
+const EVENT_BUS_DEFAULT_BUFFER: usize = 2048;
+const EVENT_BUS_MAX_BUFFER: usize = 20000;
+const EVENT_BUS_KEEPALIVE_MS: u64 = 5000;
+
+#[derive(Debug, Clone, Deserialize)]
+struct SubscribeRequest {
+    #[serde(default)]
+    provider: Option<String>,
+    #[serde(default)]
+    req_id: Option<String>,
+    #[serde(default)]
+    from_seq: Option<u64>,
+    #[serde(default)]
+    from_now: bool,
+    #[serde(default = "default_subscribe_follow")]
+    follow: bool,
+    #[serde(default)]
+    timeout_s: Option<f64>,
+}
+
+fn default_subscribe_follow() -> bool {
+    true
+}
+
+#[derive(Debug, Clone)]
+struct BusFilter {
+    provider: Option<String>,
+    req_id: Option<String>,
+}
+
+impl BusFilter {
+    fn new(provider: Option<String>, req_id: Option<String>) -> Self {
+        Self {
+            provider: provider
+                .map(|v| v.trim().to_ascii_lowercase())
+                .filter(|v| !v.is_empty()),
+            req_id: req_id
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty()),
+        }
+    }
+
+    fn matches(&self, event: &BusRecord) -> bool {
+        if let Some(provider) = &self.provider {
+            if event
+                .provider
+                .as_ref()
+                .map(|v| v.trim().to_ascii_lowercase() != *provider)
+                .unwrap_or(true)
+            {
+                return false;
+            }
+        }
+        if let Some(req_id) = &self.req_id {
+            if event.req_id.as_ref().map(|v| v != req_id).unwrap_or(true) {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+#[derive(Debug, Clone)]
+struct BusRecord {
+    seq: u64,
+    ts_unix_ms: u64,
+    req_id: Option<String>,
+    provider: Option<String>,
+    event: String,
+    delta: Option<String>,
+    reply: Option<String>,
+    status: Option<String>,
+    exit_code: Option<i32>,
+    meta: Option<Value>,
+}
+
+impl BusRecord {
+    fn to_wire(&self, id: &str) -> AskBusEvent {
+        AskBusEvent {
+            msg_type: format!("{}.bus", PROTOCOL_PREFIX),
+            v: PROTOCOL_VERSION,
+            id: id.to_string(),
+            seq: self.seq,
+            ts_unix_ms: self.ts_unix_ms,
+            req_id: self.req_id.clone(),
+            provider: self.provider.clone(),
+            event: self.event.clone(),
+            delta: self.delta.clone(),
+            reply: self.reply.clone(),
+            status: self.status.clone(),
+            exit_code: self.exit_code,
+            meta: self.meta.clone(),
+        }
+    }
+}
+
+struct SubscriberEntry {
+    filter: BusFilter,
+    tx: mpsc::Sender<BusRecord>,
+}
+
+struct EventBusInner {
+    next_seq: u64,
+    next_sub_id: u64,
+    max_buffer: usize,
+    buffer: VecDeque<BusRecord>,
+    subscribers: HashMap<u64, SubscriberEntry>,
+}
+
+struct EventBus {
+    inner: Mutex<EventBusInner>,
+}
+
+impl EventBus {
+    fn new(max_buffer: usize) -> Self {
+        Self {
+            inner: Mutex::new(EventBusInner {
+                next_seq: 1,
+                next_sub_id: 1,
+                max_buffer: max_buffer.max(64).min(EVENT_BUS_MAX_BUFFER),
+                buffer: VecDeque::new(),
+                subscribers: HashMap::new(),
+            }),
+        }
+    }
+
+    fn latest_seq(&self) -> u64 {
+        self.inner
+            .lock()
+            .map(|inner| inner.next_seq.saturating_sub(1))
+            .unwrap_or(0)
+    }
+
+    fn subscribe(
+        &self,
+        filter: BusFilter,
+        from_seq: Option<u64>,
+        from_now: bool,
+    ) -> (u64, mpsc::Receiver<BusRecord>, Vec<BusRecord>, u64) {
+        let (tx, rx) = mpsc::channel::<BusRecord>();
+        let mut replay = Vec::new();
+        let mut latest_seq = 0u64;
+        let mut sub_id = 0u64;
+
+        if let Ok(mut inner) = self.inner.lock() {
+            latest_seq = inner.next_seq.saturating_sub(1);
+            if !from_now {
+                let start_seq = from_seq.unwrap_or(0);
+                replay = inner
+                    .buffer
+                    .iter()
+                    .filter(|evt| evt.seq > start_seq && filter.matches(evt))
+                    .cloned()
+                    .collect();
+            }
+
+            sub_id = inner.next_sub_id;
+            inner.next_sub_id = inner.next_sub_id.saturating_add(1);
+            inner
+                .subscribers
+                .insert(sub_id, SubscriberEntry { filter, tx });
+        }
+
+        (sub_id, rx, replay, latest_seq)
+    }
+
+    fn unsubscribe(&self, sub_id: u64) {
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.subscribers.remove(&sub_id);
+        }
+    }
+
+    fn publish(&self, mut event: BusRecord) -> u64 {
+        let mut seq = 0u64;
+        if let Ok(mut inner) = self.inner.lock() {
+            seq = inner.next_seq;
+            inner.next_seq = inner.next_seq.saturating_add(1);
+            event.seq = seq;
+            event.ts_unix_ms = now_unix_ms();
+
+            inner.buffer.push_back(event.clone());
+            while inner.buffer.len() > inner.max_buffer {
+                inner.buffer.pop_front();
+            }
+
+            let mut stale = Vec::<u64>::new();
+            for (sid, sub) in &inner.subscribers {
+                if sub.filter.matches(&event) {
+                    if sub.tx.send(event.clone()).is_err() {
+                        stale.push(*sid);
+                    }
+                }
+            }
+            for sid in stale {
+                inner.subscribers.remove(&sid);
+            }
+        }
+        seq
+    }
+}
 
 pub fn start_instance(
     project_dir: &Path,
@@ -413,6 +614,27 @@ fn handle_connection(
             write_json_line(&mut stream, &resp)?;
             Ok(())
         }
+        "ask.subscribe" => {
+            let sub_req: SubscribeRequest = match serde_json::from_value(value) {
+                Ok(v) => v,
+                Err(err) => {
+                    let resp = AskResponse {
+                        msg_type: format!("{}.response", PROTOCOL_PREFIX),
+                        v: PROTOCOL_VERSION,
+                        id: request_id,
+                        req_id: None,
+                        exit_code: 1,
+                        reply: format!("Bad subscribe request: {}", err),
+                        provider: None,
+                        meta: Some(json!({"status": "bad_request"})),
+                    };
+                    debug_wire_out_response(context, &resp);
+                    write_json_line(&mut stream, &resp)?;
+                    return Ok(());
+                }
+            };
+            handle_subscribe_stream(&mut stream, context, pool, request_id, sub_req, shutdown)
+        }
         "ask.request" => {
             let req: AskRequest = match serde_json::from_value(value) {
                 Ok(v) => v,
@@ -435,7 +657,7 @@ fn handle_connection(
             debug_log_json(context, "[REQUEST]", &req);
             let req_id = req.req_id.clone().unwrap_or_else(make_req_id);
             let task_file = write_request_task(context, &req, &req_id)?;
-            relay_task_dispatched(context, &req, &req_id);
+            relay_task_dispatched(context, &pool.event_bus, &req, &req_id);
 
             {
                 let mut guard = context
@@ -601,10 +823,136 @@ fn forward_stream_events(
     Ok(())
 }
 
+fn handle_subscribe_stream(
+    stream: &mut TcpStream,
+    context: &DaemonContext,
+    pool: &Arc<WorkerPool>,
+    request_id: String,
+    sub_req: SubscribeRequest,
+    shutdown: &Arc<AtomicBool>,
+) -> Result<()> {
+    let filter = BusFilter::new(sub_req.provider.clone(), sub_req.req_id.clone());
+    let follow = sub_req.follow;
+    let timeout = sub_req
+        .timeout_s
+        .filter(|v| v.is_finite() && *v > 0.0)
+        .map(Duration::from_secs_f64);
+    let started = Instant::now();
+    let mut last_keepalive = Instant::now();
+    let keepalive_every = Duration::from_millis(EVENT_BUS_KEEPALIVE_MS);
+
+    let (sub_id, rx, replay, latest_seq) =
+        pool.subscribe_bus(filter, sub_req.from_seq, sub_req.from_now);
+    let mut last_seq = latest_seq;
+
+    let result = (|| -> Result<()> {
+        let subscribed = AskBusEvent {
+            msg_type: format!("{}.bus", PROTOCOL_PREFIX),
+            v: PROTOCOL_VERSION,
+            id: request_id.clone(),
+            seq: latest_seq,
+            ts_unix_ms: now_unix_ms(),
+            req_id: sub_req.req_id.clone(),
+            provider: sub_req.provider.clone(),
+            event: "subscribed".to_string(),
+            delta: None,
+            reply: None,
+            status: None,
+            exit_code: None,
+            meta: Some(json!({
+                "from_seq": sub_req.from_seq.unwrap_or(0),
+                "from_now": sub_req.from_now,
+                "replay": replay.len(),
+                "follow": follow,
+            })),
+        };
+        debug_log_json(context, "[WIRE][OUT][bus]", &subscribed);
+        write_bus_event_line(stream, &subscribed)?;
+
+        for item in replay {
+            let evt = item.to_wire(&request_id);
+            last_seq = evt.seq;
+            debug_log_json(context, "[WIRE][OUT][bus]", &evt);
+            write_bus_event_line(stream, &evt)?;
+        }
+
+        if !follow {
+            return Ok(());
+        }
+
+        loop {
+            if shutdown.load(Ordering::Relaxed) {
+                break;
+            }
+            if let Some(limit) = timeout {
+                if started.elapsed() >= limit {
+                    let timeout_evt = AskBusEvent {
+                        msg_type: format!("{}.bus", PROTOCOL_PREFIX),
+                        v: PROTOCOL_VERSION,
+                        id: request_id.clone(),
+                        seq: last_seq,
+                        ts_unix_ms: now_unix_ms(),
+                        req_id: sub_req.req_id.clone(),
+                        provider: sub_req.provider.clone(),
+                        event: "timeout".to_string(),
+                        delta: None,
+                        reply: None,
+                        status: Some("timeout".to_string()),
+                        exit_code: Some(2),
+                        meta: None,
+                    };
+                    debug_log_json(context, "[WIRE][OUT][bus]", &timeout_evt);
+                    write_bus_event_line(stream, &timeout_evt)?;
+                    break;
+                }
+            }
+
+            match rx.recv_timeout(Duration::from_millis(250)) {
+                Ok(item) => {
+                    let evt = item.to_wire(&request_id);
+                    last_seq = evt.seq;
+                    debug_log_json(context, "[WIRE][OUT][bus]", &evt);
+                    write_bus_event_line(stream, &evt)?;
+                    last_keepalive = Instant::now();
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    if last_keepalive.elapsed() >= keepalive_every {
+                        let keepalive_evt = AskBusEvent {
+                            msg_type: format!("{}.bus", PROTOCOL_PREFIX),
+                            v: PROTOCOL_VERSION,
+                            id: request_id.clone(),
+                            seq: pool.latest_bus_seq(),
+                            ts_unix_ms: now_unix_ms(),
+                            req_id: sub_req.req_id.clone(),
+                            provider: sub_req.provider.clone(),
+                            event: "keepalive".to_string(),
+                            delta: None,
+                            reply: None,
+                            status: None,
+                            exit_code: None,
+                            meta: None,
+                        };
+                        debug_log_json(context, "[WIRE][OUT][bus]", &keepalive_evt);
+                        write_bus_event_line(stream, &keepalive_evt)?;
+                        last_keepalive = Instant::now();
+                    }
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        }
+
+        Ok(())
+    })();
+
+    pool.unsubscribe_bus(sub_id);
+    result
+}
+
 struct WorkerPool {
     context: DaemonContext,
     workers: Mutex<HashMap<String, mpsc::Sender<WorkerTask>>>,
     cancel_flags: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
+    event_bus: Arc<EventBus>,
 }
 
 impl WorkerPool {
@@ -613,7 +961,25 @@ impl WorkerPool {
             context,
             workers: Mutex::new(HashMap::new()),
             cancel_flags: Arc::new(Mutex::new(HashMap::new())),
+            event_bus: Arc::new(EventBus::new(event_bus_buffer_size())),
         }
+    }
+
+    fn subscribe_bus(
+        &self,
+        filter: BusFilter,
+        from_seq: Option<u64>,
+        from_now: bool,
+    ) -> (u64, mpsc::Receiver<BusRecord>, Vec<BusRecord>, u64) {
+        self.event_bus.subscribe(filter, from_seq, from_now)
+    }
+
+    fn unsubscribe_bus(&self, sub_id: u64) {
+        self.event_bus.unsubscribe(sub_id);
+    }
+
+    fn latest_bus_seq(&self) -> u64 {
+        self.event_bus.latest_seq()
     }
 
     fn submit(
@@ -759,8 +1125,15 @@ impl WorkerPool {
                 let context_cloned = self.context.clone();
                 let key_cloned = worker_key.clone();
                 let cancel_flags_cloned = Arc::clone(&self.cancel_flags);
+                let bus_cloned = Arc::clone(&self.event_bus);
                 thread::spawn(move || {
-                    worker_loop(key_cloned, context_cloned, rx, cancel_flags_cloned)
+                    worker_loop(
+                        key_cloned,
+                        context_cloned,
+                        rx,
+                        cancel_flags_cloned,
+                        bus_cloned,
+                    )
                 });
                 guard.insert(worker_key, tx.clone());
                 tx
@@ -820,6 +1193,7 @@ fn worker_loop(
     context: DaemonContext,
     rx: mpsc::Receiver<WorkerTask>,
     cancel_flags: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
+    event_bus: Arc<EventBus>,
 ) {
     let log_file = logs_instance_dir(&context.project_dir, &context.instance_id).join("daemon.log");
     let _ = write_line(
@@ -870,6 +1244,27 @@ fn worker_loop(
             "executor"
         };
 
+        publish_bus_record(
+            &event_bus,
+            BusRecord {
+                seq: 0,
+                ts_unix_ms: 0,
+                req_id: Some(task.req_id.clone()),
+                provider: Some(req.provider.clone()),
+                event: "start".to_string(),
+                delta: None,
+                reply: None,
+                status: Some("running".to_string()),
+                exit_code: None,
+                meta: Some(json!({
+                    "worker": worker_key,
+                    "role": role,
+                    "caller": req.caller,
+                    "timeout_s": req.timeout_s,
+                })),
+            },
+        );
+
         if let Some(tx) = &task.stream_tx {
             debug_log(
                 &context,
@@ -904,6 +1299,21 @@ fn worker_loop(
                     return;
                 }
                 append_provider_stream_chunk(&provider_log, &task.req_id, &chunk);
+                publish_bus_record(
+                    &event_bus,
+                    BusRecord {
+                        seq: 0,
+                        ts_unix_ms: 0,
+                        req_id: Some(req_id_for_stream.clone()),
+                        provider: Some(provider_for_stream.clone()),
+                        event: "delta".to_string(),
+                        delta: Some(clamp_bus_text(chunk.as_str(), 8000)),
+                        reply: None,
+                        status: None,
+                        exit_code: None,
+                        meta: None,
+                    },
+                );
                 debug_log(
                     &context,
                     &format!(
@@ -919,7 +1329,7 @@ fn worker_loop(
                     let _ = tx.send(WorkerEvent::Delta {
                         provider: provider_for_stream.clone(),
                         req_id: req_id_for_stream.clone(),
-                        delta: chunk,
+                        delta: chunk.clone(),
                     });
                 }
             },
@@ -1005,6 +1415,22 @@ fn worker_loop(
             })),
         };
 
+        publish_bus_record(
+            &event_bus,
+            BusRecord {
+                seq: 0,
+                ts_unix_ms: 0,
+                req_id: Some(task.req_id.clone()),
+                provider: Some(req.provider.clone()),
+                event: "done".to_string(),
+                delta: None,
+                reply: Some(clamp_bus_text(resp.reply.as_str(), 12000)),
+                status: Some(task_status.to_string()),
+                exit_code: Some(resp.exit_code),
+                meta: resp.meta.clone(),
+            },
+        );
+
         notify_completion_async(CompletionHookInput {
             provider: req.provider.clone(),
             caller: req.caller.clone(),
@@ -1079,6 +1505,37 @@ fn append_provider_stream_chunk(provider_log: &Path, req_id: &str, chunk: &str) 
                 &format!("[STREAM] req_id={} {}", req_id, tail),
             );
         }
+    }
+}
+
+fn clamp_bus_text(raw: &str, max_chars: usize) -> String {
+    if max_chars == 0 {
+        return String::new();
+    }
+    let total = raw.chars().count();
+    if total <= max_chars {
+        return raw.to_string();
+    }
+    let mut out: String = raw.chars().take(max_chars).collect();
+    out.push_str(" ...(截断)");
+    out
+}
+
+fn publish_bus_record(event_bus: &Arc<EventBus>, event: BusRecord) {
+    let _ = event_bus.publish(event);
+}
+
+fn write_bus_event_line(stream: &mut TcpStream, evt: &AskBusEvent) -> Result<()> {
+    let value = serde_json::to_value(evt).context("serialize ask.bus event failed")?;
+    write_json_value_line(stream, &value)
+}
+
+fn event_bus_buffer_size() -> usize {
+    let raw = std::env::var("RCCB_EVENT_BUFFER_SIZE")
+        .unwrap_or_else(|_| EVENT_BUS_DEFAULT_BUFFER.to_string());
+    match raw.trim().parse::<usize>() {
+        Ok(v) => v.max(64).min(EVENT_BUS_MAX_BUFFER),
+        Err(_) => EVENT_BUS_DEFAULT_BUFFER,
     }
 }
 
@@ -1250,17 +1707,37 @@ fn write_request_task(context: &DaemonContext, req: &AskRequest, req_id: &str) -
     Ok(task_file)
 }
 
-fn relay_task_dispatched(context: &DaemonContext, req: &AskRequest, req_id: &str) {
+fn relay_task_dispatched(
+    context: &DaemonContext,
+    event_bus: &Arc<EventBus>,
+    req: &AskRequest,
+    req_id: &str,
+) {
     let preview = compact_preview(&req.message, 180);
+    publish_bus_record(
+        event_bus,
+        BusRecord {
+            seq: 0,
+            ts_unix_ms: 0,
+            req_id: Some(req_id.to_string()),
+            provider: Some(req.provider.clone()),
+            event: "dispatched".to_string(),
+            delta: None,
+            reply: None,
+            status: Some("queued".to_string()),
+            exit_code: None,
+            meta: Some(json!({
+                "caller": req.caller,
+                "timeout_s": req.timeout_s,
+                "message_preview": preview.clone(),
+            })),
+        },
+    );
     let provider_line = format!(
         "[RCCB][任务下发] req_id={} caller={} timeout_s={:.3} msg={}",
         req_id, req.caller, req.timeout_s, preview
     );
-    relay_to_provider_feed(
-        context,
-        &req.provider,
-        &provider_line,
-    );
+    relay_to_provider_feed(context, &req.provider, &provider_line);
     if pane_status_mirror_enabled() {
         let _ = relay_to_provider_pane_status(context, &req.provider, &provider_line);
     }
@@ -1270,11 +1747,7 @@ fn relay_task_dispatched(context: &DaemonContext, req: &AskRequest, req_id: &str
             "[RCCB][已派发] req_id={} -> provider={} timeout_s={:.3}",
             req_id, req.provider, req.timeout_s
         );
-        relay_to_provider_feed(
-            context,
-            &orchestrator,
-            &orchestrator_line,
-        );
+        relay_to_provider_feed(context, &orchestrator, &orchestrator_line);
         if pane_status_mirror_enabled() {
             let _ = relay_to_provider_pane_status(context, &orchestrator, &orchestrator_line);
         }
@@ -1294,11 +1767,7 @@ fn relay_task_completed(
         "[RCCB][任务完成] req_id={} status={} exit_code={} reply={}",
         req_id, status, exit_code, reply_preview
     );
-    relay_to_provider_feed(
-        context,
-        &req.provider,
-        &provider_line,
-    );
+    relay_to_provider_feed(context, &req.provider, &provider_line);
     if pane_status_mirror_enabled() {
         let _ = relay_to_provider_pane_status(context, &req.provider, &provider_line);
     }
@@ -1308,11 +1777,7 @@ fn relay_task_completed(
             "[RCCB][执行回传] req_id={} provider={} status={} exit_code={} reply={}",
             req_id, req.provider, status, exit_code, reply_preview
         );
-        relay_to_provider_feed(
-            context,
-            &orchestrator,
-            &orchestrator_line,
-        );
+        relay_to_provider_feed(context, &orchestrator, &orchestrator_line);
         if pane_status_mirror_enabled() {
             let _ = relay_to_provider_pane_status(context, &orchestrator, &orchestrator_line);
         }
@@ -1384,7 +1849,13 @@ fn relay_to_provider_pane_status(
         }
         PaneRelayBackend::Wezterm { bin } => {
             let status = ProcessCommand::new(&bin)
-                .args(["cli", "send-text", "--pane-id", &target.pane_id, "--no-paste"])
+                .args([
+                    "cli",
+                    "send-text",
+                    "--pane-id",
+                    &target.pane_id,
+                    "--no-paste",
+                ])
                 .stdin(Stdio::piped())
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())

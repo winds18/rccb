@@ -98,6 +98,7 @@ rccb --project-dir . start --instance team-a \
 - `ask.cancel`
 - `ask.response`
 - `ask.debug`（调试开关）
+- `ask.subscribe`（实时事件订阅，`watch` 默认优先使用）
 
 并具备：
 
@@ -159,6 +160,7 @@ rccb --project-dir . watch --instance team-a --provider opencode --with-provider
 rccb --project-dir . watch --instance team-a --provider opencode --with-provider-log --follow
 
 # --follow + --provider 默认不超时（tail 风格）
+# watch 默认优先走实时总线；断线会按 seq 自动续读；失败时自动回退轮询
 
 # 观察状态 + 关联日志（便于深度排障）
 rccb --project-dir . watch \
@@ -207,6 +209,12 @@ rccb --project-dir . debug off --instance team-a
 调试日志路径：
 
 - `./.rccb/logs/<instance>/debug.log`
+
+watch 相关环境变量：
+
+- `RCCB_WATCH_BUS=0`：关闭实时总线，强制使用旧轮询模式（默认开启）
+- `RCCB_EVENT_BUFFER_SIZE=<64-20000>`：事件总线缓冲区大小（默认 2048）
+- `RCCB_WATCH_MAX_LOG_LINES=<N>`：轮询模式下每次刷新最多展示 N 行日志（默认 10）
 
 `debug.log` 会记录完整协议收发（`ask.*`）、流式事件和 worker 生命周期，便于复盘与问题反馈。
 当 daemon 不在线时，`debug on/off` 会写入实例状态，并在下次 `start` 自动继承。

@@ -312,8 +312,12 @@ fn execute_native_via_pane(
         .unwrap_or(800.0)
         .clamp(200.0, 4000.0) as i32;
 
-    let mut previous = capture_pane_text(target, capture_lines)
-        .with_context(|| format!("capture pane before dispatch failed: pane={}", target.pane_id))?;
+    let mut previous = capture_pane_text(target, capture_lines).with_context(|| {
+        format!(
+            "capture pane before dispatch failed: pane={}",
+            target.pane_id
+        )
+    })?;
     send_text_to_pane(target, pane_prompt)
         .with_context(|| format!("send task to pane failed: pane={}", target.pane_id))?;
 
@@ -379,7 +383,8 @@ fn execute_native_via_pane(
             }
         }
 
-        if contains_done_line_for_req(&transcript, req_id) || contains_done_line_for_req(&current, req_id)
+        if contains_done_line_for_req(&transcript, req_id)
+            || contains_done_line_for_req(&current, req_id)
         {
             break;
         }
@@ -463,11 +468,7 @@ fn send_text_to_pane(target: &PaneDispatchTarget, text: &str) -> Result<()> {
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_else(|_| Duration::from_secs(0))
                 .as_nanos();
-            let buffer_name = format!(
-                "rccb-{}-{}",
-                std::process::id(),
-                nanos
-            );
+            let buffer_name = format!("rccb-{}-{}", std::process::id(), nanos);
             let mut load = Command::new("tmux")
                 .args(["load-buffer", "-b", &buffer_name, "-"])
                 .stdin(Stdio::piped())

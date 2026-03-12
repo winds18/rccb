@@ -113,6 +113,7 @@
 5. `ask.cancel` -> `ask.response`
 6. `ask.shutdown` -> `ask.response`
 7. `ask.debug` -> `ask.response`
+8. `ask.subscribe` -> `ask.bus`（实时订阅）
 
 ### 4.2 鉴权
 
@@ -152,7 +153,21 @@
 - `exit_code`（`done/error`）
 - `meta`
 
-### 4.6 可靠性机制
+### 4.6 订阅事件字段（ask.bus）
+
+- `id`
+- `seq`
+- `ts_unix_ms`
+- `req_id`
+- `provider`
+- `event`（`subscribed|dispatched|start|delta|done|keepalive|timeout`）
+- `delta`
+- `reply`
+- `status`
+- `exit_code`
+- `meta`
+
+### 4.7 可靠性机制
 
 1. provider 级 worker 串行队列
 2. 任务状态流转：`queued -> running -> completed|failed|timeout|canceled|incomplete`
@@ -163,8 +178,9 @@
 7. 调试开关启用时写入完整协议与执行日志到 `logs/<instance>/debug.log`
 8. provider 进程执行带超时控制，超时返回 `exit_code=2`
 9. 可选 completion hook：任务终态后异步触发，不阻塞主请求路径
+10. 事件总线 `seq` 缓冲，支持断线后按 `from_seq` 续读
 
-### 4.7 Completion Hook（可选）
+### 4.8 Completion Hook（可选）
 
 1. 触发时机：worker 完成并生成终态响应后异步触发。
 2. 命令来源（优先级）：
@@ -222,10 +238,14 @@
 3. `rccb tasks [--instance <id>] [--limit N] [--as-json]`
 4. `rccb watch --instance <id> --req-id <rid> [--with-provider-log] [--with-debug-log] [--timeout-s <sec>]`
 5. `rccb watch --instance <id> --provider <provider> [--with-provider-log] [--with-debug-log] [--timeout-s <sec>]`
+   - 默认优先走实时总线（`ask.subscribe`），失败自动回退轮询
+   - 连接中断后自动按 `from_seq` 续读，减少消息丢失
    - 自动跟踪该 provider 最新任务（优先 queued/running）
    - 可追加 `--follow` 进入常驻追踪模式（任务结束后继续等待下一条）
    - `--follow + --provider` 默认不超时
-   - 文本模式下日志展示默认节流，每次刷新最多 10 行（可用 `RCCB_WATCH_MAX_LOG_LINES` 调整）
+   - 轮询路径文本模式下日志默认节流（`RCCB_WATCH_MAX_LOG_LINES`，默认 10）
+   - `RCCB_WATCH_BUS=0` 可关闭总线 watch，强制轮询
+   - `RCCB_EVENT_BUFFER_SIZE=<64-20000>` 可调整 daemon 事件缓冲（默认 2048）
    - debug 自动日志 pane 可通过以下环境变量控制：
      `RCCB_DEBUG_WATCH_PANE`、`RCCB_DEBUG_WATCH_PROVIDER`、`RCCB_DEBUG_WATCH_PANE_PERCENT`
 6. `status --as-json` 额外返回 `in_flight_count` 与 `in_flight_req_ids`

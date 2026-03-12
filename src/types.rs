@@ -191,6 +191,24 @@ impl AskEvent {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AskBusEvent {
+    #[serde(rename = "type")]
+    pub msg_type: String,
+    pub v: u32,
+    pub id: String,
+    pub seq: u64,
+    pub ts_unix_ms: u64,
+    pub req_id: Option<String>,
+    pub provider: Option<String>,
+    pub event: String,
+    pub delta: Option<String>,
+    pub reply: Option<String>,
+    pub status: Option<String>,
+    pub exit_code: Option<i32>,
+    pub meta: Option<Value>,
+}
+
 #[derive(Debug, Clone)]
 pub enum WorkerEvent {
     Start {

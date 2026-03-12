@@ -25,7 +25,7 @@ use crate::layout::{
     tasks_instance_dir, tasks_root_dir, tmp_instance_dir,
 };
 use crate::protocol::{connect_and_send, send_wire_message};
-use crate::types::{AskEvent, AskResponse, InstanceState};
+use crate::types::{AskBusEvent, AskEvent, AskResponse, InstanceState};
 
 pub fn cmd_init(project_dir: &Path, force: bool) -> Result<()> {
     ensure_project_layout(project_dir)?;
@@ -1726,6 +1726,28 @@ pub fn cmd_watch(
         timeout_s
     };
 
+    if watch_bus_enabled() {
+        match watch_via_bus(
+            project_dir,
+            instance,
+            fixed_req_id.as_deref(),
+            watch_provider.as_deref(),
+            effective_timeout_s,
+            follow,
+            with_provider_log,
+            with_debug_log,
+            as_json,
+        ) {
+            Ok(true) => return Ok(()),
+            Ok(false) => {}
+            Err(err) => {
+                if !as_json {
+                    eprintln!("watch: 实时总线不可用，回退轮询模式。原因：{}", err);
+                }
+            }
+        }
+    }
+
     let poll = Duration::from_millis(poll_ms.max(50));
     let deadline = if effective_timeout_s <= 0.0 {
         None
@@ -1901,6 +1923,422 @@ pub fn cmd_watch(
 
         thread::sleep(poll);
     }
+}
+
+fn watch_bus_enabled() -> bool {
+    let raw = std::env::var("RCCB_WATCH_BUS").unwrap_or_else(|_| "1".to_string());
+    !matches!(
+        raw.trim().to_ascii_lowercase().as_str(),
+        "0" | "false" | "off" | "no"
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn watch_via_bus(
+    project_dir: &Path,
+    instance: &str,
+    fixed_req_id: Option<&str>,
+    watch_provider: Option<&str>,
+    effective_timeout_s: f64,
+    follow: bool,
+    with_provider_log: bool,
+    with_debug_log: bool,
+    as_json: bool,
+) -> Result<bool> {
+    let state_file = state_path(project_dir, instance);
+    if !state_file.exists() {
+        return Ok(false);
+    }
+
+    let state = load_state(&state_file)?;
+    if state.status != "running" || !is_process_alive(state.pid) {
+        return Ok(false);
+    }
+
+    let host = match state.daemon_host {
+        Some(v) if !v.trim().is_empty() => v,
+        _ => return Ok(false),
+    };
+    let port = match state.daemon_port {
+        Some(v) => v,
+        None => return Ok(false),
+    };
+    let token = match state.daemon_token {
+        Some(v) if !v.trim().is_empty() => v,
+        _ => return Ok(false),
+    };
+
+    run_watch_via_bus(
+        project_dir,
+        instance,
+        &host,
+        port,
+        &token,
+        fixed_req_id,
+        watch_provider,
+        effective_timeout_s,
+        follow,
+        with_provider_log,
+        with_debug_log,
+        as_json,
+    )?;
+    Ok(true)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_watch_via_bus(
+    project_dir: &Path,
+    instance: &str,
+    host: &str,
+    port: u16,
+    token: &str,
+    fixed_req_id: Option<&str>,
+    watch_provider: Option<&str>,
+    effective_timeout_s: f64,
+    follow: bool,
+    with_provider_log: bool,
+    with_debug_log: bool,
+    as_json: bool,
+) -> Result<()> {
+    let deadline = if effective_timeout_s <= 0.0 {
+        None
+    } else {
+        Some(Instant::now() + Duration::from_secs_f64(effective_timeout_s.max(0.1)))
+    };
+
+    let follow_started_at = now_unix();
+    let mut followed_done_req_ids: HashSet<String> = HashSet::new();
+    let mut tracked_req_id = fixed_req_id.map(|v| v.to_string());
+    if tracked_req_id.is_none() {
+        if let Some(provider) = watch_provider {
+            tracked_req_id = if follow {
+                select_watch_req_for_provider_follow(
+                    project_dir,
+                    instance,
+                    provider,
+                    &followed_done_req_ids,
+                    follow_started_at,
+                )?
+            } else {
+                select_watch_req_for_provider(project_dir, instance, provider)?
+            };
+        }
+    }
+
+    let mut announced_req_id: Option<String> = None;
+    let mut last_task: Option<TaskView> = None;
+    let mut debug_log_offset = 0u64;
+    let mut printed_waiting = false;
+    let tail_like_quiet = follow && with_provider_log && !as_json;
+    let mut last_seq = 0u64;
+    let mut backoff = Duration::from_millis(120);
+    let reconnect_cap = Duration::from_secs(2);
+
+    if let Some(req_id) = tracked_req_id.as_deref() {
+        if let Some(task) = load_task_by_req_id(project_dir, instance, req_id)? {
+            if !tail_like_quiet {
+                emit_watch_task(&task, as_json)?;
+            }
+            last_task = Some(task.clone());
+            if is_terminal_task_status(&task.status) {
+                if fixed_req_id.is_some() || !follow {
+                    return Ok(());
+                }
+                followed_done_req_ids.insert(req_id.to_string());
+                tracked_req_id = None;
+                announced_req_id = None;
+                last_task = None;
+                debug_log_offset = 0;
+            }
+        }
+    }
+
+    loop {
+        if let Some(limit) = deadline {
+            if Instant::now() >= limit {
+                bail!(
+                    "watch timeout: instance={} req_id={} provider={} timeout_s={}",
+                    instance,
+                    tracked_req_id.clone().unwrap_or_else(|| "-".to_string()),
+                    watch_provider.unwrap_or("-"),
+                    effective_timeout_s
+                );
+            }
+        }
+
+        if tracked_req_id.is_none() && !tail_like_quiet && !printed_waiting {
+            if as_json {
+                println!(
+                    "{}",
+                    serde_json::to_string(&json!({
+                        "event": "waiting",
+                        "instance": instance,
+                        "provider": watch_provider.unwrap_or_default(),
+                    }))?
+                );
+            } else {
+                println!(
+                    "watch waiting: instance={} provider={} req_id=-",
+                    instance,
+                    watch_provider.unwrap_or("-")
+                );
+            }
+            printed_waiting = true;
+        }
+
+        let mut sub_req = json!({
+            "type": format!("{}.subscribe", PROTOCOL_PREFIX),
+            "v": PROTOCOL_VERSION,
+            "id": format!("watch-{}-{}", std::process::id(), crate::io_utils::now_unix_ms()),
+            "token": token,
+            "follow": true,
+            "from_now": false,
+        });
+        if let Some(provider) = watch_provider {
+            sub_req["provider"] = Value::String(provider.to_string());
+        }
+        if fixed_req_id.is_some() {
+            sub_req["req_id"] = Value::String(fixed_req_id.unwrap_or_default().to_string());
+        }
+        if last_seq > 0 {
+            sub_req["from_seq"] = Value::Number(last_seq.into());
+        }
+
+        let mut reader = match connect_and_send(host, port, sub_req, 12.0) {
+            Ok(v) => v,
+            Err(err) => {
+                if let Some(limit) = deadline {
+                    if Instant::now() >= limit {
+                        return Err(err.context("connect ask.subscribe failed (timeout reached)"));
+                    }
+                }
+                thread::sleep(backoff);
+                backoff = (backoff.saturating_mul(2)).min(reconnect_cap);
+                continue;
+            }
+        };
+        backoff = Duration::from_millis(120);
+
+        loop {
+            if let Some(limit) = deadline {
+                if Instant::now() >= limit {
+                    bail!(
+                        "watch timeout: instance={} req_id={} provider={} timeout_s={}",
+                        instance,
+                        tracked_req_id.clone().unwrap_or_else(|| "-".to_string()),
+                        watch_provider.unwrap_or("-"),
+                        effective_timeout_s
+                    );
+                }
+            }
+
+            let mut line = String::new();
+            let n = match reader.read_line(&mut line) {
+                Ok(v) => v,
+                Err(err) => {
+                    if matches!(
+                        err.kind(),
+                        io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+                    ) {
+                        continue;
+                    }
+                    break;
+                }
+            };
+            if n == 0 {
+                break;
+            }
+
+            let value: Value = match serde_json::from_str(&line) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            let msg_type = value
+                .get("type")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            if msg_type == format!("{}.response", PROTOCOL_PREFIX) {
+                let parsed: AskResponse =
+                    serde_json::from_value(value).context("invalid ask.response in watch bus")?;
+                if parsed.exit_code != 0 {
+                    bail!(
+                        "watch subscribe failed: exit_code={} reply={}",
+                        parsed.exit_code,
+                        parsed.reply
+                    );
+                }
+                continue;
+            }
+            if msg_type != format!("{}.bus", PROTOCOL_PREFIX) {
+                continue;
+            }
+
+            let event: AskBusEvent =
+                serde_json::from_value(value).context("invalid ask.bus payload")?;
+            if event.seq > last_seq {
+                last_seq = event.seq;
+            }
+
+            if as_json {
+                println!("{}", serde_json::to_string(&event)?);
+            }
+
+            if event.event == "keepalive" || event.event == "subscribed" {
+                continue;
+            }
+
+            let event_req = event.req_id.as_deref();
+            if let Some(fixed) = fixed_req_id {
+                if event_req != Some(fixed) {
+                    continue;
+                }
+            }
+
+            if fixed_req_id.is_none() {
+                if tracked_req_id.is_none() {
+                    if let Some(rid) = event_req {
+                        let old_terminal = event.ts_unix_ms / 1000 < follow_started_at
+                            && is_terminal_bus_task_event(&event);
+                        if !old_terminal || !follow {
+                            tracked_req_id = Some(rid.to_string());
+                            announced_req_id = None;
+                            last_task = None;
+                            debug_log_offset = 0;
+                            printed_waiting = false;
+                        }
+                    }
+                } else if !follow {
+                    if let Some(rid) = event_req {
+                        if tracked_req_id.as_deref() != Some(rid) {
+                            continue;
+                        }
+                    }
+                } else if let (Some(current), Some(rid)) = (tracked_req_id.as_deref(), event_req) {
+                    if current != rid && !followed_done_req_ids.contains(current) {
+                        continue;
+                    }
+                }
+            }
+
+            if !as_json {
+                if let Some(active_req_id) = tracked_req_id.as_deref() {
+                    if announced_req_id.as_deref() != Some(active_req_id) {
+                        if let Some(provider_name) = watch_provider {
+                            if !tail_like_quiet {
+                                println!(
+                                    "watch tracking: instance={} provider={} req_id={}",
+                                    instance, provider_name, active_req_id
+                                );
+                            }
+                        } else if !tail_like_quiet {
+                            println!(
+                                "watch tracking: instance={} req_id={}",
+                                instance, active_req_id
+                            );
+                        }
+                        announced_req_id = Some(active_req_id.to_string());
+                    }
+                }
+            }
+
+            if with_provider_log && !as_json {
+                if let Some(delta) = event.delta.as_deref() {
+                    if !delta.trim().is_empty() {
+                        emit_watch_bus_delta(
+                            event.provider.as_deref().unwrap_or("provider"),
+                            event.req_id.as_deref().unwrap_or("-"),
+                            delta,
+                            false,
+                        )?;
+                    }
+                }
+            }
+
+            if !as_json
+                && !tail_like_quiet
+                && matches!(event.event.as_str(), "dispatched" | "start" | "done")
+            {
+                if let Some(active_req_id) = tracked_req_id.as_deref() {
+                    if let Some(cur) = load_task_by_req_id(project_dir, instance, active_req_id)? {
+                        if last_task.as_ref() != Some(&cur) {
+                            emit_watch_task(&cur, false)?;
+                            last_task = Some(cur);
+                        }
+                    }
+                }
+            }
+
+            if with_debug_log {
+                if let Some(active_req_id) = tracked_req_id.as_deref() {
+                    let debug_log = logs_instance_dir(project_dir, instance).join("debug.log");
+                    tail_log_for_req(
+                        &debug_log,
+                        active_req_id,
+                        "debug",
+                        &mut debug_log_offset,
+                        as_json,
+                    )?;
+                }
+            }
+
+            if is_terminal_bus_task_event(&event) {
+                let done_req_id = event.req_id.clone().unwrap_or_else(|| "-".to_string());
+                if follow && fixed_req_id.is_none() && watch_provider.is_some() {
+                    followed_done_req_ids.insert(done_req_id);
+                    tracked_req_id = None;
+                    announced_req_id = None;
+                    last_task = None;
+                    debug_log_offset = 0;
+                    printed_waiting = false;
+                    continue;
+                }
+                return Ok(());
+            }
+        }
+    }
+}
+
+fn is_terminal_bus_task_event(event: &AskBusEvent) -> bool {
+    if event.event != "done" {
+        return false;
+    }
+    if let Some(status) = event.status.as_deref() {
+        return is_terminal_task_status(status);
+    }
+    event.exit_code.map(|code| code != 0).unwrap_or(false)
+}
+
+fn emit_watch_bus_delta(source: &str, req_id: &str, delta: &str, as_json: bool) -> Result<()> {
+    if as_json {
+        println!(
+            "{}",
+            serde_json::to_string(&json!({
+                "event": "log",
+                "source": source,
+                "req_id": req_id,
+                "line": delta,
+            }))?
+        );
+        return Ok(());
+    }
+
+    let normalized = delta.replace('\r', "");
+    let mut emitted = false;
+    for line in normalized.lines() {
+        let line = line.trim_end();
+        if line.is_empty() {
+            continue;
+        }
+        emitted = true;
+        println!("[{}] [STREAM] req_id={} {}", source, req_id, line);
+    }
+    if !emitted {
+        let tail = normalized.trim();
+        if !tail.is_empty() {
+            println!("[{}] [STREAM] req_id={} {}", source, req_id, tail);
+        }
+    }
+    Ok(())
 }
 
 fn load_task_by_req_id(
@@ -2725,13 +3163,14 @@ mod tests {
 
     use super::{
         cleanup_inflight_tasks, debug_watch_pane_percent, is_in_flight_status,
-        is_terminal_task_status, load_task_by_req_id, provider_start_cmd,
-        resolve_debug_watch_provider, select_watch_req_for_provider,
+        is_terminal_bus_task_event, is_terminal_task_status, load_task_by_req_id,
+        provider_start_cmd, resolve_debug_watch_provider, select_watch_req_for_provider,
         select_watch_req_for_provider_follow, split_layout_groups, split_percent_for_equal_stack,
-        task_file_for_req_id,
+        task_file_for_req_id, watch_bus_enabled,
     };
     use crate::io_utils::{now_unix, now_unix_ms, update_task_status, write_json_pretty};
     use crate::layout::{ensure_project_layout, tasks_instance_dir};
+    use crate::types::AskBusEvent;
 
     fn env_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -2748,6 +3187,47 @@ mod tests {
         assert!(is_terminal_task_status("canceled"));
         assert!(is_terminal_task_status("incomplete"));
         assert!(!is_terminal_task_status("running"));
+    }
+
+    #[test]
+    fn watch_bus_enabled_respects_env() {
+        let _guard = env_lock().lock().expect("lock env");
+        std::env::remove_var("RCCB_WATCH_BUS");
+        assert!(watch_bus_enabled());
+
+        std::env::set_var("RCCB_WATCH_BUS", "0");
+        assert!(!watch_bus_enabled());
+
+        std::env::set_var("RCCB_WATCH_BUS", "false");
+        assert!(!watch_bus_enabled());
+
+        std::env::set_var("RCCB_WATCH_BUS", "1");
+        assert!(watch_bus_enabled());
+
+        std::env::remove_var("RCCB_WATCH_BUS");
+    }
+
+    #[test]
+    fn terminal_bus_event_matches_done_status() {
+        let mut event = AskBusEvent {
+            msg_type: "ask.bus".to_string(),
+            v: 1,
+            id: "watch-1".to_string(),
+            seq: 1,
+            ts_unix_ms: 1,
+            req_id: Some("req-1".to_string()),
+            provider: Some("opencode".to_string()),
+            event: "done".to_string(),
+            delta: None,
+            reply: None,
+            status: Some("completed".to_string()),
+            exit_code: Some(0),
+            meta: None,
+        };
+        assert!(is_terminal_bus_task_event(&event));
+
+        event.event = "delta".to_string();
+        assert!(!is_terminal_bus_task_event(&event));
     }
 
     #[test]
