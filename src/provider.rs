@@ -39,6 +39,18 @@ enum ExecMode {
     Stub,
 }
 
+#[derive(Debug, Clone)]
+pub enum PaneBackend {
+    Tmux,
+    Wezterm { bin: String },
+}
+
+#[derive(Debug, Clone)]
+pub struct PaneDispatchTarget {
+    pub backend: PaneBackend,
+    pub pane_id: String,
+}
+
 const CCB_AUTOSTART_ENV_KEYS: &[&str] = &[
     "CCB_ASKD_AUTOSTART",
     "CCB_CASKD_AUTOSTART",
@@ -95,6 +107,7 @@ pub fn execute_provider_request(
     req_id: &str,
     mut on_delta: impl FnMut(String),
     should_cancel: impl Fn() -> bool,
+    pane_target: Option<&PaneDispatchTarget>,
 ) -> Result<ProviderExecResult> {
     let mode = execution_mode();
     match mode {
@@ -166,6 +179,21 @@ pub fn execute_provider_request(
             } else {
                 req.message.trim_end().to_string()
             };
+
+            if let Some(target) = pane_target {
+                if native_should_use_pane_exec(&req.provider) {
+                    let pane_prompt = wrap_prompt_for_provider(&req.provider, &req.message, req_id);
+                    return execute_native_via_pane(
+                        req_id,
+                        &pane_prompt,
+                        effective_timeout_s,
+                        effective_quiet,
+                        target,
+                        &mut on_delta,
+                        &should_cancel,
+                    );
+                }
+            }
 
             let mut cmd = Command::new(&binary);
             cmd.current_dir(&req.work_dir)
@@ -254,6 +282,300 @@ fn timeout_for_request(timeout_s: f64) -> Option<Duration> {
     } else {
         Some(Duration::from_secs_f64(timeout_s.max(0.1) + 5.0))
     }
+}
+
+fn native_should_use_pane_exec(provider: &str) -> bool {
+    let key = format!("RCCB_{}_PANE_EXEC", provider.trim().to_ascii_uppercase());
+    if let Some(v) = parse_env_bool(&key) {
+        return v;
+    }
+    if let Some(v) = parse_env_bool("RCCB_PANE_EXEC") {
+        return v;
+    }
+    matches!(provider.trim().to_ascii_lowercase().as_str(), "opencode")
+}
+
+fn execute_native_via_pane(
+    req_id: &str,
+    pane_prompt: &str,
+    effective_timeout_s: f64,
+    effective_quiet: bool,
+    target: &PaneDispatchTarget,
+    on_delta: &mut dyn FnMut(String),
+    should_cancel: &dyn Fn() -> bool,
+) -> Result<ProviderExecResult> {
+    let started = Instant::now();
+    let poll_ms = parse_env_f64("RCCB_PANE_POLL_MS")
+        .unwrap_or(300.0)
+        .clamp(80.0, 3000.0) as u64;
+    let capture_lines = parse_env_f64("RCCB_PANE_CAPTURE_LINES")
+        .unwrap_or(800.0)
+        .clamp(200.0, 4000.0) as i32;
+
+    let mut previous = capture_pane_text(target, capture_lines)
+        .with_context(|| format!("capture pane before dispatch failed: pane={}", target.pane_id))?;
+    send_text_to_pane(target, pane_prompt)
+        .with_context(|| format!("send task to pane failed: pane={}", target.pane_id))?;
+
+    let timeout = if effective_timeout_s < 0.0 {
+        None
+    } else {
+        Some(Duration::from_secs_f64(effective_timeout_s.max(0.1)))
+    };
+
+    let mut transcript = String::new();
+    loop {
+        if should_cancel() {
+            return Ok(ProviderExecResult {
+                exit_code: 130,
+                reply: "request canceled".to_string(),
+                done_seen: false,
+                done_ms: None,
+                anchor_seen: true,
+                anchor_ms: Some(0),
+                fallback_scan: false,
+                status: "canceled".to_string(),
+                stderr: String::new(),
+                effective_timeout_s,
+                effective_quiet,
+            });
+        }
+
+        if let Some(limit) = timeout {
+            if started.elapsed() >= limit {
+                return Ok(ProviderExecResult {
+                    exit_code: 2,
+                    reply: "request timeout".to_string(),
+                    done_seen: false,
+                    done_ms: None,
+                    anchor_seen: true,
+                    anchor_ms: Some(0),
+                    fallback_scan: false,
+                    status: "timeout".to_string(),
+                    stderr: String::new(),
+                    effective_timeout_s,
+                    effective_quiet,
+                });
+            }
+        }
+
+        thread::sleep(Duration::from_millis(poll_ms));
+
+        let current = match capture_pane_text(target, capture_lines) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        let delta = pane_output_delta(&previous, &current);
+        previous = current.clone();
+
+        if !delta.is_empty() {
+            transcript.push_str(&delta);
+            if !transcript.ends_with('\n') {
+                transcript.push('\n');
+            }
+            if !effective_quiet {
+                on_delta(delta);
+            }
+        }
+
+        if contains_done_line_for_req(&transcript, req_id) || contains_done_line_for_req(&current, req_id)
+        {
+            break;
+        }
+    }
+
+    let mut reply = extract_reply_for_req(&transcript, req_id);
+    if reply.trim().is_empty() {
+        reply = extract_reply_for_req(&previous, req_id);
+    }
+    if reply.trim().is_empty() {
+        reply = transcript.trim().to_string();
+    }
+
+    Ok(ProviderExecResult {
+        exit_code: 0,
+        reply,
+        done_seen: true,
+        done_ms: Some(started.elapsed().as_millis() as u64),
+        anchor_seen: true,
+        anchor_ms: Some(0),
+        fallback_scan: false,
+        status: "completed".to_string(),
+        stderr: String::new(),
+        effective_timeout_s,
+        effective_quiet,
+    })
+}
+
+fn capture_pane_text(target: &PaneDispatchTarget, start_line: i32) -> Result<String> {
+    match &target.backend {
+        PaneBackend::Tmux => {
+            let output = Command::new("tmux")
+                .args([
+                    "capture-pane",
+                    "-p",
+                    "-t",
+                    target.pane_id.trim(),
+                    "-S",
+                    &format!("-{}", start_line.abs()),
+                ])
+                .output()
+                .context("tmux capture-pane failed")?;
+            if !output.status.success() {
+                bail!(
+                    "tmux capture-pane failed: pane={} status={}",
+                    target.pane_id,
+                    output.status
+                );
+            }
+            Ok(String::from_utf8_lossy(&output.stdout).to_string())
+        }
+        PaneBackend::Wezterm { bin } => {
+            let output = Command::new(bin)
+                .args([
+                    "cli",
+                    "get-text",
+                    "--pane-id",
+                    target.pane_id.trim(),
+                    "--start-line",
+                    &format!("-{}", start_line.abs()),
+                ])
+                .output()
+                .with_context(|| format!("wezterm get-text failed: bin={}", bin))?;
+            if !output.status.success() {
+                bail!(
+                    "wezterm get-text failed: pane={} status={}",
+                    target.pane_id,
+                    output.status
+                );
+            }
+            Ok(String::from_utf8_lossy(&output.stdout).to_string())
+        }
+    }
+}
+
+fn send_text_to_pane(target: &PaneDispatchTarget, text: &str) -> Result<()> {
+    let payload = text.replace('\r', "");
+    match &target.backend {
+        PaneBackend::Tmux => {
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_else(|_| Duration::from_secs(0))
+                .as_nanos();
+            let buffer_name = format!(
+                "rccb-{}-{}",
+                std::process::id(),
+                nanos
+            );
+            let mut load = Command::new("tmux")
+                .args(["load-buffer", "-b", &buffer_name, "-"])
+                .stdin(Stdio::piped())
+                .spawn()
+                .context("tmux load-buffer spawn failed")?;
+            if let Some(stdin) = load.stdin.as_mut() {
+                stdin
+                    .write_all(payload.as_bytes())
+                    .context("tmux load-buffer write failed")?;
+            }
+            let status = load.wait().context("tmux load-buffer wait failed")?;
+            if !status.success() {
+                bail!("tmux load-buffer failed: status={}", status);
+            }
+            let paste_status = Command::new("tmux")
+                .args([
+                    "paste-buffer",
+                    "-p",
+                    "-t",
+                    target.pane_id.trim(),
+                    "-b",
+                    &buffer_name,
+                ])
+                .status()
+                .context("tmux paste-buffer failed")?;
+            let _ = Command::new("tmux")
+                .args(["delete-buffer", "-b", &buffer_name])
+                .status();
+            if !paste_status.success() {
+                bail!("tmux paste-buffer failed: status={}", paste_status);
+            }
+            let enter_status = Command::new("tmux")
+                .args(["send-keys", "-t", target.pane_id.trim(), "Enter"])
+                .status()
+                .context("tmux send-keys enter failed")?;
+            if !enter_status.success() {
+                bail!("tmux send-keys enter failed: status={}", enter_status);
+            }
+            Ok(())
+        }
+        PaneBackend::Wezterm { bin } => {
+            let mut send = Command::new(bin)
+                .args(["cli", "send-text", "--pane-id", target.pane_id.trim()])
+                .stdin(Stdio::piped())
+                .spawn()
+                .with_context(|| format!("wezterm send-text spawn failed: bin={}", bin))?;
+            if let Some(stdin) = send.stdin.as_mut() {
+                stdin
+                    .write_all(payload.as_bytes())
+                    .context("wezterm send-text write failed")?;
+            }
+            let status = send.wait().context("wezterm send-text wait failed")?;
+            if !status.success() {
+                bail!("wezterm send-text failed: status={}", status);
+            }
+
+            let mut enter = Command::new(bin)
+                .args([
+                    "cli",
+                    "send-text",
+                    "--pane-id",
+                    target.pane_id.trim(),
+                    "--no-paste",
+                ])
+                .stdin(Stdio::piped())
+                .spawn()
+                .with_context(|| format!("wezterm send-enter spawn failed: bin={}", bin))?;
+            if let Some(stdin) = enter.stdin.as_mut() {
+                stdin
+                    .write_all(b"\r")
+                    .context("wezterm send-enter write failed")?;
+            }
+            let enter_status = enter.wait().context("wezterm send-enter wait failed")?;
+            if !enter_status.success() {
+                bail!("wezterm send-enter failed: status={}", enter_status);
+            }
+            Ok(())
+        }
+    }
+}
+
+fn pane_output_delta(previous: &str, current: &str) -> String {
+    if current.is_empty() {
+        return String::new();
+    }
+    if previous.is_empty() {
+        return current.to_string();
+    }
+    if let Some(rest) = current.strip_prefix(previous) {
+        return rest.to_string();
+    }
+
+    let prev_lines: Vec<&str> = previous.lines().collect();
+    let curr_lines: Vec<&str> = current.lines().collect();
+    if prev_lines.is_empty() {
+        return current.to_string();
+    }
+    if curr_lines.is_empty() {
+        return String::new();
+    }
+
+    let max_overlap = prev_lines.len().min(curr_lines.len());
+    for overlap in (1..=max_overlap).rev() {
+        if prev_lines[prev_lines.len() - overlap..] == curr_lines[..overlap] {
+            return curr_lines[overlap..].join("\n");
+        }
+    }
+    current.to_string()
 }
 
 fn run_stub(req: &AskRequest, req_id: &str) -> ProviderExecResult {

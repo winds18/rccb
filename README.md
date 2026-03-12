@@ -43,6 +43,7 @@ rccb claude codex gemini opencode droid
    - `RCCB_PANE_FEED=1`：启用 feed tail 镜像（调试用，默认关闭）
    - `RCCB_PANE_STATUS_MIRROR=1`：将任务状态镜像到 pane（调试用，默认关闭）
    - `RCCB_WATCH_MAX_LOG_LINES=<N>`：`watch` 每次刷新最多展示 N 行日志（默认 10，避免刷屏）
+   - `RCCB_OPENCODE_PANE_EXEC=0`：关闭 opencode 的 pane 执行（默认开启；无 pane 时自动回退后台 native）
 
 provider CLI 启动命令可覆盖：
 
@@ -152,6 +153,8 @@ rccb --project-dir . watch --instance team-a --provider opencode --with-provider
 
 # 常驻追踪（当前任务结束后继续等待下一条）
 rccb --project-dir . watch --instance team-a --provider opencode --with-provider-log --follow
+
+# --follow + --provider 默认不超时（tail 风格）
 
 # 观察状态 + 关联日志（便于深度排障）
 rccb --project-dir . watch \

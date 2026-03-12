@@ -196,6 +196,7 @@
    - 自动确保 `default` 实例 daemon 在线（后台启动）
    - 在 `tmux/wezterm` 环境自动拉起 provider CLI pane
    - 默认静默后台通信，不向 pane 输入区注入任务文本/通知
+   - opencode 在存在 pane 元数据时默认走 pane 执行（自动回车），无 pane 时回退后台 native 执行
    - pane 规则：`<=4` 左侧仅 orchestrator；`=5` 左侧分上下，其余在右侧且右侧等分
    - orchestrator 退出即结束本次 `rccb` 进程，并执行清理（停止 daemon + 回收派生 pane）
    - 非 `tmux/wezterm` 环境仅确保 daemon 在线并提示如何继续
@@ -222,6 +223,7 @@
 5. `rccb watch --instance <id> --provider <provider> [--with-provider-log] [--with-debug-log] [--timeout-s <sec>]`
    - 自动跟踪该 provider 最新任务（优先 queued/running）
    - 可追加 `--follow` 进入常驻追踪模式（任务结束后继续等待下一条）
+   - `--follow + --provider` 默认不超时
    - 文本模式下日志展示默认节流，每次刷新最多 10 行（可用 `RCCB_WATCH_MAX_LOG_LINES` 调整）
 6. `status --as-json` 额外返回 `in_flight_count` 与 `in_flight_req_ids`
 

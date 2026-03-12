@@ -1561,11 +1561,17 @@ pub fn cmd_watch(
         bail!("需要提供 --req-id 或 --provider");
     }
 
+    let effective_timeout_s = if follow && fixed_req_id.is_none() && watch_provider.is_some() {
+        -1.0
+    } else {
+        timeout_s
+    };
+
     let poll = Duration::from_millis(poll_ms.max(50));
-    let deadline = if timeout_s <= 0.0 {
+    let deadline = if effective_timeout_s <= 0.0 {
         None
     } else {
-        Some(Instant::now() + Duration::from_secs_f64(timeout_s.max(0.1)))
+        Some(Instant::now() + Duration::from_secs_f64(effective_timeout_s.max(0.1)))
     };
 
     let mut last_task: Option<TaskView> = None;
@@ -1586,7 +1592,7 @@ pub fn cmd_watch(
                     instance,
                     current_req_id.unwrap_or_else(|| "-".to_string()),
                     watch_provider.clone().unwrap_or_else(|| "-".to_string()),
-                    timeout_s
+                    effective_timeout_s
                 );
             }
         }

@@ -29,7 +29,9 @@ use crate::layout::{
     tmp_instance_dir,
 };
 use crate::protocol::{write_json_event_line, write_json_line, write_json_value_line};
-use crate::provider::execute_provider_request;
+use crate::provider::{
+    execute_provider_request, PaneBackend as ProviderPaneBackend, PaneDispatchTarget,
+};
 use crate::types::{
     AskEvent, AskRequest, AskResponse, DaemonContext, InstanceState, OrchestrationArtifacts,
     OrchestrationPlan, PendingStream, WorkerEvent, WorkerTask,
@@ -891,6 +893,9 @@ fn worker_loop(
         let provider_for_stream = req.provider.clone();
         let cancel_flag = Arc::clone(&task.cancel_flag);
         let mut stream_delta_idx = 0usize;
+        let pane_exec_target = resolve_provider_pane_dispatch_target(&context, &req.provider)
+            .ok()
+            .flatten();
         let exec = execute_provider_request(
             &req,
             &task.req_id,
@@ -919,6 +924,7 @@ fn worker_loop(
                 }
             },
             || cancel_flag.load(Ordering::Relaxed),
+            pane_exec_target.as_ref(),
         );
 
         let done_at = now_unix();
@@ -1439,6 +1445,23 @@ fn resolve_provider_pane_target(
     };
 
     Ok(Some(PaneRelayTarget { backend, pane_id }))
+}
+
+fn resolve_provider_pane_dispatch_target(
+    context: &DaemonContext,
+    provider: &str,
+) -> Result<Option<PaneDispatchTarget>> {
+    let Some(target) = resolve_provider_pane_target(context, provider)? else {
+        return Ok(None);
+    };
+    let backend = match target.backend {
+        PaneRelayBackend::Tmux => ProviderPaneBackend::Tmux,
+        PaneRelayBackend::Wezterm { bin } => ProviderPaneBackend::Wezterm { bin },
+    };
+    Ok(Some(PaneDispatchTarget {
+        backend,
+        pane_id: target.pane_id,
+    }))
 }
 
 fn pane_status_mirror_enabled() -> bool {
