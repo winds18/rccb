@@ -1540,6 +1540,7 @@ pub fn cmd_watch(
     provider: Option<&str>,
     poll_ms: u64,
     timeout_s: f64,
+    follow: bool,
     with_provider_log: bool,
     with_debug_log: bool,
     as_json: bool,
@@ -1680,6 +1681,15 @@ pub fn cmd_watch(
                 }
 
                 if is_terminal_task_status(&cur.status) {
+                    if follow && fixed_req_id.is_none() && watch_provider.is_some() {
+                        current_req_id = None;
+                        announced_req_id = None;
+                        last_task = None;
+                        provider_log_offset = 0;
+                        debug_log_offset = 0;
+                        printed_waiting = false;
+                        continue;
+                    }
                     return Ok(());
                 }
             }

@@ -221,6 +221,7 @@
 4. `rccb watch --instance <id> --req-id <rid> [--with-provider-log] [--with-debug-log] [--timeout-s <sec>]`
 5. `rccb watch --instance <id> --provider <provider> [--with-provider-log] [--with-debug-log] [--timeout-s <sec>]`
    - 自动跟踪该 provider 最新任务（优先 queued/running）
+   - 可追加 `--follow` 进入常驻追踪模式（任务结束后继续等待下一条）
 6. `status --as-json` 额外返回 `in_flight_count` 与 `in_flight_req_ids`
 
 ### 5.4 调试

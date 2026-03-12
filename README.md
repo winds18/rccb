@@ -149,6 +149,9 @@ rccb --project-dir . watch --instance team-a --req-id req-123
 # 按 provider 追踪最新任务（无需手动传 req_id）
 rccb --project-dir . watch --instance team-a --provider opencode --with-provider-log
 
+# 常驻追踪（当前任务结束后继续等待下一条）
+rccb --project-dir . watch --instance team-a --provider opencode --with-provider-log --follow
+
 # 观察状态 + 关联日志（便于深度排障）
 rccb --project-dir . watch \
   --instance team-a \

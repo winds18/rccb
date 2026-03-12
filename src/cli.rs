@@ -22,6 +22,7 @@ const HELP_EXAMPLES: &str = r#"示例：
      rccb --project-dir . ask --instance team-a --provider opencode --caller claude --async --req-id req-1 "后台执行"
      rccb --project-dir . watch --instance team-a --req-id req-1 --with-provider-log --with-debug-log
      rccb --project-dir . watch --instance team-a --provider opencode --with-provider-log
+     rccb --project-dir . watch --instance team-a --provider opencode --with-provider-log --follow
 
   7) 查看运行态：
      rccb --project-dir . status --as-json
@@ -155,6 +156,13 @@ pub enum Command {
 
         #[arg(long, default_value_t = 120.0, help = "超时时间（秒，<=0 表示不超时）")]
         timeout_s: f64,
+
+        #[arg(
+            long,
+            default_value_t = false,
+            help = "持续追踪模式：任务结束后继续等待下一条（通常与 --provider 搭配）"
+        )]
+        follow: bool,
 
         #[arg(
             long,
