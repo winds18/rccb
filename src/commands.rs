@@ -56,10 +56,10 @@ pub fn cmd_init(project_dir: &Path, force: bool) -> Result<()> {
 
     let profile_templates = write_native_profile_templates(project_dir, force)?;
 
-    println!("initialized: {}", rccb_dir(project_dir).display());
-    println!("template: {}", config_path.display());
+    println!("初始化完成：{}", rccb_dir(project_dir).display());
+    println!("配置模板：{}", config_path.display());
     for p in profile_templates {
-        println!("native profile template: {}", p.display());
+        println!("native profile 模板：{}", p.display());
     }
     Ok(())
 }
@@ -124,7 +124,7 @@ pub fn cmd_start(
 
 pub fn cmd_external_provider_launch(project_dir: &Path, raw: Vec<String>) -> Result<()> {
     if raw.is_empty() {
-        bail!("missing providers. example: rccb claude codex gemini opencode droid");
+        bail!("缺少 provider 参数。示例：rccb claude codex gemini opencode droid");
     }
 
     let op = raw[0].trim().to_ascii_lowercase();
@@ -140,13 +140,13 @@ pub fn cmd_external_provider_launch(project_dir: &Path, raw: Vec<String>) -> Res
 
     if raw.iter().any(|x| x.starts_with('-')) {
         bail!(
-            "external provider shortcut accepts providers only. use `rccb start --instance <id> <providers...>` for options"
+            "快捷入口仅接受 provider 列表；如需参数请使用 `rccb start --instance <id> <providers...>`"
         );
     }
 
     let normalized = normalize_provider_list(&raw)?;
     if normalized.is_empty() {
-        bail!("at least one provider required");
+        bail!("至少需要一个 provider");
     }
     let effective_debug = resolve_start_debug(project_dir, "default", env_debug_enabled());
     ensure_project_layout(project_dir)?;
@@ -157,15 +157,13 @@ pub fn cmd_external_provider_launch(project_dir: &Path, raw: Vec<String>) -> Res
     }
 
     println!(
-        "daemon ready: project={} instance=default providers={}",
+        "daemon 已就绪：project={} instance=default providers={}",
         project_dir.display(),
         normalized.join(",")
     );
+    println!("未检测到终端后端（tmux/wezterm），未自动拉起 provider CLI pane。");
     println!(
-        "terminal backend not detected. run inside tmux/wezterm to auto-launch provider CLIs."
-    );
-    println!(
-        "you can still ask via: rccb --project-dir . ask --instance default --provider {} --caller {} \"...\"",
+        "你仍可通过以下方式发起请求：rccb --project-dir . ask --instance default --provider {} --caller {} \"...\"",
         normalized
             .first()
             .cloned()
@@ -245,7 +243,7 @@ fn cmd_legacy_ping_alias(project_dir: &Path, provider: &str) -> Result<()> {
         resolve_start_debug(project_dir, "default", false),
     )?;
     cmd_ping(project_dir, "default", 1.0)?;
-    println!("provider={} ready", provider);
+    println!("provider={} 已就绪", provider);
     Ok(())
 }
 
@@ -273,7 +271,7 @@ fn cmd_legacy_pend_alias(project_dir: &Path, provider: &str) -> Result<()> {
             }
         }
         println!(
-            "latest task has no reply yet: provider={} req_id={} status={}",
+            "最近任务尚无回复：provider={} req_id={} status={}",
             provider,
             task.req_id.unwrap_or_else(|| "-".to_string()),
             task.status
@@ -281,7 +279,7 @@ fn cmd_legacy_pend_alias(project_dir: &Path, provider: &str) -> Result<()> {
         return Ok(());
     }
 
-    println!("no task found for provider={} instance=default", provider);
+    println!("未找到任务：provider={} instance=default", provider);
     Ok(())
 }
 
@@ -294,7 +292,7 @@ fn ensure_default_daemon_running(
         return Ok(());
     }
 
-    let exe = env::current_exe().context("resolve current executable failed")?;
+    let exe = env::current_exe().context("获取当前可执行文件路径失败")?;
     let launch_log = logs_instance_dir(project_dir, "default").join("daemon.launch.log");
     if let Some(parent) = launch_log.parent() {
         fs::create_dir_all(parent)?;
@@ -303,10 +301,8 @@ fn ensure_default_daemon_running(
         .create(true)
         .append(true)
         .open(&launch_log)
-        .with_context(|| format!("open launch log failed: {}", launch_log.display()))?;
-    let stderr = stdout
-        .try_clone()
-        .context("clone launch log handle failed")?;
+        .with_context(|| format!("打开启动日志失败：{}", launch_log.display()))?;
+    let stderr = stdout.try_clone().context("克隆启动日志句柄失败")?;
 
     let mut cmd = ProcessCommand::new(exe);
     cmd.arg("--project-dir")
@@ -330,7 +326,7 @@ fn ensure_default_daemon_running(
 
     let _child = cmd
         .spawn()
-        .with_context(|| format!("spawn daemon failed, see {}", launch_log.display()))?;
+        .with_context(|| format!("启动 daemon 失败，请查看 {}", launch_log.display()))?;
 
     let deadline = Instant::now() + Duration::from_secs(8);
     while Instant::now() < deadline {
@@ -340,10 +336,7 @@ fn ensure_default_daemon_running(
         thread::sleep(Duration::from_millis(120));
     }
 
-    bail!(
-        "daemon startup timeout. inspect launch log: {}",
-        launch_log.display()
-    )
+    bail!("daemon 启动超时，请检查日志：{}", launch_log.display())
 }
 
 fn is_daemon_ready(project_dir: &Path, instance: &str) -> bool {
@@ -368,14 +361,14 @@ fn ping_daemon_state(state: &InstanceState, timeout_s: f64) -> Result<()> {
     let host = state
         .daemon_host
         .clone()
-        .ok_or_else(|| anyhow!("missing daemon_host"))?;
+        .ok_or_else(|| anyhow!("缺少 daemon_host"))?;
     let port = state
         .daemon_port
-        .ok_or_else(|| anyhow!("missing daemon_port"))?;
+        .ok_or_else(|| anyhow!("缺少 daemon_port"))?;
     let token = state
         .daemon_token
         .clone()
-        .ok_or_else(|| anyhow!("missing daemon_token"))?;
+        .ok_or_else(|| anyhow!("缺少 daemon_token"))?;
 
     let req = json!({
         "type": format!("{}.ping", PROTOCOL_PREFIX),
@@ -389,7 +382,7 @@ fn ping_daemon_state(state: &InstanceState, timeout_s: f64) -> Result<()> {
         .and_then(|v| v.as_str())
         .unwrap_or_default();
     if msg_type != format!("{}.pong", PROTOCOL_PREFIX) {
-        bail!("unexpected probe response type: {}", msg_type);
+        bail!("探活响应类型异常：{}", msg_type);
     }
     Ok(())
 }
@@ -431,11 +424,11 @@ fn detect_launch_backend() -> Result<Option<LaunchBackend>> {
     let current_pane = run_capture(
         "tmux",
         &["display-message", "-p", "#{pane_id}"],
-        "resolve current tmux pane failed",
+        "获取当前 tmux pane 失败",
     )?;
     let pane = current_pane.trim().to_string();
     if pane.is_empty() {
-        bail!("cannot resolve current tmux pane id");
+        bail!("无法解析当前 tmux pane id");
     }
     Ok(Some(LaunchBackend::Tmux { anchor_pane: pane }))
 }
@@ -446,7 +439,7 @@ fn run_interactive_layout(
     backend: LaunchBackend,
 ) -> Result<()> {
     if providers.is_empty() {
-        bail!("at least one provider required");
+        bail!("至少需要一个 provider");
     }
 
     let orchestrator = providers[0].clone();
@@ -471,12 +464,12 @@ fn run_interactive_layout(
     };
 
     if let Err(err) = cleanup_after_orchestrator(project_dir, &backend, &spawned_panes) {
-        eprintln!("warn: cleanup failed: {}", err);
+        eprintln!("警告：清理失败：{}", err);
     }
 
     let code = run_result?;
     if code != 0 {
-        bail!("orchestrator `{}` exited with code {}", orchestrator, code);
+        bail!("编排者 `{}` 已退出，退出码 {}", orchestrator, code);
     }
     Ok(())
 }
@@ -546,7 +539,7 @@ fn spawn_tmux_pane(
     let flag = match direction {
         "right" => "-h",
         "bottom" => "-v",
-        other => bail!("unsupported tmux split direction: {}", other),
+        other => bail!("不支持的 tmux 分屏方向：{}", other),
     };
 
     let base = vec!["split-window", "-P", "-F", "#{pane_id}", "-t", parent, flag];
@@ -557,10 +550,10 @@ fn spawn_tmux_pane(
     }
     args.push(full_cmd);
     let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-    let pane_id = run_capture("tmux", &arg_refs, "tmux split-window failed")?;
+    let pane_id = run_capture("tmux", &arg_refs, "tmux split-window 失败")?;
     let pane_id = pane_id.trim().to_string();
     if pane_id.is_empty() {
-        bail!("tmux split-window did not return pane id");
+        bail!("tmux split-window 未返回 pane id");
     }
 
     let _ = run_simple(
@@ -578,7 +571,7 @@ fn spawn_tmux_pane(
         ],
     );
     println!(
-        "launched provider cli: provider={} backend=tmux pane={}",
+        "已拉起 provider CLI：provider={} backend=tmux pane={}",
         provider, pane_id
     );
     Ok(pane_id)
@@ -643,14 +636,14 @@ fn spawn_wezterm_pane(
     let pane_id = run_capture(
         wezterm_bin,
         &arg_refs,
-        "wezterm split-pane failed (check WEZTERM_PANE / wezterm cli availability)",
+        "wezterm split-pane 失败（请检查 WEZTERM_PANE 和 wezterm cli 可用性）",
     )?;
     let pane_id = pane_id.trim().to_string();
     if pane_id.is_empty() {
-        bail!("wezterm split-pane did not return pane id");
+        bail!("wezterm split-pane 未返回 pane id");
     }
     println!(
-        "launched provider cli: provider={} backend=wezterm pane={}",
+        "已拉起 provider CLI：provider={} backend=wezterm pane={}",
         provider, pane_id
     );
     Ok(pane_id)
@@ -669,12 +662,12 @@ fn split_percent_for_equal_stack(total_items: usize, next_index: usize) -> u8 {
 
 fn run_orchestrator_foreground(provider: &str) -> Result<i32> {
     let cmd = provider_start_cmd(provider);
-    println!("orchestrator entering foreground: provider={}", provider);
+    println!("编排者进入前台：provider={}", provider);
     let status = ProcessCommand::new(resolve_shell_path())
         .arg("-lc")
         .arg(&cmd)
         .status()
-        .with_context(|| format!("launch orchestrator command failed: {}", cmd))?;
+        .with_context(|| format!("启动编排者命令失败：{}", cmd))?;
     Ok(status.code().unwrap_or(1))
 }
 
@@ -807,11 +800,11 @@ pub fn cmd_status(project_dir: &Path, instance: Option<&str>, as_json: bool) -> 
     }
 
     if output.is_empty() {
-        println!("no instances found for project={}", project_dir.display());
+        println!("未找到实例：project={}", project_dir.display());
         return Ok(());
     }
 
-    println!("project={}", project_dir.display());
+    println!("项目：{}", project_dir.display());
     for s in output {
         println!(
             "- instance={} pid={} status={} started={} last_heartbeat={} stopped={}",
@@ -826,7 +819,7 @@ pub fn cmd_status(project_dir: &Path, instance: Option<&str>, as_json: bool) -> 
         );
         println!(
             "  debug={} debug_log={}",
-            if s.debug_enabled { "on" } else { "off" },
+            if s.debug_enabled { "开" } else { "关" },
             logs_instance_dir(project_dir, &s.instance_id)
                 .join("debug.log")
                 .display()
@@ -948,17 +941,17 @@ pub fn cmd_mounted(project_dir: &Path, instance: Option<&str>, as_json: bool) ->
     }
 
     if mounted_views.is_empty() {
-        println!("no instances found for project={}", project_dir.display());
+        println!("未找到实例：project={}", project_dir.display());
         return Ok(());
     }
 
-    println!("project={}", project_dir.display());
+    println!("项目：{}", project_dir.display());
     for item in mounted_views {
         println!(
             "- instance={} status={} daemon_online={}",
             item.instance,
             item.status,
-            if item.daemon_online { "yes" } else { "no" }
+            if item.daemon_online { "是" } else { "否" }
         );
         if item.providers.is_empty() {
             println!("  providers=-");
@@ -969,8 +962,8 @@ pub fn cmd_mounted(project_dir: &Path, instance: Option<&str>, as_json: bool) ->
                 "  - provider={} role={} mounted={} session_exists={} session_file={}",
                 p.provider,
                 p.role,
-                if p.mounted { "yes" } else { "no" },
-                if p.session_exists { "yes" } else { "no" },
+                if p.mounted { "是" } else { "否" },
+                if p.session_exists { "是" } else { "否" },
                 p.session_file
             );
         }
@@ -1021,11 +1014,11 @@ pub fn cmd_tasks(
     }
 
     if items.is_empty() {
-        println!("no tasks found for project={}", project_dir.display());
+        println!("未找到任务：project={}", project_dir.display());
         return Ok(());
     }
 
-    println!("project={} tasks={}", project_dir.display(), items.len());
+    println!("项目={} 任务数={}", project_dir.display(), items.len());
     for t in items {
         println!(
             "- instance={} task_id={} req_id={} provider={} status={} exit={} created={} started={} completed={}",
