@@ -106,6 +106,13 @@ pub enum Command {
         #[arg(long, default_value_t = false)]
         stream: bool,
 
+        #[arg(
+            long = "async",
+            default_value_t = false,
+            help = "Submit task asynchronously and return immediately"
+        )]
+        async_submit: bool,
+
         #[arg(long)]
         req_id: Option<String>,
 

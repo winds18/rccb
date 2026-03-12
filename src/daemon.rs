@@ -440,7 +440,47 @@ fn handle_connection(
                 write_state(&context.state_path, &guard)?;
             }
 
-            if req.stream {
+            if req.stream && req.async_mode {
+                let resp = AskResponse {
+                    msg_type: format!("{}.response", PROTOCOL_PREFIX),
+                    v: PROTOCOL_VERSION,
+                    id: request_id,
+                    req_id: Some(req_id),
+                    exit_code: 1,
+                    reply: "stream and async are mutually exclusive".to_string(),
+                    provider: Some(req.provider),
+                    meta: Some(json!({"status":"bad_request"})),
+                };
+                debug_wire_out_response(context, &resp);
+                write_json_line(&mut stream, &resp)
+            } else if req.async_mode {
+                if let Err(err) = pool.submit_async(req.clone(), req_id.clone(), task_file) {
+                    let resp = AskResponse {
+                        msg_type: format!("{}.response", PROTOCOL_PREFIX),
+                        v: PROTOCOL_VERSION,
+                        id: request_id,
+                        req_id: Some(req_id),
+                        exit_code: 1,
+                        reply: format!("enqueue failed: {}", err),
+                        provider: Some(req.provider),
+                        meta: Some(json!({"status": "failed"})),
+                    };
+                    debug_wire_out_response(context, &resp);
+                    return write_json_line(&mut stream, &resp);
+                }
+                let resp = AskResponse {
+                    msg_type: format!("{}.response", PROTOCOL_PREFIX),
+                    v: PROTOCOL_VERSION,
+                    id: request_id,
+                    req_id: Some(req_id),
+                    exit_code: 0,
+                    reply: "submitted".to_string(),
+                    provider: Some(req.provider),
+                    meta: Some(json!({"status": "queued"})),
+                };
+                debug_wire_out_response(context, &resp);
+                write_json_line(&mut stream, &resp)
+            } else if req.stream {
                 let pending = pool.submit_stream(req, req_id.clone(), task_file)?;
                 forward_stream_events(&mut stream, context, &request_id, pending)
             } else {
@@ -665,6 +705,31 @@ impl WorkerPool {
             event_rx,
             timeout_s,
         })
+    }
+
+    fn submit_async(&self, request: AskRequest, req_id: String, task_file: PathBuf) -> Result<()> {
+        if !self.is_provider_enabled(&request.provider) {
+            return Err(anyhow!(
+                "provider `{}` not enabled for instance `{}`",
+                request.provider,
+                self.context.instance_id
+            ));
+        }
+
+        let sender = self.get_worker_sender(&request.provider)?;
+        let cancel_flag = self.register_cancel_flag(&req_id)?;
+        if let Err(err) = sender.send(WorkerTask {
+            request,
+            req_id: req_id.clone(),
+            task_file,
+            cancel_flag,
+            response_tx: None,
+            stream_tx: None,
+        }) {
+            self.remove_cancel_flag(&req_id);
+            return Err(anyhow!("enqueue async worker task failed: {}", err));
+        }
+        Ok(())
     }
 
     fn is_provider_enabled(&self, provider: &str) -> bool {
@@ -1129,6 +1194,8 @@ fn write_request_task(context: &DaemonContext, req: &AskRequest, req_id: &str) -
         "provider": req.provider,
         "caller": req.caller,
         "stream": req.stream,
+        "async": req.async_mode,
+        "quiet": req.quiet,
         "message": req.message,
         "timeout_s": req.timeout_s,
         "work_dir": req.work_dir,

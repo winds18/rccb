@@ -609,12 +609,16 @@ pub fn cmd_ask(
     timeout_s: f64,
     quiet: bool,
     stream: bool,
+    async_submit: bool,
     req_id: Option<String>,
     message_parts: Vec<String>,
 ) -> Result<()> {
     let provider = normalize_provider(provider)?;
     if caller.trim().is_empty() {
         bail!("caller cannot be empty");
+    }
+    if stream && async_submit {
+        bail!("--stream and --async cannot be used together");
     }
 
     let state = load_state(&state_path(project_dir, instance))?;
@@ -648,6 +652,7 @@ pub fn cmd_ask(
         "timeout_s": timeout_s,
         "quiet": quiet,
         "stream": stream,
+        "async": async_submit,
         "message": message,
         "caller": caller,
         "req_id": req_id,
@@ -662,6 +667,15 @@ pub fn cmd_ask(
         serde_json::from_value(resp).context("invalid ask.response payload")?;
 
     if parsed.exit_code == 0 {
+        if async_submit {
+            println!(
+                "submitted: req_id={} provider={} instance={}",
+                parsed.req_id.unwrap_or_else(|| "-".to_string()),
+                parsed.provider.unwrap_or_else(|| provider.to_string()),
+                instance
+            );
+            return Ok(());
+        }
         if !parsed.reply.is_empty() {
             println!("{}", parsed.reply);
         }

@@ -63,6 +63,7 @@ fn main() -> Result<()> {
             timeout_s,
             quiet,
             stream,
+            async_submit,
             req_id,
             message,
         } => cmd_ask(
@@ -73,6 +74,7 @@ fn main() -> Result<()> {
             timeout_s,
             quiet,
             stream,
+            async_submit,
             req_id,
             message,
         ),

@@ -74,6 +74,8 @@ pub struct AskRequest {
     pub quiet: bool,
     #[serde(default)]
     pub stream: bool,
+    #[serde(default, rename = "async")]
+    pub async_mode: bool,
     pub message: String,
     pub caller: String,
     pub req_id: Option<String>,

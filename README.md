@@ -94,6 +94,15 @@ rccb --project-dir . ask \
   --stream \
   "流式输出这个任务的执行过程"
 
+# 异步提交（立即返回 req_id，后台执行）
+rccb --project-dir . ask \
+  --instance team-a \
+  --provider codex \
+  --caller claude \
+  --async \
+  --req-id req-async-1 \
+  "后台执行这个任务"
+
 # 停止 daemon（优先 graceful shutdown）
 rccb --project-dir . stop --instance team-a
 

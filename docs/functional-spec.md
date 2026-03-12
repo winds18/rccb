@@ -100,9 +100,10 @@
 1. `ask.ping` -> `ask.pong`
 2. `ask.request` -> `ask.response`（非流式）
 3. `ask.request(stream=true)` -> `ask.event(start|delta|done|error)`（流式）
-4. `ask.cancel` -> `ask.response`
-5. `ask.shutdown` -> `ask.response`
-6. `ask.debug` -> `ask.response`
+4. `ask.request(async=true)` -> `ask.response(submitted)`（异步提交）
+5. `ask.cancel` -> `ask.response`
+6. `ask.shutdown` -> `ask.response`
+7. `ask.debug` -> `ask.response`
 
 ### 4.2 鉴权
 
@@ -117,6 +118,7 @@
 - `timeout_s`
 - `quiet`
 - `stream`（可选，默认 `false`）
+- `async`（可选，默认 `false`，与 `stream` 互斥）
 - `message`
 - `caller`
 - `req_id`（可选）
@@ -187,8 +189,9 @@
 1. `rccb ping --instance <id>`
 2. `rccb ask --instance <id> --provider <p> --caller <c> "..."`
 3. `rccb ask --instance <id> --provider <p> --caller <c> --stream "..."`
-4. `rccb cancel --instance <id> --req-id <rid>`
-5. `rccb stop --instance <id>`（优先 graceful shutdown）
+4. `rccb ask --instance <id> --provider <p> --caller <c> --async "..."`
+5. `rccb cancel --instance <id> --req-id <rid>`
+6. `rccb stop --instance <id>`（优先 graceful shutdown）
 
 ### 5.3 状态
 

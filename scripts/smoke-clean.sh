@@ -7,7 +7,7 @@ TMP_DIR="$(mktemp -d)"
 PROJ_DIR="$TMP_DIR/proj"
 
 cleanup() {
-  for instance in s1 s2 s3 s4 s5 s6; do
+  for instance in s1 s2 s3 s4 s5 s6 s7; do
     "$BIN" --project-dir "$PROJ_DIR" stop --instance "$instance" >/dev/null 2>&1 || true
   done
   rm -rf "$TMP_DIR"
@@ -140,5 +140,37 @@ grep -Eqi "request canceled|exit_code=130" "$TMP_DIR/s6.ask.log"
 grep -q '"req_id": "cancel-req-1"' "$TMP_DIR/s6.tasks.json"
 grep -q '"status": "canceled"' "$TMP_DIR/s6.tasks.json"
 echo "MODE_CANCEL_OK"
+
+# 7) async submit should return immediately and complete in background
+cat > "$PROJ_DIR/.rccb/bin/codex-async" <<'EOF'
+#!/usr/bin/env bash
+sleep 2
+echo "async done"
+echo "CCB_DONE: ${CCB_REQ_ID}"
+EOF
+chmod +x "$PROJ_DIR/.rccb/bin/codex-async"
+RCCB_EXEC_MODE=native RCCB_CODEX_NATIVE_CMD="$PROJ_DIR/.rccb/bin/codex-async" "$BIN" --project-dir "$PROJ_DIR" start --instance s7 claude codex >/dev/null 2>&1 &
+PID7=$!
+sleep 1
+"$BIN" --project-dir "$PROJ_DIR" ask --instance s7 --provider codex --caller claude --async --req-id async-req-1 "async behavior check" >"$TMP_DIR/s7.ask.log"
+grep -qi "submitted: req_id=async-req-1" "$TMP_DIR/s7.ask.log"
+"$BIN" --project-dir "$PROJ_DIR" tasks --instance s7 --as-json >"$TMP_DIR/s7.tasks.0.json"
+grep -q '"req_id": "async-req-1"' "$TMP_DIR/s7.tasks.0.json"
+ok=0
+for _ in 1 2 3 4 5 6; do
+  sleep 1
+  "$BIN" --project-dir "$PROJ_DIR" tasks --instance s7 --as-json >"$TMP_DIR/s7.tasks.poll.json"
+  if grep -q '"status": "completed"' "$TMP_DIR/s7.tasks.poll.json"; then
+    ok=1
+    break
+  fi
+done
+"$BIN" --project-dir "$PROJ_DIR" stop --instance s7 >/dev/null || true
+wait "$PID7" || true
+if [ "$ok" -ne 1 ]; then
+  echo "MODE_ASYNC_UNEXPECTED_NOT_COMPLETED"
+  exit 1
+fi
+echo "MODE_ASYNC_OK"
 
 echo "[smoke] all checks passed and temp files cleaned."

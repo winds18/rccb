@@ -1087,6 +1087,7 @@ mod tests {
             timeout_s: 10.0,
             quiet: false,
             stream: false,
+            async_mode: false,
             message: "hello".to_string(),
             caller: "claude".to_string(),
             req_id: None,
