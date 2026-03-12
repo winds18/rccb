@@ -846,8 +846,10 @@ fn provider_raw_start_cmd(provider: &str) -> String {
         }
     }
 
-    if let Some(ccb_cmd) = provider_ccb_start_cmd(provider) {
-        return ccb_cmd;
+    if env_bool("RCCB_USE_CCB_PROVIDER_LAUNCH", false) {
+        if let Some(ccb_cmd) = provider_ccb_start_cmd(provider) {
+            return ccb_cmd;
+        }
     }
 
     match provider.trim().to_ascii_lowercase().as_str() {
@@ -861,9 +863,6 @@ fn provider_raw_start_cmd(provider: &str) -> String {
 }
 
 fn provider_ccb_start_cmd(provider: &str) -> Option<String> {
-    if env_bool("RCCB_DISABLE_CCB_LAUNCH", false) {
-        return None;
-    }
     let launch = resolve_ccb_launch_cmd()?;
     let provider = provider.trim().to_ascii_lowercase();
     if provider.is_empty() {
@@ -878,7 +877,7 @@ fn provider_ccb_start_cmd(provider: &str) -> Option<String> {
 }
 
 fn resolve_ccb_launch_cmd() -> Option<String> {
-    if let Ok(v) = env::var("RCCB_CCB_LAUNCH_CMD") {
+    if let Ok(v) = env::var("RCCB_CCB_PROVIDER_LAUNCH_CMD") {
         let v = v.trim();
         if !v.is_empty() {
             return Some(v.to_string());
@@ -2277,13 +2276,20 @@ mod tests {
     fn provider_start_cmd_wraps_feed_tail() {
         let _guard = env_lock().lock().unwrap();
         let old = std::env::var("RCCB_PANE_FEED").ok();
+        let old_ccb = std::env::var("RCCB_USE_CCB_PROVIDER_LAUNCH").ok();
         unsafe {
             std::env::remove_var("RCCB_PANE_FEED");
+            std::env::remove_var("RCCB_USE_CCB_PROVIDER_LAUNCH");
         }
         let cmd = provider_start_cmd(Path::new("/tmp/rccb-proj"), "default", "codex");
         if let Some(v) = old {
             unsafe {
                 std::env::set_var("RCCB_PANE_FEED", v);
+            }
+        }
+        if let Some(v) = old_ccb {
+            unsafe {
+                std::env::set_var("RCCB_USE_CCB_PROVIDER_LAUNCH", v);
             }
         }
         assert!(!cmd.contains("tail -n0 -F"));
