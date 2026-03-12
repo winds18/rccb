@@ -1268,25 +1268,11 @@ fn relay_task_completed(
 }
 
 fn relay_to_provider_feed(context: &DaemonContext, provider: &str, line: &str) {
-    if !pane_feed_enabled() {
-        return;
-    }
     let feed = launcher_feed_path(&context.project_dir, &context.instance_id, provider);
     if !feed.exists() {
         return;
     }
     let _ = write_line(feed, line);
-}
-
-fn pane_feed_enabled() -> bool {
-    let raw = match std::env::var("RCCB_PANE_FEED") {
-        Ok(v) => v,
-        Err(_) => return false,
-    };
-    matches!(
-        raw.trim().to_ascii_lowercase().as_str(),
-        "1" | "true" | "yes" | "on"
-    )
 }
 
 fn current_orchestrator(context: &DaemonContext) -> Option<String> {

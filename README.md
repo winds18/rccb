@@ -38,6 +38,7 @@ rccb claude codex gemini opencode droid
    - `<=4` 个 provider：左侧保留 orchestrator，右侧放其余（右侧等分）
    - `=5` 个 provider：左侧上下两块（orchestrator + 1），右侧放其余（右侧等分）
 6. orchestrator 退出后：`rccb` 自动退出，并停止 default 实例 daemon，清理本次派生 pane
+7. pane 事件回传默认开启（任务下发/完成会回传到 orchestrator 与 executor 对应 pane）；如需关闭可设置 `RCCB_PANE_FEED=0`
 
 provider CLI 启动命令可覆盖：
 
