@@ -21,7 +21,7 @@ use crate::io_utils::{
 };
 use crate::layout::{
     ensure_project_layout, logs_instance_dir, rccb_dir, sanitize_filename, state_path,
-    tasks_instance_dir, tasks_root_dir,
+    tasks_instance_dir, tasks_root_dir, tmp_instance_dir,
 };
 use crate::protocol::{connect_and_send, send_wire_message};
 use crate::types::{AskEvent, AskResponse, InstanceState};
@@ -148,11 +148,11 @@ pub fn cmd_external_provider_launch(project_dir: &Path, raw: Vec<String>) -> Res
     if normalized.is_empty() {
         bail!("at least one provider required");
     }
-    let effective_debug = resolve_start_debug(project_dir, "default", false);
+    let effective_debug = resolve_start_debug(project_dir, "default", env_debug_enabled());
     ensure_project_layout(project_dir)?;
     ensure_default_daemon_running(project_dir, &normalized, effective_debug)?;
 
-    if launch_provider_clis(&normalized)? {
+    if launch_provider_clis(project_dir, &normalized)? {
         return Ok(());
     }
 
@@ -394,11 +394,28 @@ fn ping_daemon_state(state: &InstanceState, timeout_s: f64) -> Result<()> {
     Ok(())
 }
 
-fn launch_provider_clis(providers: &[String]) -> Result<bool> {
+#[derive(Debug, Clone)]
+enum LaunchBackend {
+    Tmux { anchor_pane: String },
+    Wezterm { anchor_pane: String, bin: String },
+}
+
+fn launch_provider_clis(project_dir: &Path, providers: &[String]) -> Result<bool> {
+    let Some(backend) = detect_launch_backend()? else {
+        return Ok(false);
+    };
+
+    run_interactive_layout(project_dir, providers, backend)?;
+    Ok(true)
+}
+
+fn detect_launch_backend() -> Result<Option<LaunchBackend>> {
     let wez_pane = env::var("WEZTERM_PANE").unwrap_or_default();
     if !wez_pane.trim().is_empty() {
-        launch_in_wezterm(providers, &wez_pane)?;
-        return Ok(true);
+        return Ok(Some(LaunchBackend::Wezterm {
+            anchor_pane: wez_pane.trim().to_string(),
+            bin: env::var("RCCB_WEZTERM_BIN").unwrap_or_else(|_| "wezterm".to_string()),
+        }));
     }
 
     let inside_tmux = env::var("TMUX")
@@ -407,120 +424,256 @@ fn launch_provider_clis(providers: &[String]) -> Result<bool> {
         || env::var("TMUX_PANE")
             .map(|v| !v.trim().is_empty())
             .unwrap_or(false);
-    if inside_tmux {
-        launch_in_tmux(providers)?;
-        return Ok(true);
+    if !inside_tmux {
+        return Ok(None);
     }
 
-    Ok(false)
-}
-
-fn launch_in_tmux(providers: &[String]) -> Result<()> {
     let current_pane = run_capture(
         "tmux",
         &["display-message", "-p", "#{pane_id}"],
         "resolve current tmux pane failed",
     )?;
-    let mut parent = current_pane.trim().to_string();
-    if parent.is_empty() {
+    let pane = current_pane.trim().to_string();
+    if pane.is_empty() {
         bail!("cannot resolve current tmux pane id");
     }
+    Ok(Some(LaunchBackend::Tmux { anchor_pane: pane }))
+}
 
-    let mut first_spawned = None::<String>;
-    for (idx, provider) in providers.iter().enumerate() {
-        let provider_cmd = provider_start_cmd(provider);
-        let full_cmd = wrap_shell_command(&provider_cmd);
-        let mut args = vec![
-            "split-window".to_string(),
-            "-P".to_string(),
-            "-F".to_string(),
-            "#{pane_id}".to_string(),
-            "-t".to_string(),
-            parent.clone(),
-        ];
-        if idx == 0 {
-            args.push("-h".to_string());
-        } else {
-            args.push("-v".to_string());
-        }
-        args.push(full_cmd);
-        let refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-        let pane_id = run_capture("tmux", &refs, "tmux split-window failed")?;
-        let pane_id = pane_id.trim().to_string();
-        if pane_id.is_empty() {
-            bail!("tmux split-window did not return pane id");
-        }
-        if first_spawned.is_none() {
-            first_spawned = Some(pane_id.clone());
-        }
-        parent = pane_id.clone();
-
-        let _ = run_simple(
-            "tmux",
-            &["set-option", "-p", "-t", &pane_id, "remain-on-exit", "on"],
-        );
-        let _ = run_simple(
-            "tmux",
-            &[
-                "select-pane",
-                "-t",
-                &pane_id,
-                "-T",
-                &format!("RCCB-{}", provider),
-            ],
-        );
-        println!(
-            "launched provider cli: provider={} backend=tmux pane={}",
-            provider, pane_id
-        );
+fn run_interactive_layout(
+    project_dir: &Path,
+    providers: &[String],
+    backend: LaunchBackend,
+) -> Result<()> {
+    if providers.is_empty() {
+        bail!("at least one provider required");
     }
 
-    if let Some(pane) = first_spawned {
-        let _ = run_simple("tmux", &["select-pane", "-t", &pane]);
+    let orchestrator = providers[0].clone();
+    let (left_items, right_items) = split_layout_groups(&providers[1..]);
+    let mut spawned_panes: Vec<String> = Vec::new();
+
+    let run_result = match &backend {
+        LaunchBackend::Tmux { anchor_pane } => {
+            spawn_tmux_layout(anchor_pane, &left_items, &right_items, &mut spawned_panes)?;
+            run_orchestrator_foreground(&orchestrator)
+        }
+        LaunchBackend::Wezterm { anchor_pane, bin } => {
+            spawn_wezterm_layout(
+                bin,
+                anchor_pane,
+                &left_items,
+                &right_items,
+                &mut spawned_panes,
+            )?;
+            run_orchestrator_foreground(&orchestrator)
+        }
+    };
+
+    if let Err(err) = cleanup_after_orchestrator(project_dir, &backend, &spawned_panes) {
+        eprintln!("warn: cleanup failed: {}", err);
+    }
+
+    let code = run_result?;
+    if code != 0 {
+        bail!("orchestrator `{}` exited with code {}", orchestrator, code);
     }
     Ok(())
 }
 
-fn launch_in_wezterm(providers: &[String], current_pane: &str) -> Result<()> {
-    let wezterm_bin = env::var("RCCB_WEZTERM_BIN").unwrap_or_else(|_| "wezterm".to_string());
-    let mut parent = current_pane.trim().to_string();
-    if parent.is_empty() {
-        bail!("WEZTERM_PANE is empty");
+fn split_layout_groups(executors: &[String]) -> (Vec<String>, Vec<String>) {
+    if executors.is_empty() {
+        return (Vec::new(), Vec::new());
     }
 
-    for (idx, provider) in providers.iter().enumerate() {
-        let provider_cmd = provider_start_cmd(provider);
-        let shell = resolve_shell_path();
-        let direction = if idx == 0 { "--right" } else { "--bottom" };
-        let args = vec![
-            "cli".to_string(),
-            "split-pane".to_string(),
-            "--pane-id".to_string(),
-            parent.clone(),
-            direction.to_string(),
-            "--percent".to_string(),
-            "50".to_string(),
-            "--".to_string(),
-            shell.clone(),
-            "-lc".to_string(),
-            provider_cmd.clone(),
-        ];
-        let refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-        let pane_id = run_capture(
-            &wezterm_bin,
-            &refs,
-            "wezterm split-pane failed (check WEZTERM_PANE / wezterm cli availability)",
-        )?;
-        let pane_id = pane_id.trim().to_string();
-        if pane_id.is_empty() {
-            bail!("wezterm split-pane did not return pane id");
-        }
-        parent = pane_id.clone();
-        println!(
-            "launched provider cli: provider={} backend=wezterm pane={}",
-            provider, pane_id
-        );
+    // Match original CCB launch feel:
+    // - <=4 providers total: left side is orchestrator only.
+    // - 5 providers total: left side split into two panes.
+    let total = executors.len() + 1;
+    if total <= 4 {
+        return (Vec::new(), executors.to_vec());
     }
+
+    let left = vec![executors[0].clone()];
+    let right = if executors.len() > 1 {
+        executors[1..].to_vec()
+    } else {
+        Vec::new()
+    };
+    (left, right)
+}
+
+fn spawn_tmux_layout(
+    anchor_pane: &str,
+    left_items: &[String],
+    right_items: &[String],
+    spawned_panes: &mut Vec<String>,
+) -> Result<()> {
+    let mut right_parent: Option<String> = None;
+    if let Some(first) = right_items.first() {
+        let pane = spawn_tmux_pane(anchor_pane, "right", first)?;
+        spawned_panes.push(pane.clone());
+        right_parent = Some(pane);
+    }
+    for provider in &right_items[1..] {
+        let parent = right_parent.as_deref().unwrap_or(anchor_pane);
+        let pane = spawn_tmux_pane(parent, "bottom", provider)?;
+        spawned_panes.push(pane.clone());
+        right_parent = Some(pane);
+    }
+
+    let mut left_parent = anchor_pane.to_string();
+    for provider in left_items {
+        let pane = spawn_tmux_pane(&left_parent, "bottom", provider)?;
+        spawned_panes.push(pane.clone());
+        left_parent = pane;
+    }
+
+    Ok(())
+}
+
+fn spawn_tmux_pane(parent: &str, direction: &str, provider: &str) -> Result<String> {
+    let provider_cmd = provider_start_cmd(provider);
+    let full_cmd = wrap_shell_command(&provider_cmd);
+    let flag = match direction {
+        "right" => "-h",
+        "bottom" => "-v",
+        other => bail!("unsupported tmux split direction: {}", other),
+    };
+
+    let args = vec![
+        "split-window",
+        "-P",
+        "-F",
+        "#{pane_id}",
+        "-t",
+        parent,
+        flag,
+        &full_cmd,
+    ];
+    let pane_id = run_capture("tmux", &args, "tmux split-window failed")?;
+    let pane_id = pane_id.trim().to_string();
+    if pane_id.is_empty() {
+        bail!("tmux split-window did not return pane id");
+    }
+
+    let _ = run_simple(
+        "tmux",
+        &["set-option", "-p", "-t", &pane_id, "remain-on-exit", "on"],
+    );
+    let _ = run_simple(
+        "tmux",
+        &[
+            "select-pane",
+            "-t",
+            &pane_id,
+            "-T",
+            &format!("RCCB-{}", provider),
+        ],
+    );
+    println!(
+        "launched provider cli: provider={} backend=tmux pane={}",
+        provider, pane_id
+    );
+    Ok(pane_id)
+}
+
+fn spawn_wezterm_layout(
+    wezterm_bin: &str,
+    anchor_pane: &str,
+    left_items: &[String],
+    right_items: &[String],
+    spawned_panes: &mut Vec<String>,
+) -> Result<()> {
+    let mut right_parent: Option<String> = None;
+    if let Some(first) = right_items.first() {
+        let pane = spawn_wezterm_pane(wezterm_bin, anchor_pane, "--right", first)?;
+        spawned_panes.push(pane.clone());
+        right_parent = Some(pane);
+    }
+    for provider in &right_items[1..] {
+        let parent = right_parent.as_deref().unwrap_or(anchor_pane);
+        let pane = spawn_wezterm_pane(wezterm_bin, parent, "--bottom", provider)?;
+        spawned_panes.push(pane.clone());
+        right_parent = Some(pane);
+    }
+
+    let mut left_parent = anchor_pane.to_string();
+    for provider in left_items {
+        let pane = spawn_wezterm_pane(wezterm_bin, &left_parent, "--bottom", provider)?;
+        spawned_panes.push(pane.clone());
+        left_parent = pane;
+    }
+
+    Ok(())
+}
+
+fn spawn_wezterm_pane(
+    wezterm_bin: &str,
+    parent: &str,
+    direction_flag: &str,
+    provider: &str,
+) -> Result<String> {
+    let provider_cmd = provider_start_cmd(provider);
+    let shell = resolve_shell_path();
+    let args = vec![
+        "cli",
+        "split-pane",
+        "--pane-id",
+        parent,
+        direction_flag,
+        "--percent",
+        "50",
+        "--",
+        &shell,
+        "-lc",
+        &provider_cmd,
+    ];
+    let pane_id = run_capture(
+        wezterm_bin,
+        &args,
+        "wezterm split-pane failed (check WEZTERM_PANE / wezterm cli availability)",
+    )?;
+    let pane_id = pane_id.trim().to_string();
+    if pane_id.is_empty() {
+        bail!("wezterm split-pane did not return pane id");
+    }
+    println!(
+        "launched provider cli: provider={} backend=wezterm pane={}",
+        provider, pane_id
+    );
+    Ok(pane_id)
+}
+
+fn run_orchestrator_foreground(provider: &str) -> Result<i32> {
+    let cmd = provider_start_cmd(provider);
+    println!("orchestrator entering foreground: provider={}", provider);
+    let status = ProcessCommand::new(resolve_shell_path())
+        .arg("-lc")
+        .arg(&cmd)
+        .status()
+        .with_context(|| format!("launch orchestrator command failed: {}", cmd))?;
+    Ok(status.code().unwrap_or(1))
+}
+
+fn cleanup_after_orchestrator(
+    project_dir: &Path,
+    backend: &LaunchBackend,
+    spawned_panes: &[String],
+) -> Result<()> {
+    for pane in spawned_panes.iter().rev() {
+        match backend {
+            LaunchBackend::Tmux { .. } => {
+                let _ = run_simple("tmux", &["kill-pane", "-t", pane]);
+            }
+            LaunchBackend::Wezterm { bin, .. } => {
+                let _ = run_simple(bin, &["cli", "kill-pane", "--pane-id", pane]);
+            }
+        }
+    }
+
+    let _ = cmd_stop(project_dir, "default");
+    let _ = fs::remove_dir_all(tmp_instance_dir(project_dir, "default").join("launcher"));
     Ok(())
 }
 
@@ -1613,6 +1766,17 @@ fn resolve_start_debug(project_dir: &Path, instance: &str, cli_debug: bool) -> b
         .unwrap_or(false)
 }
 
+fn env_debug_enabled() -> bool {
+    let raw = match env::var("RCCB_DEBUG") {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+    matches!(
+        raw.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -1621,7 +1785,8 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        is_in_flight_status, is_terminal_task_status, load_task_by_req_id, task_file_for_req_id,
+        is_in_flight_status, is_terminal_task_status, load_task_by_req_id, split_layout_groups,
+        task_file_for_req_id,
     };
     use crate::io_utils::{now_unix_ms, write_json_pretty};
     use crate::layout::{ensure_project_layout, tasks_instance_dir};
@@ -1696,5 +1861,23 @@ mod tests {
         assert_eq!(t2.provider.as_deref(), Some("claude"));
 
         let _ = fs::remove_dir_all(&project);
+    }
+
+    #[test]
+    fn split_layout_groups_matches_shortcut_rules() {
+        let exec3 = vec!["b".to_string(), "c".to_string(), "d".to_string()];
+        let (l3, r3) = split_layout_groups(&exec3);
+        assert!(l3.is_empty());
+        assert_eq!(r3, exec3);
+
+        let exec4 = vec![
+            "b".to_string(),
+            "c".to_string(),
+            "d".to_string(),
+            "e".to_string(),
+        ];
+        let (l4, r4) = split_layout_groups(&exec4);
+        assert_eq!(l4, vec!["b".to_string()]);
+        assert_eq!(r4, vec!["c".to_string(), "d".to_string(), "e".to_string()]);
     }
 }
