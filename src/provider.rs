@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 
+use crate::layout::sanitize_filename;
 use crate::types::AskRequest;
 
 const REQ_ID_PREFIX: &str = "RCCB_REQ_ID:";
@@ -110,8 +111,10 @@ pub fn execute_provider_request(
     pane_target: Option<&PaneDispatchTarget>,
 ) -> Result<ProviderExecResult> {
     let mode = execution_mode();
+    let effective_message =
+        materialize_task_message(req, req_id).unwrap_or_else(|_| req.message.clone());
     match mode {
-        ExecMode::Stub => Ok(run_stub(req, req_id)),
+        ExecMode::Stub => Ok(run_stub(req, req_id, &effective_message)),
         ExecMode::Bridge => {
             let wrapper = resolve_wrapper_path(&req.provider).with_context(|| {
                 format!(
@@ -137,7 +140,7 @@ pub fn execute_provider_request(
                 cmd.env("RCCB_SYNC_TIMEOUT", format!("{:.3}", req.timeout_s));
             }
 
-            let input = format!("{}\n", req.message);
+            let input = format!("{}\n", effective_message);
             let timeout = timeout_for_request(req.timeout_s);
             let outcome =
                 run_process_with_stream(cmd, &input, timeout, &mut on_delta, &should_cancel)
@@ -174,14 +177,15 @@ pub fn execute_provider_request(
                     )
                 })?;
             let prompt = if should_wrap_native_prompt(&req.provider, profile.as_ref()) {
-                wrap_prompt_for_provider(&req.provider, &req.message, req_id)
+                wrap_prompt_for_provider(&req.provider, &effective_message, req_id)
             } else {
-                req.message.trim_end().to_string()
+                effective_message.trim_end().to_string()
             };
 
             if let Some(target) = pane_target {
                 if native_should_use_pane_exec(&req.provider) {
-                    let pane_prompt = wrap_prompt_for_provider(&req.provider, &req.message, req_id);
+                    let pane_prompt =
+                        wrap_prompt_for_provider(&req.provider, &effective_message, req_id);
                     return execute_native_via_pane(
                         req_id,
                         &pane_prompt,
@@ -260,6 +264,33 @@ pub fn execute_provider_request(
     }
 }
 
+fn materialize_task_message(req: &AskRequest, req_id: &str) -> Result<String> {
+    if req.message.lines().count() <= 10 {
+        return Ok(req.message.clone());
+    }
+
+    let work_dir = resolve_cmd_path(req.work_dir.trim(), Path::new("."));
+    let request_dir = work_dir
+        .join(".rccb")
+        .join("tmp")
+        .join(req.provider.trim().to_ascii_lowercase())
+        .join("requests");
+    fs::create_dir_all(&request_dir)
+        .with_context(|| format!("创建长任务临时目录失败：{}", request_dir.display()))?;
+
+    let request_file = request_dir.join(format!("{}.md", sanitize_filename(req_id)));
+    fs::write(&request_file, req.message.as_bytes())
+        .with_context(|| format!("写入长任务临时文件失败：{}", request_file.display()))?;
+
+    let request_path = request_file
+        .canonicalize()
+        .unwrap_or_else(|_| request_file.clone());
+    Ok(format!(
+        "任务要求较长，已写入临时文件：{}\n请先完整阅读该文件，再开始执行。\n执行过程中必须以文件内容为准，不要遗漏其中的约束、步骤和验收要求。",
+        request_path.display()
+    ))
+}
+
 fn execution_mode() -> ExecMode {
     let raw = env::var("RCCB_EXEC_MODE").unwrap_or_else(|_| "native".to_string());
     match raw.trim().to_ascii_lowercase().as_str() {
@@ -326,7 +357,9 @@ fn execute_native_via_pane(
     };
 
     let mut transcript = String::new();
-    let mut previous_window = pane_window_for_req(&previous_snapshot, req_id).unwrap_or_default();
+    let mut previous_window =
+        capture_initial_request_window(target, capture_lines, req_id, &previous_snapshot);
+    let baseline_done_count = count_done_lines_for_req(&previous_window, req_id);
     loop {
         if should_cancel() {
             return Ok(ProviderExecResult {
@@ -383,8 +416,8 @@ fn execute_native_via_pane(
             }
         }
 
-        if contains_done_line_for_req(&transcript, req_id)
-            || contains_done_line_for_req(&current_window, req_id)
+        let pane_done_count = count_done_lines_for_req(&current_window, req_id);
+        if contains_done_line_for_req(&transcript, req_id) || pane_done_count > baseline_done_count
         {
             break;
         }
@@ -403,7 +436,7 @@ fn execute_native_via_pane(
 
     Ok(ProviderExecResult {
         exit_code: 0,
-        reply,
+        reply: sanitize_reply_text(&reply),
         done_seen: true,
         done_ms: Some(started.elapsed().as_millis() as u64),
         anchor_seen: true,
@@ -414,6 +447,37 @@ fn execute_native_via_pane(
         effective_timeout_s,
         effective_quiet,
     })
+}
+
+fn capture_initial_request_window(
+    target: &PaneDispatchTarget,
+    capture_lines: i32,
+    req_id: &str,
+    previous_snapshot: &str,
+) -> String {
+    let fallback = pane_window_for_req(previous_snapshot, req_id).unwrap_or_default();
+    let deadline = Instant::now() + Duration::from_millis(1200);
+    loop {
+        let current = match capture_pane_text(target, capture_lines) {
+            Ok(v) => v,
+            Err(_) => {
+                if Instant::now() >= deadline {
+                    return fallback;
+                }
+                thread::sleep(Duration::from_millis(40));
+                continue;
+            }
+        };
+        let window = pane_window_for_req(&current, req_id).unwrap_or_default();
+        if !window.trim().is_empty() || Instant::now() >= deadline {
+            return if window.trim().is_empty() {
+                fallback
+            } else {
+                window
+            };
+        }
+        thread::sleep(Duration::from_millis(40));
+    }
 }
 
 fn capture_pane_text(target: &PaneDispatchTarget, start_line: i32) -> Result<String> {
@@ -633,10 +697,10 @@ fn pane_window_for_req(text: &str, req_id: &str) -> Option<String> {
     Some(lines[start..].join("\n"))
 }
 
-fn run_stub(req: &AskRequest, req_id: &str) -> ProviderExecResult {
+fn run_stub(req: &AskRequest, req_id: &str, message: &str) -> ProviderExecResult {
     let reply = format!(
         "[rccb:stub] provider={} caller={} req_id={}\n{}\nRCCB_DONE: {}",
-        req.provider, req.caller, req_id, req.message, req_id
+        req.provider, req.caller, req_id, message, req_id
     );
     ProviderExecResult {
         exit_code: 0,
@@ -1317,8 +1381,12 @@ fn wrap_prompt_for_provider(provider: &str, message: &str, req_id: &str) -> Stri
 }
 
 fn contains_done_line_for_req(text: &str, req_id: &str) -> bool {
+    count_done_lines_for_req(text, req_id) > 0
+}
+
+fn count_done_lines_for_req(text: &str, req_id: &str) -> usize {
     let target = format!("{} {}", DONE_PREFIX, req_id);
-    text.lines().any(|line| line.trim() == target)
+    text.lines().filter(|line| line.trim() == target).count()
 }
 
 fn is_any_done_line(line: &str) -> bool {
@@ -1376,6 +1444,7 @@ fn extract_reply_for_req(text: &str, req_id: &str) -> String {
     }
 
     lines = lines[start_i..target_i].to_vec();
+    lines.retain(|line| !is_reply_placeholder_line(line));
     trim_blank_lines(&mut lines);
     lines.join("\n").trim_end().to_string()
 }
@@ -1396,6 +1465,7 @@ fn strip_done_text(text: &str, req_id: &str) -> String {
         break;
     }
 
+    lines.retain(|line| !is_reply_placeholder_line(line));
     trim_blank_lines(&mut lines);
     lines.join("\n").trim_end().to_string()
 }
@@ -1434,6 +1504,20 @@ fn is_trailing_noise_line(line: &str) -> bool {
     t.chars().all(|c| {
         c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_' || c == ':' || c == '-' || c == ' '
     })
+}
+
+fn is_reply_placeholder_line(line: &str) -> bool {
+    matches!(
+        line.trim(),
+        "<reply>" | "<回复内容>" | "你的真实回复内容写在这里" | "...你的实际回复内容..."
+    )
+}
+
+fn sanitize_reply_text(reply: &str) -> String {
+    let mut lines: Vec<String> = reply.lines().map(|line| line.to_string()).collect();
+    lines.retain(|line| !is_reply_placeholder_line(line));
+    trim_blank_lines(&mut lines);
+    lines.join("\n").trim_end().to_string()
 }
 
 fn sanitize_stderr_for_reply(stderr: &str) -> String {

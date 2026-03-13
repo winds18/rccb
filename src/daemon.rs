@@ -5,7 +5,7 @@ use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -39,6 +39,7 @@ use crate::types::{
 const EVENT_BUS_DEFAULT_BUFFER: usize = 2048;
 const EVENT_BUS_MAX_BUFFER: usize = 20000;
 const EVENT_BUS_KEEPALIVE_MS: u64 = 5000;
+const ORCHESTRATOR_PROGRESS_INTERVAL_MS: u64 = 5000;
 
 #[derive(Debug, Clone, Deserialize)]
 struct SubscribeRequest {
@@ -1307,6 +1308,7 @@ fn worker_loop(
                     &context,
                     orchestrator.as_deref(),
                     &req.provider,
+                    &req.caller,
                     &task.req_id,
                     &chunk,
                 );
@@ -1397,6 +1399,7 @@ fn worker_loop(
             &context,
             orchestrator.as_deref(),
             &req.provider,
+            &req.caller,
             &task.req_id,
             task_status,
             exec.exit_code,
@@ -1441,16 +1444,6 @@ fn worker_loop(
                 exit_code: Some(resp.exit_code),
                 meta: resp.meta.clone(),
             },
-        );
-
-        maybe_callback_orchestrator_async(
-            &context,
-            orchestrator.as_deref(),
-            &req,
-            &task.req_id,
-            task_status,
-            resp.exit_code,
-            &resp.reply,
         );
 
         notify_completion_async(CompletionHookInput {
@@ -1762,20 +1755,31 @@ fn relay_task_completed(
     context: &DaemonContext,
     orchestrator: Option<&str>,
     provider: &str,
+    caller: &str,
     req_id: &str,
     status: &str,
     exit_code: i32,
     reply: &str,
 ) {
-    let _ = (
-        context,
-        orchestrator,
-        provider,
-        req_id,
-        status,
-        exit_code,
-        reply,
-    );
+    let Some(orchestrator_provider) =
+        orchestrator_callback_target(context, orchestrator, caller, provider)
+    else {
+        return;
+    };
+    let prompt = build_orchestrator_result_prompt(req_id, provider, status, exit_code, reply);
+    let entry = json!({
+        "ts_unix": now_unix(),
+        "kind": "result",
+        "instance": context.instance_id,
+        "orchestrator": orchestrator_provider,
+        "executor": provider,
+        "caller": caller,
+        "req_id": req_id,
+        "status": status,
+        "exit_code": exit_code,
+        "reply": reply,
+    });
+    dispatch_orchestrator_notice_async(context, &orchestrator_provider, entry, prompt);
 }
 
 fn relay_task_started(
@@ -1786,20 +1790,73 @@ fn relay_task_started(
     req_id: &str,
     timeout_s: f64,
 ) {
-    let _ = (context, orchestrator, provider, caller, req_id, timeout_s);
+    let Some(orchestrator_provider) =
+        orchestrator_callback_target(context, orchestrator, caller, provider)
+    else {
+        return;
+    };
+    let prompt = build_orchestrator_status_prompt(
+        req_id,
+        provider,
+        "running",
+        &format!(
+            "执行者已开始处理，超时预算 {:.0} 秒。请继续等待，不要重复派单。",
+            timeout_s.max(0.0)
+        ),
+    );
+    let entry = json!({
+        "ts_unix": now_unix(),
+        "kind": "status",
+        "instance": context.instance_id,
+        "orchestrator": orchestrator_provider,
+        "executor": provider,
+        "caller": caller,
+        "req_id": req_id,
+        "status": "running",
+        "message": "started",
+        "timeout_s": timeout_s,
+    });
+    dispatch_orchestrator_notice_async(context, &orchestrator_provider, entry, prompt);
 }
 
 fn relay_task_progress(
     context: &DaemonContext,
     orchestrator: Option<&str>,
     provider: &str,
+    caller: &str,
     req_id: &str,
     chunk: &str,
 ) {
-    let _ = (context, orchestrator, provider, req_id, chunk);
+    let Some(orchestrator_provider) =
+        orchestrator_callback_target(context, orchestrator, caller, provider)
+    else {
+        return;
+    };
+    let progress_lines = relay_progress_lines(chunk);
+    if progress_lines.is_empty() || !should_emit_orchestrator_progress(req_id) {
+        return;
+    }
+    let progress = progress_lines.join("\n");
+    let prompt = build_orchestrator_status_prompt(
+        req_id,
+        provider,
+        "running",
+        &format!("执行者仍在处理，最新进展：\n{}", progress),
+    );
+    let entry = json!({
+        "ts_unix": now_unix(),
+        "kind": "status",
+        "instance": context.instance_id,
+        "orchestrator": orchestrator_provider,
+        "executor": provider,
+        "caller": caller,
+        "req_id": req_id,
+        "status": "running",
+        "message": progress,
+    });
+    dispatch_orchestrator_notice_async(context, &orchestrator_provider, entry, prompt);
 }
 
-#[cfg(test)]
 fn relay_progress_lines(chunk: &str) -> Vec<String> {
     let max_lines = relay_progress_max_lines();
     let max_chars = relay_progress_max_chars();
@@ -1826,7 +1883,6 @@ fn relay_progress_lines(chunk: &str) -> Vec<String> {
     lines
 }
 
-#[cfg(test)]
 fn relay_progress_max_lines() -> usize {
     match std::env::var("RCCB_PANE_DELTA_MAX_LINES") {
         Ok(raw) => match raw.trim().parse::<usize>() {
@@ -1837,7 +1893,6 @@ fn relay_progress_max_lines() -> usize {
     }
 }
 
-#[cfg(test)]
 fn relay_progress_max_chars() -> usize {
     match std::env::var("RCCB_PANE_DELTA_MAX_CHARS") {
         Ok(raw) => match raw.trim().parse::<usize>() {
@@ -1922,52 +1977,77 @@ fn resolve_provider_pane_dispatch_target(
     Ok(Some(PaneDispatchTarget { backend, pane_id }))
 }
 
-fn maybe_callback_orchestrator_async(
+fn orchestrator_callback_target(
     context: &DaemonContext,
     orchestrator: Option<&str>,
-    req: &AskRequest,
-    req_id: &str,
-    status: &str,
-    exit_code: i32,
-    reply: &str,
-) {
+    caller: &str,
+    provider: &str,
+) -> Option<String> {
     if !orchestrator_strict_mode_enabled() {
-        return;
+        return None;
     }
     let Some(orchestrator_provider) = orchestrator
         .map(|v| v.trim().to_ascii_lowercase())
         .filter(|v| !v.is_empty())
     else {
-        return;
+        return None;
     };
-    if !req
-        .caller
-        .trim()
-        .eq_ignore_ascii_case(&orchestrator_provider)
-    {
-        return;
+    if !caller.trim().eq_ignore_ascii_case(&orchestrator_provider) {
+        return None;
     }
-    if req
-        .provider
-        .trim()
-        .eq_ignore_ascii_case(&orchestrator_provider)
-    {
-        return;
+    if provider.trim().eq_ignore_ascii_case(&orchestrator_provider) {
+        return None;
     }
+    let orchestrator_exists = context
+        .allowed_providers
+        .iter()
+        .any(|p| p.trim().eq_ignore_ascii_case(&orchestrator_provider));
+    if !orchestrator_exists {
+        return None;
+    }
+    Some(orchestrator_provider)
+}
 
-    let prompt = build_orchestrator_result_prompt(req_id, &req.provider, status, exit_code, reply);
-    let req_id = req_id.to_string();
-    let inbox_entry = json!({
-        "ts_unix": now_unix(),
-        "instance": context.instance_id,
-        "orchestrator": orchestrator_provider,
-        "executor": req.provider,
-        "caller": req.caller,
-        "req_id": req_id,
-        "status": status,
-        "exit_code": exit_code,
-        "reply": reply,
-    });
+fn should_emit_orchestrator_progress(req_id: &str) -> bool {
+    static LAST_PROGRESS: OnceLock<Mutex<HashMap<String, u64>>> = OnceLock::new();
+    let map = LAST_PROGRESS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut guard = match map.lock() {
+        Ok(v) => v,
+        Err(_) => return true,
+    };
+    let now = now_unix_ms();
+    let entry = guard.entry(req_id.to_string()).or_insert(0);
+    if now.saturating_sub(*entry) < ORCHESTRATOR_PROGRESS_INTERVAL_MS {
+        return false;
+    }
+    *entry = now;
+    true
+}
+
+fn build_orchestrator_status_prompt(
+    req_id: &str,
+    executor: &str,
+    status: &str,
+    message: &str,
+) -> String {
+    let message = clamp_bus_text(message.trim(), orchestrator_callback_max_chars());
+    format!(
+        "RCCB_STATUS\nreq_id={req_id}\n执行者={executor}\n状态={status}\n\n{message}\n\n这不是最终结果，请继续等待，不要重复派单。"
+    )
+}
+
+fn dispatch_orchestrator_notice_async(
+    context: &DaemonContext,
+    orchestrator_provider: &str,
+    inbox_entry: Value,
+    prompt: String,
+) {
+    let req_id = inbox_entry
+        .get("req_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("-")
+        .to_string();
+    let orchestrator_provider = orchestrator_provider.to_string();
     let context = context.clone();
     thread::spawn(move || {
         let daemon_log =
