@@ -38,11 +38,10 @@ rccb claude codex gemini opencode droid
    - `<=4` 个 provider：左侧保留 orchestrator，右侧放其余（右侧等分）
    - `=5` 个 provider：左侧上下两块（orchestrator + 1），右侧放其余（右侧等分）
 6. orchestrator 退出后：`rccb` 自动退出，并停止 default 实例 daemon，清理本次派生 pane
-7. 默认采用静默后台通信：任务下发/回传不打扰 CLI 输入区；可通过命令查看状态和输出
-8. `debug` 开启时会自动创建一个日志 pane（位于编排者 pane 上方），默认跟踪首个执行者并持续 `watch --follow`
+7. 所有 provider pane 保持真实 CLI 执行视图，不显示旁路日志，不注入任务状态镜像
+8. 默认采用静默后台通信：任务下发/回传不打扰 CLI 输入区；可通过命令查看状态和输出
+9. `debug` 开启时会自动创建一个日志 pane（位于编排者 pane 上方），默认跟踪首个执行者并持续 `watch --follow`，所有旁路日志仅在这个 debug pane 显示
 9. 可选开关：
-   - `RCCB_PANE_FEED=1`：启用 pane feed 实时镜像（默认关闭，不建议常开）
-   - `RCCB_PANE_STATUS_MIRROR=1`：将任务状态镜像到 pane（调试用，默认关闭）
    - `RCCB_WATCH_MAX_LOG_LINES=<N>`：`watch` 每次刷新最多展示 N 行日志（默认 10，避免刷屏）
    - `RCCB_CODEX_PANE_EXEC=0`：关闭 codex 的 pane 执行（默认开启；无 pane 时自动回退后台 native）
    - `RCCB_OPENCODE_PANE_EXEC=0`：关闭 opencode 的 pane 执行（默认开启；无 pane 时自动回退后台 native）

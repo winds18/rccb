@@ -3,7 +3,6 @@ use std::fs::{self, OpenOptions};
 use std::io::{self, BufRead, BufReader};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::process::{Command as ProcessCommand, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
@@ -24,9 +23,8 @@ use crate::io_utils::{
     update_task_status, write_json_pretty, write_line, write_state,
 };
 use crate::layout::{
-    ensure_project_layout, launcher_feed_path, launcher_meta_path, lock_path, logs_instance_dir,
-    sanitize_filename, sanitize_instance, session_instance_dir, state_path, tasks_instance_dir,
-    tmp_instance_dir,
+    ensure_project_layout, launcher_meta_path, lock_path, logs_instance_dir, sanitize_filename,
+    sanitize_instance, session_instance_dir, state_path, tasks_instance_dir, tmp_instance_dir,
 };
 use crate::protocol::{write_json_event_line, write_json_line, write_json_value_line};
 use crate::provider::{
@@ -1746,25 +1744,7 @@ fn relay_task_dispatched(
             })),
         },
     );
-    let provider_line = format!(
-        "[RCCB][任务下发] req_id={} caller={} timeout_s={:.3} msg={}",
-        req_id, req.caller, req.timeout_s, preview
-    );
-    relay_to_provider_feed(context, &req.provider, &provider_line);
-    if pane_status_mirror_enabled() {
-        let _ = relay_to_provider_pane_status(context, &req.provider, &provider_line);
-    }
-
-    if let Some(orchestrator) = current_orchestrator(context) {
-        let orchestrator_line = format!(
-            "[RCCB][已派发] req_id={} -> provider={} timeout_s={:.3}",
-            req_id, req.provider, req.timeout_s
-        );
-        relay_to_provider_feed(context, &orchestrator, &orchestrator_line);
-        if pane_status_mirror_enabled() {
-            let _ = relay_to_provider_pane_status(context, &orchestrator, &orchestrator_line);
-        }
-    }
+    let _ = (context, preview);
 }
 
 fn relay_task_completed(
@@ -1776,26 +1756,15 @@ fn relay_task_completed(
     exit_code: i32,
     reply: &str,
 ) {
-    let reply_preview = compact_preview(reply, 200);
-    let provider_line = format!(
-        "[RCCB][任务完成] req_id={} status={} exit_code={} reply={}",
-        req_id, status, exit_code, reply_preview
+    let _ = (
+        context,
+        orchestrator,
+        provider,
+        req_id,
+        status,
+        exit_code,
+        reply,
     );
-    relay_to_provider_feed(context, provider, &provider_line);
-    if pane_status_mirror_enabled() {
-        let _ = relay_to_provider_pane_status(context, provider, &provider_line);
-    }
-
-    if let Some(orchestrator) = orchestrator {
-        let orchestrator_line = format!(
-            "[RCCB][执行回传] req_id={} provider={} status={} exit_code={} reply={}",
-            req_id, provider, status, exit_code, reply_preview
-        );
-        relay_to_provider_feed(context, &orchestrator, &orchestrator_line);
-        if pane_status_mirror_enabled() {
-            let _ = relay_to_provider_pane_status(context, &orchestrator, &orchestrator_line);
-        }
-    }
 }
 
 fn relay_task_started(
@@ -1806,25 +1775,7 @@ fn relay_task_started(
     req_id: &str,
     timeout_s: f64,
 ) {
-    let provider_line = format!(
-        "[RCCB][开始执行] req_id={} caller={} timeout_s={:.3}",
-        req_id, caller, timeout_s
-    );
-    relay_to_provider_feed(context, provider, &provider_line);
-    if pane_status_mirror_enabled() {
-        let _ = relay_to_provider_pane_status(context, provider, &provider_line);
-    }
-
-    if let Some(orchestrator) = orchestrator {
-        let orchestrator_line = format!(
-            "[RCCB][执行开始] req_id={} provider={} caller={} timeout_s={:.3}",
-            req_id, provider, caller, timeout_s
-        );
-        relay_to_provider_feed(context, &orchestrator, &orchestrator_line);
-        if pane_status_mirror_enabled() {
-            let _ = relay_to_provider_pane_status(context, &orchestrator, &orchestrator_line);
-        }
-    }
+    let _ = (context, orchestrator, provider, caller, req_id, timeout_s);
 }
 
 fn relay_task_progress(
@@ -1834,33 +1785,10 @@ fn relay_task_progress(
     req_id: &str,
     chunk: &str,
 ) {
-    let lines = relay_progress_lines(chunk);
-    if lines.is_empty() {
-        return;
-    }
-
-    for line in &lines {
-        relay_to_provider_feed(
-            context,
-            provider,
-            &format!("[RCCB][执行中] req_id={} {}", req_id, line),
-        );
-    }
-
-    if let Some(orchestrator) = orchestrator {
-        for line in lines {
-            relay_to_provider_feed(
-                context,
-                &orchestrator,
-                &format!(
-                    "[RCCB][执行流] req_id={} provider={} {}",
-                    req_id, provider, line
-                ),
-            );
-        }
-    }
+    let _ = (context, orchestrator, provider, req_id, chunk);
 }
 
+#[cfg(test)]
 fn relay_progress_lines(chunk: &str) -> Vec<String> {
     let max_lines = relay_progress_max_lines();
     let max_chars = relay_progress_max_chars();
@@ -1887,6 +1815,7 @@ fn relay_progress_lines(chunk: &str) -> Vec<String> {
     lines
 }
 
+#[cfg(test)]
 fn relay_progress_max_lines() -> usize {
     match std::env::var("RCCB_PANE_DELTA_MAX_LINES") {
         Ok(raw) => match raw.trim().parse::<usize>() {
@@ -1897,6 +1826,7 @@ fn relay_progress_max_lines() -> usize {
     }
 }
 
+#[cfg(test)]
 fn relay_progress_max_chars() -> usize {
     match std::env::var("RCCB_PANE_DELTA_MAX_CHARS") {
         Ok(raw) => match raw.trim().parse::<usize>() {
@@ -1905,14 +1835,6 @@ fn relay_progress_max_chars() -> usize {
         },
         Err(_) => 240,
     }
-}
-
-fn relay_to_provider_feed(context: &DaemonContext, provider: &str, line: &str) {
-    let feed = launcher_feed_path(&context.project_dir, &context.instance_id, provider);
-    if !feed.exists() {
-        return;
-    }
-    let _ = write_line(feed, line);
 }
 
 #[derive(Debug, Deserialize)]
@@ -1937,76 +1859,10 @@ enum PaneRelayBackend {
     Wezterm { bin: String },
 }
 
-#[derive(Debug, Clone)]
-struct PaneRelayTarget {
-    backend: PaneRelayBackend,
-    pane_id: String,
-}
-
-fn relay_to_provider_pane_status(
+fn resolve_provider_pane_backend(
     context: &DaemonContext,
     provider: &str,
-    line: &str,
-) -> Result<()> {
-    let Some(target) = resolve_provider_pane_target(context, provider)? else {
-        return Ok(());
-    };
-    let payload = line.trim();
-    if payload.is_empty() {
-        return Ok(());
-    }
-    match target.backend {
-        PaneRelayBackend::Tmux => {
-            let status = ProcessCommand::new("tmux")
-                .args(["display-message", "-t", &target.pane_id, payload])
-                .status()
-                .context("tmux display-message failed")?;
-            if status.success() {
-                return Ok(());
-            }
-            bail!(
-                "tmux display-message failed: pane={} status={}",
-                target.pane_id,
-                status
-            );
-        }
-        PaneRelayBackend::Wezterm { bin } => {
-            let status = ProcessCommand::new(&bin)
-                .args([
-                    "cli",
-                    "send-text",
-                    "--pane-id",
-                    &target.pane_id,
-                    "--no-paste",
-                ])
-                .stdin(Stdio::piped())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn()
-                .and_then(|mut child| {
-                    if let Some(stdin) = child.stdin.as_mut() {
-                        use std::io::Write;
-                        let _ = stdin.write_all(payload.as_bytes());
-                    }
-                    child.wait()
-                })
-                .with_context(|| format!("wezterm send-text failed: bin={}", bin))?;
-            if status.success() {
-                return Ok(());
-            }
-            bail!(
-                "wezterm send-text failed: pane={} status={}",
-                target.pane_id,
-                status
-            );
-        }
-    }
-}
-
-fn resolve_provider_pane_target(
-    context: &DaemonContext,
-    provider: &str,
-) -> Result<Option<PaneRelayTarget>> {
+) -> Result<Option<(PaneRelayBackend, String)>> {
     let path = launcher_meta_path(&context.project_dir, &context.instance_id);
     if !path.exists() {
         return Ok(None);
@@ -2038,39 +1894,21 @@ fn resolve_provider_pane_target(
         _ => return Ok(None),
     };
 
-    Ok(Some(PaneRelayTarget { backend, pane_id }))
+    Ok(Some((backend, pane_id)))
 }
 
 fn resolve_provider_pane_dispatch_target(
     context: &DaemonContext,
     provider: &str,
 ) -> Result<Option<PaneDispatchTarget>> {
-    let Some(target) = resolve_provider_pane_target(context, provider)? else {
+    let Some((backend, pane_id)) = resolve_provider_pane_backend(context, provider)? else {
         return Ok(None);
     };
-    let backend = match target.backend {
+    let backend = match backend {
         PaneRelayBackend::Tmux => ProviderPaneBackend::Tmux,
         PaneRelayBackend::Wezterm { bin } => ProviderPaneBackend::Wezterm { bin },
     };
-    Ok(Some(PaneDispatchTarget {
-        backend,
-        pane_id: target.pane_id,
-    }))
-}
-
-fn pane_status_mirror_enabled() -> bool {
-    env_bool("RCCB_PANE_STATUS_MIRROR", false)
-}
-
-fn env_bool(key: &str, default: bool) -> bool {
-    let Ok(raw) = std::env::var(key) else {
-        return default;
-    };
-    match raw.trim().to_ascii_lowercase().as_str() {
-        "1" | "true" | "yes" | "on" => true,
-        "0" | "false" | "no" | "off" => false,
-        _ => default,
-    }
+    Ok(Some(PaneDispatchTarget { backend, pane_id }))
 }
 
 fn current_orchestrator(context: &DaemonContext) -> Option<String> {

@@ -249,6 +249,7 @@
    - `RCCB_EVENT_BUFFER_SIZE=<64-20000>` 可调整 daemon 事件缓冲（默认 2048）
    - debug 自动日志 pane 可通过以下环境变量控制：
      `RCCB_DEBUG_WATCH_PANE`、`RCCB_DEBUG_WATCH_PROVIDER`、`RCCB_DEBUG_WATCH_PANE_PERCENT`
+   - provider/orchestrator pane 不显示旁路日志；旁路状态与流式信息只在 debug 日志 pane 展示
 6. `status --as-json` 额外返回 `in_flight_count` 与 `in_flight_req_ids`
 
 ### 5.4 调试

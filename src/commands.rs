@@ -20,9 +20,8 @@ use crate::io_utils::{
     normalize_provider_list, now_unix, read_stdin_all, update_task_status, write_json_pretty,
 };
 use crate::layout::{
-    ensure_project_layout, launcher_feed_path, launcher_feeds_dir, launcher_meta_path,
-    logs_instance_dir, rccb_dir, sanitize_filename, session_instance_dir, state_path,
-    tasks_instance_dir, tasks_root_dir, tmp_instance_dir,
+    ensure_project_layout, launcher_meta_path, logs_instance_dir, rccb_dir, sanitize_filename,
+    session_instance_dir, state_path, tasks_instance_dir, tasks_root_dir, tmp_instance_dir,
 };
 use crate::protocol::{connect_and_send, send_wire_message};
 use crate::types::{AskBusEvent, AskEvent, AskResponse, InstanceState};
@@ -1037,10 +1036,6 @@ fn prepare_launcher_runtime(
     if let Some(parent) = launcher_meta.parent() {
         fs::create_dir_all(parent)?;
     }
-    let feeds_dir = launcher_feeds_dir(project_dir, instance);
-    if pane_feed_enabled() {
-        fs::create_dir_all(&feeds_dir)?;
-    }
 
     let orchestrator = providers
         .first()
@@ -1048,13 +1043,6 @@ fn prepare_launcher_runtime(
         .unwrap_or_else(|| "orchestrator".to_string());
     let mut entries = Vec::new();
     for provider in providers {
-        let feed = launcher_feed_path(project_dir, instance, provider);
-        if pane_feed_enabled() {
-            if let Some(parent) = feed.parent() {
-                fs::create_dir_all(parent)?;
-            }
-            let _ = OpenOptions::new().create(true).append(true).open(&feed)?;
-        }
         entries.push(LauncherProviderMeta {
             provider: provider.clone(),
             role: if provider == &orchestrator {
@@ -1062,7 +1050,7 @@ fn prepare_launcher_runtime(
             } else {
                 "executor".to_string()
             },
-            feed_file: feed.display().to_string(),
+            feed_file: String::new(),
             pane_id: provider_panes.get(provider).cloned(),
         });
     }
@@ -1083,22 +1071,8 @@ fn prepare_launcher_runtime(
     write_json_pretty(&launcher_meta, &meta)
 }
 
-fn provider_start_cmd(project_dir: &Path, instance: &str, provider: &str) -> String {
-    let base = provider_raw_start_cmd(provider);
-    if !pane_feed_enabled() {
-        return base;
-    }
-    let feed_file = launcher_feed_path(project_dir, instance, provider);
-    let feed_dir = launcher_feeds_dir(project_dir, instance);
-    let feed_dir_q = shell_quote(&feed_dir.display().to_string());
-    let feed_q = shell_quote(&feed_file.display().to_string());
-
-    format!(
-        "mkdir -p {feed_dir}; touch {feed}; tail -n0 -F {feed} 2>/dev/null & RCCB_FEED_PID=$!; trap 'kill $RCCB_FEED_PID >/dev/null 2>&1 || true' EXIT INT TERM; {base}; RCCB_FEED_RC=$?; kill $RCCB_FEED_PID >/dev/null 2>&1 || true; wait $RCCB_FEED_PID >/dev/null 2>&1 || true; exit $RCCB_FEED_RC",
-        feed_dir = feed_dir_q,
-        feed = feed_q,
-        base = base,
-    )
+fn provider_start_cmd(_project_dir: &Path, _instance: &str, provider: &str) -> String {
+    provider_raw_start_cmd(provider)
 }
 
 fn provider_raw_start_cmd(provider: &str) -> String {
@@ -1181,10 +1155,6 @@ fn ccb_autostart_exports() -> String {
         "CCB_AUTO_DASKD=1",
     ]
     .join(" ")
-}
-
-fn pane_feed_enabled() -> bool {
-    env_bool("RCCB_PANE_FEED", false)
 }
 
 fn env_bool(key: &str, default: bool) -> bool {
@@ -3612,20 +3582,13 @@ mod tests {
     }
 
     #[test]
-    fn provider_start_cmd_skips_feed_tail_by_default() {
+    fn provider_start_cmd_uses_raw_provider_command() {
         let _guard = env_lock().lock().unwrap();
-        let old = std::env::var("RCCB_PANE_FEED").ok();
         let old_ccb = std::env::var("RCCB_USE_CCB_PROVIDER_LAUNCH").ok();
         unsafe {
-            std::env::remove_var("RCCB_PANE_FEED");
             std::env::remove_var("RCCB_USE_CCB_PROVIDER_LAUNCH");
         }
         let cmd = provider_start_cmd(Path::new("/tmp/rccb-proj"), "default", "codex");
-        if let Some(v) = old {
-            unsafe {
-                std::env::set_var("RCCB_PANE_FEED", v);
-            }
-        }
         if let Some(v) = old_ccb {
             unsafe {
                 std::env::set_var("RCCB_USE_CCB_PROVIDER_LAUNCH", v);
@@ -3635,29 +3598,8 @@ mod tests {
                 std::env::remove_var("RCCB_USE_CCB_PROVIDER_LAUNCH");
             }
         }
-        assert!(!cmd.contains("tail -n0 -F"));
         assert!(cmd.contains("codex"));
-    }
-
-    #[test]
-    fn provider_start_cmd_feed_enabled_wraps_tail() {
-        let _guard = env_lock().lock().unwrap();
-        let old = std::env::var("RCCB_PANE_FEED").ok();
-        unsafe {
-            std::env::set_var("RCCB_PANE_FEED", "1");
-        }
-        let cmd = provider_start_cmd(Path::new("/tmp/rccb-proj"), "default", "codex");
-        if let Some(v) = old {
-            unsafe {
-                std::env::set_var("RCCB_PANE_FEED", v);
-            }
-        } else {
-            unsafe {
-                std::env::remove_var("RCCB_PANE_FEED");
-            }
-        }
-        assert!(cmd.contains("tail -n0 -F"));
-        assert!(cmd.contains(".rccb/tmp/default/launcher/feeds/codex.log"));
+        assert!(!cmd.contains("tail -n0 -F"));
     }
 
     #[test]
