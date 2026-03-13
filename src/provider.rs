@@ -359,7 +359,10 @@ fn execute_native_via_pane(
     let mut transcript = String::new();
     let mut previous_window =
         capture_initial_request_window(target, capture_lines, req_id, &previous_snapshot);
-    let baseline_done_count = count_done_lines_for_req(&previous_window, req_id);
+    let baseline_begin_count = count_begin_lines_for_req(pane_prompt, req_id)
+        .max(count_begin_lines_for_req(&previous_window, req_id));
+    let baseline_done_count = count_done_lines_for_req(pane_prompt, req_id)
+        .max(count_done_lines_for_req(&previous_window, req_id));
     loop {
         if should_cancel() {
             return Ok(ProviderExecResult {
@@ -416,8 +419,12 @@ fn execute_native_via_pane(
             }
         }
 
+        let pane_begin_count = count_begin_lines_for_req(&current_window, req_id);
         let pane_done_count = count_done_lines_for_req(&current_window, req_id);
-        if contains_done_line_for_req(&transcript, req_id) || pane_done_count > baseline_done_count
+        let transcript_begin_count = count_begin_lines_for_req(&transcript, req_id);
+        let transcript_done_count = count_done_lines_for_req(&transcript, req_id);
+        if (pane_begin_count > baseline_begin_count && pane_done_count > baseline_done_count)
+            || (transcript_begin_count > 0 && transcript_done_count > 0)
         {
             break;
         }
@@ -1386,6 +1393,11 @@ fn contains_done_line_for_req(text: &str, req_id: &str) -> bool {
 
 fn count_done_lines_for_req(text: &str, req_id: &str) -> usize {
     let target = format!("{} {}", DONE_PREFIX, req_id);
+    text.lines().filter(|line| line.trim() == target).count()
+}
+
+fn count_begin_lines_for_req(text: &str, req_id: &str) -> usize {
+    let target = format!("{} {}", BEGIN_PREFIX, req_id);
     text.lines().filter(|line| line.trim() == target).count()
 }
 

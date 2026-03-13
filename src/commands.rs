@@ -903,7 +903,7 @@ fn build_debug_watch_command(
         None => "--all".to_string(),
     };
     Ok(format!(
-        "{exe} --project-dir {project} watch --instance {instance} {scope} --with-provider-log --with-debug-log --follow --pane-ui",
+        "{exe} --project-dir {project} watch --instance {instance} {scope} --with-provider-log --with-debug-log --follow --timeout-s 0 --pane-ui",
         exe = shell_quote(&exe.display().to_string()),
         project = shell_quote(&project_dir.display().to_string()),
         instance = shell_quote(instance),
@@ -1020,7 +1020,7 @@ fn orchestrator_guardrail_prompt(orchestrator: &str, executors: &[String]) -> St
         executors.join(", ")
     };
     format!(
-        "RCCB 编排模式已启用。\n\n你当前是编排者：{orchestrator}。\n可用执行者：{executor_list}。\n\n严格规则：\n- 不要自己执行 bash 命令。\n- 不要自己修改文件或运行测试。\n- 所有执行任务都必须通过 RCCB 委派给执行者。\n- 你的职责只包括：规划、拆解、分派、验收、汇总。\n\n推荐委派格式：\n`rccb --project-dir . ask --instance default --provider <执行者> --caller {orchestrator} \"<任务>\"`\n\n你会收到两类后台消息：\n- `RCCB_STATUS`：表示执行者已开始执行或仍在处理中，这不是最终结果，请继续等待，不要重复派单。\n- `RCCB_RESULT`：表示该次任务的最终结果已经返回。\n\n收到 `RCCB_RESULT` 后再继续编排；如果还需要动作，请再次委派，而不是自己执行。"
+        "RCCB 编排模式已启用。\n\n你当前是编排者：{orchestrator}。\n可用执行者：{executor_list}。\n\n严格规则：\n- 不要自己执行 bash 命令。\n- 不要自己修改文件或运行测试。\n- 所有执行任务都必须通过 RCCB 委派给执行者。\n- 你的职责只包括：规划、拆解、分派、验收、汇总。\n\n推荐委派格式：\n`rccb --project-dir . ask --instance default --provider <执行者> --caller {orchestrator} \"<任务>\"`\n\n运行期间，执行者状态会在后台持续更新，但不会插入到你的 pane 文本流中。\n只有任务真正完成后，最终结果才会以 `RCCB_RESULT` 回注给你。\n\n收到 `RCCB_RESULT` 后再继续编排；如果还需要动作，请再次委派，而不是自己执行。"
     )
 }
 
@@ -1735,11 +1735,12 @@ pub fn cmd_watch(
         bail!("需要提供 --req-id 或 --provider");
     }
 
-    let effective_timeout_s = if follow && fixed_req_id.is_none() && watch_provider.is_some() {
-        -1.0
-    } else {
-        timeout_s
-    };
+    let effective_timeout_s =
+        if follow && fixed_req_id.is_none() && (watch_provider.is_some() || all) {
+            -1.0
+        } else {
+            timeout_s
+        };
 
     if watch_bus_enabled() {
         if all {
@@ -3908,6 +3909,7 @@ mod tests {
         assert!(cmd.contains("--pane-ui"));
         assert!(cmd.contains("--with-provider-log"));
         assert!(cmd.contains("--with-debug-log"));
+        assert!(cmd.contains("--timeout-s 0"));
         assert!(cmd.contains("--all"));
     }
 

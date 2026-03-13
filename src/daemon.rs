@@ -1779,7 +1779,7 @@ fn relay_task_completed(
         "exit_code": exit_code,
         "reply": reply,
     });
-    dispatch_orchestrator_notice_async(context, &orchestrator_provider, entry, prompt);
+    dispatch_orchestrator_notice_async(context, &orchestrator_provider, entry, Some(prompt));
 }
 
 fn relay_task_started(
@@ -1795,15 +1795,6 @@ fn relay_task_started(
     else {
         return;
     };
-    let prompt = build_orchestrator_status_prompt(
-        req_id,
-        provider,
-        "running",
-        &format!(
-            "执行者已开始处理，超时预算 {:.0} 秒。请继续等待，不要重复派单。",
-            timeout_s.max(0.0)
-        ),
-    );
     let entry = json!({
         "ts_unix": now_unix(),
         "kind": "status",
@@ -1816,7 +1807,7 @@ fn relay_task_started(
         "message": "started",
         "timeout_s": timeout_s,
     });
-    dispatch_orchestrator_notice_async(context, &orchestrator_provider, entry, prompt);
+    dispatch_orchestrator_notice_async(context, &orchestrator_provider, entry, None);
 }
 
 fn relay_task_progress(
@@ -1837,12 +1828,6 @@ fn relay_task_progress(
         return;
     }
     let progress = progress_lines.join("\n");
-    let prompt = build_orchestrator_status_prompt(
-        req_id,
-        provider,
-        "running",
-        &format!("执行者仍在处理，最新进展：\n{}", progress),
-    );
     let entry = json!({
         "ts_unix": now_unix(),
         "kind": "status",
@@ -1854,7 +1839,7 @@ fn relay_task_progress(
         "status": "running",
         "message": progress,
     });
-    dispatch_orchestrator_notice_async(context, &orchestrator_provider, entry, prompt);
+    dispatch_orchestrator_notice_async(context, &orchestrator_provider, entry, None);
 }
 
 fn relay_progress_lines(chunk: &str) -> Vec<String> {
@@ -1864,7 +1849,7 @@ fn relay_progress_lines(chunk: &str) -> Vec<String> {
 
     for raw in chunk.replace('\r', "").lines() {
         let trimmed = raw.trim();
-        if trimmed.is_empty() {
+        if trimmed.is_empty() || is_relay_progress_noise(trimmed) {
             continue;
         }
         lines.push(clamp_bus_text(trimmed, max_chars));
@@ -1875,12 +1860,42 @@ fn relay_progress_lines(chunk: &str) -> Vec<String> {
 
     if lines.is_empty() {
         let trimmed = chunk.trim();
-        if !trimmed.is_empty() {
+        if !trimmed.is_empty() && !is_relay_progress_noise(trimmed) {
             lines.push(clamp_bus_text(trimmed, max_chars));
         }
     }
 
     lines
+}
+
+fn is_relay_progress_noise(line: &str) -> bool {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return true;
+    }
+    if trimmed.starts_with("RCCB_REQ_ID:")
+        || trimmed.starts_with("RCCB_BEGIN:")
+        || trimmed.starts_with("RCCB_DONE:")
+    {
+        return true;
+    }
+    if matches!(trimmed, "<回复内容>" | "<reply>") {
+        return true;
+    }
+    if trimmed.starts_with("请严格按照以下格式回复")
+        || trimmed.starts_with("Type your message")
+        || trimmed.starts_with("Press Ctrl+O")
+        || trimmed.starts_with("You can also use Ctrl+P")
+    {
+        return true;
+    }
+    if trimmed
+        .chars()
+        .all(|c| matches!(c, '▄' | '▀' | '─' | '╭' | '╮' | '╰' | '╯' | '│' | ' '))
+    {
+        return true;
+    }
+    false
 }
 
 fn relay_progress_max_lines() -> usize {
@@ -2024,23 +2039,11 @@ fn should_emit_orchestrator_progress(req_id: &str) -> bool {
     true
 }
 
-fn build_orchestrator_status_prompt(
-    req_id: &str,
-    executor: &str,
-    status: &str,
-    message: &str,
-) -> String {
-    let message = clamp_bus_text(message.trim(), orchestrator_callback_max_chars());
-    format!(
-        "RCCB_STATUS\nreq_id={req_id}\n执行者={executor}\n状态={status}\n\n{message}\n\n这不是最终结果，请继续等待，不要重复派单。"
-    )
-}
-
 fn dispatch_orchestrator_notice_async(
     context: &DaemonContext,
     orchestrator_provider: &str,
     inbox_entry: Value,
-    prompt: String,
+    prompt: Option<String>,
 ) {
     let req_id = inbox_entry
         .get("req_id")
@@ -2063,27 +2066,29 @@ fn dispatch_orchestrator_notice_async(
             );
         }
 
-        match resolve_provider_pane_dispatch_target(&context, &orchestrator_provider) {
-            Ok(Some(target)) => {
-                if let Err(err) = dispatch_text_to_pane(&target, &prompt) {
+        if let Some(prompt) = prompt {
+            match resolve_provider_pane_dispatch_target(&context, &orchestrator_provider) {
+                Ok(Some(target)) => {
+                    if let Err(err) = dispatch_text_to_pane(&target, &prompt) {
+                        let _ = write_line(
+                            daemon_log,
+                            &format!(
+                                "[WARN] orchestrator callback send failed provider={} req_id={} err={}",
+                                orchestrator_provider, req_id, err
+                            ),
+                        );
+                    }
+                }
+                Ok(None) => {}
+                Err(err) => {
                     let _ = write_line(
                         daemon_log,
                         &format!(
-                            "[WARN] orchestrator callback send failed provider={} req_id={} err={}",
+                            "[WARN] orchestrator callback resolve failed provider={} req_id={} err={}",
                             orchestrator_provider, req_id, err
                         ),
                     );
                 }
-            }
-            Ok(None) => {}
-            Err(err) => {
-                let _ = write_line(
-                    daemon_log,
-                    &format!(
-                        "[WARN] orchestrator callback resolve failed provider={} req_id={} err={}",
-                        orchestrator_provider, req_id, err
-                    ),
-                );
             }
         }
     });
@@ -2275,6 +2280,14 @@ mod tests {
                 std::env::remove_var("RCCB_PANE_DELTA_MAX_LINES");
             }
         }
+    }
+
+    #[test]
+    fn relay_progress_lines_skips_protocol_and_ui_noise() {
+        let lines = relay_progress_lines(
+            "RCCB_REQ_ID: req-1\n请严格按照以下格式回复：\nRCCB_BEGIN: req-1\n<回复内容>\nRCCB_DONE: req-1\n✦ 正在搜索资料\nType your message or @path/to/file\n",
+        );
+        assert_eq!(lines, vec!["✦ 正在搜索资料".to_string()]);
     }
 
     #[test]
