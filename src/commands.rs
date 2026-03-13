@@ -153,6 +153,7 @@ pub fn cmd_external_provider_launch(project_dir: &Path, raw: Vec<String>) -> Res
     }
     let effective_debug = resolve_start_debug(project_dir, "default", env_debug_enabled());
     ensure_project_layout(project_dir)?;
+    restart_default_daemon_for_shortcut(project_dir)?;
     ensure_default_daemon_running(project_dir, &normalized, effective_debug)?;
 
     if launch_provider_clis(project_dir, &normalized, effective_debug)? {
@@ -340,6 +341,21 @@ fn ensure_default_daemon_running(
     }
 
     bail!("daemon 启动超时，请检查日志：{}", launch_log.display())
+}
+
+fn restart_default_daemon_for_shortcut(project_dir: &Path) -> Result<()> {
+    let instance = SHORTCUT_INSTANCE;
+    let path = state_path(project_dir, instance);
+    if path.exists() {
+        let was_running = is_daemon_ready(project_dir, instance);
+        if was_running {
+            println!("检测到旧的 default 实例仍在运行，正在重启以应用最新规则...");
+            let _ = cmd_stop(project_dir, instance);
+        }
+        let _ = cleanup_inflight_tasks(project_dir, instance);
+        let _ = fs::remove_dir_all(tmp_instance_dir(project_dir, instance).join("launcher"));
+    }
+    Ok(())
 }
 
 fn is_daemon_ready(project_dir: &Path, instance: &str) -> bool {
