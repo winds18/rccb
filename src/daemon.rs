@@ -656,17 +656,6 @@ fn handle_connection(
             };
             debug_log_json(context, "[REQUEST]", &req);
             let req_id = req.req_id.clone().unwrap_or_else(make_req_id);
-            let task_file = write_request_task(context, &req, &req_id)?;
-            relay_task_dispatched(context, &pool.event_bus, &req, &req_id);
-
-            {
-                let mut guard = context
-                    .shared_state
-                    .lock()
-                    .map_err(|_| anyhow!("state lock poisoned after ask.request"))?;
-                guard.last_task_id = Some(req_id.clone());
-                write_state(&context.state_path, &guard)?;
-            }
 
             if req.stream && req.async_mode {
                 let resp = AskResponse {
@@ -681,41 +670,55 @@ fn handle_connection(
                 };
                 debug_wire_out_response(context, &resp);
                 write_json_line(&mut stream, &resp)
-            } else if req.async_mode {
-                if let Err(err) = pool.submit_async(req.clone(), req_id.clone(), task_file) {
+            } else {
+                let task_file = write_request_task(context, &req, &req_id)?;
+                relay_task_dispatched(context, &pool.event_bus, &req, &req_id);
+
+                {
+                    let mut guard = context
+                        .shared_state
+                        .lock()
+                        .map_err(|_| anyhow!("state lock poisoned after ask.request"))?;
+                    guard.last_task_id = Some(req_id.clone());
+                    write_state(&context.state_path, &guard)?;
+                }
+
+                if req.async_mode {
+                    if let Err(err) = pool.submit_async(req.clone(), req_id.clone(), task_file) {
+                        let resp = AskResponse {
+                            msg_type: format!("{}.response", PROTOCOL_PREFIX),
+                            v: PROTOCOL_VERSION,
+                            id: request_id,
+                            req_id: Some(req_id),
+                            exit_code: 1,
+                            reply: format!("enqueue failed: {}", err),
+                            provider: Some(req.provider),
+                            meta: Some(json!({"status": "failed"})),
+                        };
+                        debug_wire_out_response(context, &resp);
+                        return write_json_line(&mut stream, &resp);
+                    }
                     let resp = AskResponse {
                         msg_type: format!("{}.response", PROTOCOL_PREFIX),
                         v: PROTOCOL_VERSION,
                         id: request_id,
                         req_id: Some(req_id),
-                        exit_code: 1,
-                        reply: format!("enqueue failed: {}", err),
+                        exit_code: 0,
+                        reply: "submitted".to_string(),
                         provider: Some(req.provider),
-                        meta: Some(json!({"status": "failed"})),
+                        meta: Some(json!({"status": "queued"})),
                     };
                     debug_wire_out_response(context, &resp);
-                    return write_json_line(&mut stream, &resp);
+                    write_json_line(&mut stream, &resp)
+                } else if req.stream {
+                    let pending = pool.submit_stream(req, req_id.clone(), task_file)?;
+                    forward_stream_events(&mut stream, context, &request_id, pending)
+                } else {
+                    let mut response = pool.submit(req, req_id.clone(), task_file)?;
+                    response.id = request_id;
+                    debug_wire_out_response(context, &response);
+                    write_json_line(&mut stream, &response)
                 }
-                let resp = AskResponse {
-                    msg_type: format!("{}.response", PROTOCOL_PREFIX),
-                    v: PROTOCOL_VERSION,
-                    id: request_id,
-                    req_id: Some(req_id),
-                    exit_code: 0,
-                    reply: "submitted".to_string(),
-                    provider: Some(req.provider),
-                    meta: Some(json!({"status": "queued"})),
-                };
-                debug_wire_out_response(context, &resp);
-                write_json_line(&mut stream, &resp)
-            } else if req.stream {
-                let pending = pool.submit_stream(req, req_id.clone(), task_file)?;
-                forward_stream_events(&mut stream, context, &request_id, pending)
-            } else {
-                let mut response = pool.submit(req, req_id.clone(), task_file)?;
-                response.id = request_id;
-                debug_wire_out_response(context, &response);
-                write_json_line(&mut stream, &response)
             }
         }
         _ => {
@@ -1231,14 +1234,8 @@ fn worker_loop(
             ),
         );
 
-        let role = if context
-            .shared_state
-            .lock()
-            .ok()
-            .and_then(|s| s.orchestrator.clone())
-            .unwrap_or_default()
-            == req.provider
-        {
+        let orchestrator = current_orchestrator(&context);
+        let role = if orchestrator.as_deref() == Some(req.provider.as_str()) {
             "orchestrator"
         } else {
             "executor"
@@ -1263,6 +1260,14 @@ fn worker_loop(
                     "timeout_s": req.timeout_s,
                 })),
             },
+        );
+        relay_task_started(
+            &context,
+            orchestrator.as_deref(),
+            &req.provider,
+            &req.caller,
+            &task.req_id,
+            req.timeout_s,
         );
 
         if let Some(tx) = &task.stream_tx {
@@ -1299,6 +1304,13 @@ fn worker_loop(
                     return;
                 }
                 append_provider_stream_chunk(&provider_log, &task.req_id, &chunk);
+                relay_task_progress(
+                    &context,
+                    orchestrator.as_deref(),
+                    &req.provider,
+                    &task.req_id,
+                    &chunk,
+                );
                 publish_bus_record(
                     &event_bus,
                     BusRecord {
@@ -1384,7 +1396,8 @@ fn worker_loop(
         let reply_for_debug = reply.clone();
         relay_task_completed(
             &context,
-            &req,
+            orchestrator.as_deref(),
+            &req.provider,
             &task.req_id,
             task_status,
             exec.exit_code,
@@ -1756,7 +1769,8 @@ fn relay_task_dispatched(
 
 fn relay_task_completed(
     context: &DaemonContext,
-    req: &AskRequest,
+    orchestrator: Option<&str>,
+    provider: &str,
     req_id: &str,
     status: &str,
     exit_code: i32,
@@ -1767,20 +1781,129 @@ fn relay_task_completed(
         "[RCCB][任务完成] req_id={} status={} exit_code={} reply={}",
         req_id, status, exit_code, reply_preview
     );
-    relay_to_provider_feed(context, &req.provider, &provider_line);
+    relay_to_provider_feed(context, provider, &provider_line);
     if pane_status_mirror_enabled() {
-        let _ = relay_to_provider_pane_status(context, &req.provider, &provider_line);
+        let _ = relay_to_provider_pane_status(context, provider, &provider_line);
     }
 
-    if let Some(orchestrator) = current_orchestrator(context) {
+    if let Some(orchestrator) = orchestrator {
         let orchestrator_line = format!(
             "[RCCB][执行回传] req_id={} provider={} status={} exit_code={} reply={}",
-            req_id, req.provider, status, exit_code, reply_preview
+            req_id, provider, status, exit_code, reply_preview
         );
         relay_to_provider_feed(context, &orchestrator, &orchestrator_line);
         if pane_status_mirror_enabled() {
             let _ = relay_to_provider_pane_status(context, &orchestrator, &orchestrator_line);
         }
+    }
+}
+
+fn relay_task_started(
+    context: &DaemonContext,
+    orchestrator: Option<&str>,
+    provider: &str,
+    caller: &str,
+    req_id: &str,
+    timeout_s: f64,
+) {
+    let provider_line = format!(
+        "[RCCB][开始执行] req_id={} caller={} timeout_s={:.3}",
+        req_id, caller, timeout_s
+    );
+    relay_to_provider_feed(context, provider, &provider_line);
+    if pane_status_mirror_enabled() {
+        let _ = relay_to_provider_pane_status(context, provider, &provider_line);
+    }
+
+    if let Some(orchestrator) = orchestrator {
+        let orchestrator_line = format!(
+            "[RCCB][执行开始] req_id={} provider={} caller={} timeout_s={:.3}",
+            req_id, provider, caller, timeout_s
+        );
+        relay_to_provider_feed(context, &orchestrator, &orchestrator_line);
+        if pane_status_mirror_enabled() {
+            let _ = relay_to_provider_pane_status(context, &orchestrator, &orchestrator_line);
+        }
+    }
+}
+
+fn relay_task_progress(
+    context: &DaemonContext,
+    orchestrator: Option<&str>,
+    provider: &str,
+    req_id: &str,
+    chunk: &str,
+) {
+    let lines = relay_progress_lines(chunk);
+    if lines.is_empty() {
+        return;
+    }
+
+    for line in &lines {
+        relay_to_provider_feed(
+            context,
+            provider,
+            &format!("[RCCB][执行中] req_id={} {}", req_id, line),
+        );
+    }
+
+    if let Some(orchestrator) = orchestrator {
+        for line in lines {
+            relay_to_provider_feed(
+                context,
+                &orchestrator,
+                &format!(
+                    "[RCCB][执行流] req_id={} provider={} {}",
+                    req_id, provider, line
+                ),
+            );
+        }
+    }
+}
+
+fn relay_progress_lines(chunk: &str) -> Vec<String> {
+    let max_lines = relay_progress_max_lines();
+    let max_chars = relay_progress_max_chars();
+    let mut lines = Vec::new();
+
+    for raw in chunk.replace('\r', "").lines() {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        lines.push(clamp_bus_text(trimmed, max_chars));
+        if lines.len() >= max_lines {
+            break;
+        }
+    }
+
+    if lines.is_empty() {
+        let trimmed = chunk.trim();
+        if !trimmed.is_empty() {
+            lines.push(clamp_bus_text(trimmed, max_chars));
+        }
+    }
+
+    lines
+}
+
+fn relay_progress_max_lines() -> usize {
+    match std::env::var("RCCB_PANE_DELTA_MAX_LINES") {
+        Ok(raw) => match raw.trim().parse::<usize>() {
+            Ok(v) => v.clamp(1, 32),
+            Err(_) => 8,
+        },
+        Err(_) => 8,
+    }
+}
+
+fn relay_progress_max_chars() -> usize {
+    match std::env::var("RCCB_PANE_DELTA_MAX_CHARS") {
+        Ok(raw) => match raw.trim().parse::<usize>() {
+            Ok(v) => v.clamp(40, 2000),
+            Err(_) => 240,
+        },
+        Err(_) => 240,
     }
 }
 
@@ -2039,4 +2162,44 @@ fn update_heartbeat(context: &DaemonContext) -> Result<()> {
 
     guard.last_heartbeat_unix = now_unix();
     write_state(&context.state_path, &guard)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Mutex, OnceLock};
+
+    use super::relay_progress_lines;
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    #[test]
+    fn relay_progress_lines_keeps_non_empty_lines() {
+        let lines = relay_progress_lines("\nline one\r\n\nline two\n");
+        assert_eq!(lines, vec!["line one".to_string(), "line two".to_string()]);
+    }
+
+    #[test]
+    fn relay_progress_lines_respects_line_limit_env() {
+        let _guard = env_lock().lock().unwrap();
+        let old = std::env::var("RCCB_PANE_DELTA_MAX_LINES").ok();
+        unsafe {
+            std::env::set_var("RCCB_PANE_DELTA_MAX_LINES", "2");
+        }
+
+        let lines = relay_progress_lines("a\nb\nc\n");
+        assert_eq!(lines, vec!["a".to_string(), "b".to_string()]);
+
+        if let Some(v) = old {
+            unsafe {
+                std::env::set_var("RCCB_PANE_DELTA_MAX_LINES", v);
+            }
+        } else {
+            unsafe {
+                std::env::remove_var("RCCB_PANE_DELTA_MAX_LINES");
+            }
+        }
+    }
 }

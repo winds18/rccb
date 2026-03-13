@@ -1184,7 +1184,7 @@ fn ccb_autostart_exports() -> String {
 }
 
 fn pane_feed_enabled() -> bool {
-    env_bool("RCCB_PANE_FEED", false)
+    env_bool("RCCB_PANE_FEED", true)
 }
 
 fn env_bool(key: &str, default: bool) -> bool {
@@ -3497,7 +3497,7 @@ mod tests {
     }
 
     #[test]
-    fn provider_start_cmd_wraps_feed_tail() {
+    fn provider_start_cmd_wraps_feed_tail_by_default() {
         let _guard = env_lock().lock().unwrap();
         let old = std::env::var("RCCB_PANE_FEED").ok();
         let old_ccb = std::env::var("RCCB_USE_CCB_PROVIDER_LAUNCH").ok();
@@ -3515,17 +3515,21 @@ mod tests {
             unsafe {
                 std::env::set_var("RCCB_USE_CCB_PROVIDER_LAUNCH", v);
             }
+        } else {
+            unsafe {
+                std::env::remove_var("RCCB_USE_CCB_PROVIDER_LAUNCH");
+            }
         }
-        assert!(!cmd.contains("tail -n0 -F"));
+        assert!(cmd.contains("tail -n0 -F"));
         assert!(cmd.contains("codex"));
     }
 
     #[test]
-    fn provider_start_cmd_feed_enabled_wraps_tail() {
+    fn provider_start_cmd_feed_disabled_skips_tail() {
         let _guard = env_lock().lock().unwrap();
         let old = std::env::var("RCCB_PANE_FEED").ok();
         unsafe {
-            std::env::set_var("RCCB_PANE_FEED", "1");
+            std::env::set_var("RCCB_PANE_FEED", "0");
         }
         let cmd = provider_start_cmd(Path::new("/tmp/rccb-proj"), "default", "codex");
         if let Some(v) = old {
@@ -3537,8 +3541,8 @@ mod tests {
                 std::env::remove_var("RCCB_PANE_FEED");
             }
         }
-        assert!(cmd.contains("tail -n0 -F"));
-        assert!(cmd.contains(".rccb/tmp/default/launcher/feeds/codex.log"));
+        assert!(!cmd.contains("tail -n0 -F"));
+        assert!(cmd.contains("codex"));
     }
 
     #[test]

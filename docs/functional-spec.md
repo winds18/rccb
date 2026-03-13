@@ -211,6 +211,7 @@
 3. 快捷启动行为：
    - 自动确保 `default` 实例 daemon 在线（后台启动）
    - 在 `tmux/wezterm` 环境自动拉起 provider CLI pane
+   - 默认启用 pane feed 实时镜像，将派发、执行中增量和终态回流到对应 pane
    - 若 debug 开启，自动在编排者 pane 上方增加日志 pane（默认追踪首个执行者，`watch --follow`）
    - 默认静默后台通信，不向 pane 输入区注入任务文本/通知
    - opencode 在存在 pane 元数据时默认走 pane 执行（自动回车），无 pane 时回退后台 native 执行

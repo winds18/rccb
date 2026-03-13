@@ -1,3 +1,4 @@
 /target
 /.rccb
 /dist
+.DS_Store
