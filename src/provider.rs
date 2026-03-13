@@ -292,7 +292,10 @@ fn native_should_use_pane_exec(provider: &str) -> bool {
     if let Some(v) = parse_env_bool("RCCB_PANE_EXEC") {
         return v;
     }
-    matches!(provider.trim().to_ascii_lowercase().as_str(), "opencode")
+    matches!(
+        provider.trim().to_ascii_lowercase().as_str(),
+        "codex" | "opencode"
+    )
 }
 
 fn execute_native_via_pane(
@@ -1537,6 +1540,50 @@ mod tests {
             default_native_args_for_provider("claude"),
             vec!["--print", "{message}"]
         );
+    }
+
+    #[test]
+    fn native_should_use_pane_exec_defaults_for_codex_and_opencode() {
+        let old_global = std::env::var("RCCB_PANE_EXEC").ok();
+        let old_codex = std::env::var("RCCB_CODEX_PANE_EXEC").ok();
+        let old_open = std::env::var("RCCB_OPENCODE_PANE_EXEC").ok();
+        unsafe {
+            std::env::remove_var("RCCB_PANE_EXEC");
+            std::env::remove_var("RCCB_CODEX_PANE_EXEC");
+            std::env::remove_var("RCCB_OPENCODE_PANE_EXEC");
+        }
+
+        assert!(native_should_use_pane_exec("codex"));
+        assert!(native_should_use_pane_exec("opencode"));
+        assert!(!native_should_use_pane_exec("gemini"));
+
+        if let Some(v) = old_global {
+            unsafe {
+                std::env::set_var("RCCB_PANE_EXEC", v);
+            }
+        } else {
+            unsafe {
+                std::env::remove_var("RCCB_PANE_EXEC");
+            }
+        }
+        if let Some(v) = old_codex {
+            unsafe {
+                std::env::set_var("RCCB_CODEX_PANE_EXEC", v);
+            }
+        } else {
+            unsafe {
+                std::env::remove_var("RCCB_CODEX_PANE_EXEC");
+            }
+        }
+        if let Some(v) = old_open {
+            unsafe {
+                std::env::set_var("RCCB_OPENCODE_PANE_EXEC", v);
+            }
+        } else {
+            unsafe {
+                std::env::remove_var("RCCB_OPENCODE_PANE_EXEC");
+            }
+        }
     }
 
     #[test]
