@@ -1,6 +1,6 @@
-# RCCB (Rust Claude Code Bridge)
+# RCCB
 
-`rccb` 是 Rust 重构版 bridge，当前聚焦 `ccb` 最核心能力：
+`rccb` 是 Rust 重构版实时协同桥，当前聚焦这套桥接体系的核心能力：
 
 - 项目级 `.rccb` 绑定（不走全局）
 - 多 provider 编排模型（第一个编排者，其余执行者）
@@ -102,7 +102,7 @@ rccb --project-dir . start --instance team-a \
 
 ## 核心通信机制（Rust）
 
-`rccb start` 会启动项目内 daemon，通信协议与 `ccb askd` 对齐：
+`rccb start` 会启动项目内 daemon，使用 `rccb` 自身实现的通信协议：
 
 - `ask.ping`
 - `ask.request`
@@ -237,7 +237,7 @@ watch 相关环境变量：
 支持三种执行模式（`RCCB_EXEC_MODE`）：
 
 1. `native`（默认，推荐）
-   - 纯 Rust 直连 provider 进程，不依赖外部 `ccb` 主入口。
+   - 纯 Rust 直连 provider 进程，不依赖外部桥接入口。
    - 按 provider 查找本地二进制：`claude/codex/gemini/opencode/droid`
    - 优先支持项目内相对绑定：
      - `<project>/.rccb/bin/<provider>`
@@ -262,19 +262,19 @@ watch 相关环境变量：
    - 可关闭包装（对齐 profile）：
      - `RCCB_NATIVE_NO_WRAP=1`
      - `RCCB_<PROVIDER>_NATIVE_NO_WRAP=1`
-   - 成功判定：`exit_code=0` 即视为 `completed`（`CCB_DONE` 仅作为附加标记）。
-2. `ccb`（兼容模式，可选）
-   - 调用 CCB 包装命令：`cask/gask/oask/dask/lask`
-   - 继承 CCB 会话路由能力，支持 **wezterm / tmux**
+   - 成功判定：`exit_code=0` 即视为 `completed`（`RCCB_DONE` 仅作为附加标记）。
+2. `bridge`（外部 launcher 模式，可选）
+   - 通过外部 launcher 启动 provider 包装命令
+   - 继承外部 launcher 的会话路由能力，支持 **wezterm / tmux**
    - 命令覆盖：
      - `RCCB_CODEX_CMD`
      - `RCCB_GEMINI_CMD`
      - `RCCB_OPENCODE_CMD`
      - `RCCB_DROID_CMD`
      - `RCCB_CLAUDE_CMD`
-   - CCB 安装路径：
-     - `RCCB_CCB_BIN_DIR`
-     - `RCCB_CCB_ROOT`
+   - 外部 launcher 路径：
+     - `RCCB_BRIDGE_BIN_DIR`
+     - `RCCB_BRIDGE_ROOT`
    - 原生执行策略覆盖：
      - `RCCB_NATIVE_TIMEOUT_S` / `RCCB_<PROVIDER>_NATIVE_TIMEOUT_S`
      - `RCCB_NATIVE_QUIET` / `RCCB_<PROVIDER>_NATIVE_QUIET`
@@ -372,12 +372,12 @@ hook 进程可读取上下文环境变量：
 - `RCCB_HOOK_PROJECT_DIR`
 - `RCCB_HOOK_WORK_DIR`
 
-兼容变量（便于复用 CCB 生态脚本）：
+额外完成态变量：
 
-- `CCB_CALLER`
-- `CCB_REQ_ID`
-- `CCB_DONE_SEEN`
-- `CCB_COMPLETION_STATUS`
+- `RCCB_CALLER`
+- `RCCB_REQ_ID`
+- `RCCB_DONE_SEEN`
+- `RCCB_COMPLETION_STATUS`
 
 reply 文本通过 `stdin` 传给 hook 命令。
 
@@ -410,7 +410,7 @@ cargo build --release
 1. 项目级多实例绑定
 2. 编排模型与角色落盘
 3. Rust daemon + ask 协议通信链路（含实时 `--stream`）
-4. Provider 执行三模式（`ccb`/`native`/`stub`）
+4. Provider 执行三模式（`bridge`/`native`/`stub`）
 5. 调试开关与完整调试日志
 6. IM 通道
 7. 任务实时观察（watch）

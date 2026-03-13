@@ -39,8 +39,8 @@ const HELP_EXAMPLES: &str = r#"示例：
 #[command(
     name = "rccb",
     version,
-    about = "RCCB：Rust 重构版 CCB（项目级绑定，多实例，可观测）",
-    long_about = "RCCB 是对 CCB 核心能力的 Rust 重构：\n- 项目级 .rccb 绑定（不依赖全局状态）\n- 多 provider 编排（首个为编排者）\n- ask.* 协议通信（同步/流式/异步/取消）\n- 完整日志与调试开关\n- 支持 tmux/wezterm 场景下的快捷启动与 pane 编排",
+    about = "RCCB：Rust 重构版实时协同桥（项目级绑定、多实例、可观测）",
+    long_about = "RCCB 是对桥接核心能力的 Rust 重构：\n- 项目级 .rccb 绑定（不依赖全局状态）\n- 多 provider 编排（首个为编排者）\n- ask.* 协议通信（同步/流式/异步/取消）\n- 完整日志与调试开关\n- 支持 tmux/wezterm 场景下的快捷启动与 pane 编排",
     after_long_help = HELP_EXAMPLES
 )]
 pub struct Cli {

@@ -13,9 +13,9 @@ use serde::Deserialize;
 
 use crate::types::AskRequest;
 
-const REQ_ID_PREFIX: &str = "CCB_REQ_ID:";
-const BEGIN_PREFIX: &str = "CCB_BEGIN:";
-const DONE_PREFIX: &str = "CCB_DONE:";
+const REQ_ID_PREFIX: &str = "RCCB_REQ_ID:";
+const BEGIN_PREFIX: &str = "RCCB_BEGIN:";
+const DONE_PREFIX: &str = "RCCB_DONE:";
 
 #[derive(Debug, Clone)]
 pub struct ProviderExecResult {
@@ -34,7 +34,7 @@ pub struct ProviderExecResult {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ExecMode {
-    Ccb,
+    Bridge,
     Native,
     Stub,
 }
@@ -51,23 +51,23 @@ pub struct PaneDispatchTarget {
     pub pane_id: String,
 }
 
-const CCB_AUTOSTART_ENV_KEYS: &[&str] = &[
-    "CCB_ASKD_AUTOSTART",
-    "CCB_CASKD_AUTOSTART",
-    "CCB_GASKD_AUTOSTART",
-    "CCB_OASKD_AUTOSTART",
-    "CCB_LASKD_AUTOSTART",
-    "CCB_DASKD_AUTOSTART",
-    "CCB_CASKD",
-    "CCB_GASKD",
-    "CCB_OASKD",
-    "CCB_LASKD",
-    "CCB_DASKD",
-    "CCB_AUTO_CASKD",
-    "CCB_AUTO_GASKD",
-    "CCB_AUTO_OASKD",
-    "CCB_AUTO_LASKD",
-    "CCB_AUTO_DASKD",
+const RCCB_AUTOSTART_ENV_KEYS: &[&str] = &[
+    "RCCB_ASKD_AUTOSTART",
+    "RCCB_CASKD_AUTOSTART",
+    "RCCB_GASKD_AUTOSTART",
+    "RCCB_OASKD_AUTOSTART",
+    "RCCB_LASKD_AUTOSTART",
+    "RCCB_DASKD_AUTOSTART",
+    "RCCB_CASKD",
+    "RCCB_GASKD",
+    "RCCB_OASKD",
+    "RCCB_LASKD",
+    "RCCB_DASKD",
+    "RCCB_AUTO_CASKD",
+    "RCCB_AUTO_GASKD",
+    "RCCB_AUTO_OASKD",
+    "RCCB_AUTO_LASKD",
+    "RCCB_AUTO_DASKD",
 ];
 
 enum PipeMsg {
@@ -112,10 +112,10 @@ pub fn execute_provider_request(
     let mode = execution_mode();
     match mode {
         ExecMode::Stub => Ok(run_stub(req, req_id)),
-        ExecMode::Ccb => {
+        ExecMode::Bridge => {
             let wrapper = resolve_wrapper_path(&req.provider).with_context(|| {
                 format!(
-                    "provider `{}` wrapper not found. set RCCB_{}_CMD or RCCB_CCB_BIN_DIR",
+                    "provider `{}` 的 bridge wrapper 不存在，请设置 RCCB_{}_CMD 或 RCCB_BRIDGE_BIN_DIR",
                     req.provider,
                     req.provider.to_ascii_uppercase()
                 )
@@ -126,15 +126,15 @@ pub fn execute_provider_request(
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
-                .env("CCB_CALLER", &req.caller)
-                .env("CCB_REQ_ID", req_id);
-            apply_ccb_autostart_env(&mut cmd);
+                .env("RCCB_CALLER", &req.caller)
+                .env("RCCB_REQ_ID", req_id);
+            apply_rccb_autostart_env(&mut cmd);
             if req.quiet {
                 cmd.arg("--quiet");
             }
             if req.timeout_s >= 0.0 {
                 cmd.arg("--timeout").arg(format!("{:.3}", req.timeout_s));
-                cmd.env("CCB_SYNC_TIMEOUT", format!("{:.3}", req.timeout_s));
+                cmd.env("RCCB_SYNC_TIMEOUT", format!("{:.3}", req.timeout_s));
             }
 
             let input = format!("{}\n", req.message);
@@ -143,7 +143,7 @@ pub fn execute_provider_request(
                 run_process_with_stream(cmd, &input, timeout, &mut on_delta, &should_cancel)
                     .with_context(|| {
                         format!(
-                            "spawn wrapper failed for provider={} wrapper={}",
+                            "启动 bridge wrapper 失败：provider={} wrapper={}",
                             req.provider,
                             wrapper.display()
                         )
@@ -158,9 +158,8 @@ pub fn execute_provider_request(
         }
         ExecMode::Native => {
             let work_dir = Path::new(&req.work_dir);
-            let profile = load_native_profile(&req.provider, work_dir).with_context(|| {
-                format!("load native provider profile failed for `{}`", req.provider)
-            })?;
+            let profile = load_native_profile(&req.provider, work_dir)
+                .with_context(|| format!("加载原生 provider 配置失败：`{}`", req.provider))?;
             let effective_timeout_s =
                 effective_native_timeout_s(&req.provider, req.timeout_s, profile.as_ref());
             let effective_quiet =
@@ -169,7 +168,7 @@ pub fn execute_provider_request(
             let binary = resolve_native_provider_cmd(&req.provider, work_dir, profile.as_ref())
                 .with_context(|| {
                     format!(
-                        "provider `{}` native command not found. set RCCB_{}_NATIVE_CMD",
+                        "provider `{}` 的原生命令不存在，请设置 RCCB_{}_NATIVE_CMD",
                         req.provider,
                         req.provider.to_ascii_uppercase()
                     )
@@ -200,8 +199,8 @@ pub fn execute_provider_request(
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
-                .env("CCB_CALLER", &req.caller)
-                .env("CCB_REQ_ID", req_id)
+                .env("RCCB_CALLER", &req.caller)
+                .env("RCCB_REQ_ID", req_id)
                 .env("RCCB_NATIVE_PROVIDER", &req.provider);
 
             let (native_args, used_default_args) = native_args_for_provider(
@@ -244,7 +243,7 @@ pub fn execute_provider_request(
             )
             .with_context(|| {
                 format!(
-                    "spawn native provider failed: provider={} cmd={}",
+                    "启动原生 provider 失败：provider={} cmd={}",
                     req.provider,
                     binary.display()
                 )
@@ -265,13 +264,13 @@ fn execution_mode() -> ExecMode {
     let raw = env::var("RCCB_EXEC_MODE").unwrap_or_else(|_| "native".to_string());
     match raw.trim().to_ascii_lowercase().as_str() {
         "stub" => ExecMode::Stub,
-        "ccb" => ExecMode::Ccb,
+        "bridge" => ExecMode::Bridge,
         _ => ExecMode::Native,
     }
 }
 
-fn apply_ccb_autostart_env(cmd: &mut Command) {
-    for key in CCB_AUTOSTART_ENV_KEYS {
+fn apply_rccb_autostart_env(cmd: &mut Command) {
+    for key in RCCB_AUTOSTART_ENV_KEYS {
         cmd.env(key, "1");
     }
 }
@@ -315,14 +314,10 @@ fn execute_native_via_pane(
         .unwrap_or(800.0)
         .clamp(200.0, 4000.0) as i32;
 
-    let previous_snapshot = capture_pane_text(target, capture_lines).with_context(|| {
-        format!(
-            "capture pane before dispatch failed: pane={}",
-            target.pane_id
-        )
-    })?;
+    let previous_snapshot = capture_pane_text(target, capture_lines)
+        .with_context(|| format!("下发前抓取 pane 内容失败：pane={}", target.pane_id))?;
     dispatch_text_to_pane(target, pane_prompt)
-        .with_context(|| format!("send task to pane failed: pane={}", target.pane_id))?;
+        .with_context(|| format!("向 pane 下发任务失败：pane={}", target.pane_id))?;
 
     let timeout = if effective_timeout_s < 0.0 {
         None
@@ -336,7 +331,7 @@ fn execute_native_via_pane(
         if should_cancel() {
             return Ok(ProviderExecResult {
                 exit_code: 130,
-                reply: "request canceled".to_string(),
+                reply: "请求已取消".to_string(),
                 done_seen: false,
                 done_ms: None,
                 anchor_seen: true,
@@ -353,7 +348,7 @@ fn execute_native_via_pane(
             if started.elapsed() >= limit {
                 return Ok(ProviderExecResult {
                     exit_code: 2,
-                    reply: "request timeout".to_string(),
+                    reply: "请求超时".to_string(),
                     done_seen: false,
                     done_ms: None,
                     anchor_seen: true,
@@ -640,7 +635,7 @@ fn pane_window_for_req(text: &str, req_id: &str) -> Option<String> {
 
 fn run_stub(req: &AskRequest, req_id: &str) -> ProviderExecResult {
     let reply = format!(
-        "[rccb:stub] provider={} caller={} req_id={}\n{}\nCCB_DONE: {}",
+        "[rccb:stub] provider={} caller={} req_id={}\n{}\nRCCB_DONE: {}",
         req.provider, req.caller, req_id, req.message, req_id
     );
     ProviderExecResult {
@@ -761,7 +756,7 @@ fn build_exec_result(
     if outcome.canceled {
         return ProviderExecResult {
             exit_code: 130,
-            reply: "request canceled".to_string(),
+            reply: "请求已取消".to_string(),
             done_seen: false,
             done_ms: None,
             anchor_seen: true,
@@ -777,7 +772,7 @@ fn build_exec_result(
     if outcome.timed_out {
         return ProviderExecResult {
             exit_code: 2,
-            reply: "request timeout".to_string(),
+            reply: "请求超时".to_string(),
             done_seen: false,
             done_ms: None,
             anchor_seen: true,
@@ -802,7 +797,7 @@ fn build_exec_result(
     }
 
     let (exit_code, done_seen, status) = match mode {
-        ExecMode::Ccb => {
+        ExecMode::Bridge => {
             let done = outcome.exit_code == 0 || done_seen_marker;
             let status = if outcome.exit_code == 0 {
                 "completed"
@@ -948,14 +943,14 @@ fn resolve_wrapper_path(provider: &str) -> Result<PathBuf> {
         bail!("{} is set but not executable: {}", env_key, p.display());
     }
 
-    if let Ok(dir) = env::var("RCCB_CCB_BIN_DIR") {
+    if let Ok(dir) = env::var("RCCB_BRIDGE_BIN_DIR") {
         let p = PathBuf::from(dir.trim()).join(wrapper);
         if is_executable_path(&p) {
             return Ok(p);
         }
     }
 
-    if let Ok(root) = env::var("RCCB_CCB_ROOT") {
+    if let Ok(root) = env::var("RCCB_BRIDGE_ROOT") {
         let p = PathBuf::from(root.trim()).join("bin").join(wrapper);
         if is_executable_path(&p) {
             return Ok(p);
@@ -966,16 +961,11 @@ fn resolve_wrapper_path(provider: &str) -> Result<PathBuf> {
         return Ok(path_cmd);
     }
 
-    let local_repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .map(|p| p.join("claude_code_bridge").join("bin").join(wrapper));
-    if let Some(p) = local_repo {
-        if is_executable_path(&p) {
-            return Ok(p);
-        }
-    }
-
-    bail!("wrapper `{}` not found in env/path/local ccb repo", wrapper)
+    bail!(
+        "wrapper `{}` 不存在，请检查 RCCB_{}_CMD / RCCB_BRIDGE_BIN_DIR / RCCB_BRIDGE_ROOT",
+        wrapper,
+        provider.to_ascii_uppercase()
+    )
 }
 
 fn resolve_native_provider_cmd(
@@ -1312,16 +1302,16 @@ fn wrap_prompt_for_provider(provider: &str, message: &str, req_id: &str) -> Stri
     let body = message.trim_end();
     match provider.trim().to_ascii_lowercase().as_str() {
         "claude" => format!(
-            "{REQ_ID_PREFIX} {req_id}\n\n{body}\n\nReply using exactly this format:\n{BEGIN_PREFIX} {req_id}\n<reply>\n{DONE_PREFIX} {req_id}\n"
+            "{REQ_ID_PREFIX} {req_id}\n\n{body}\n\n请严格按照以下格式回复：\n{BEGIN_PREFIX} {req_id}\n<回复内容>\n{DONE_PREFIX} {req_id}\n"
         ),
         "gemini" => format!(
-            "{REQ_ID_PREFIX} {req_id}\n\n{body}\n\nReply using exactly this format:\n{BEGIN_PREFIX} {req_id}\n<reply>\n{DONE_PREFIX} {req_id}\n"
+            "{REQ_ID_PREFIX} {req_id}\n\n{body}\n\n请严格按照以下格式回复：\n{BEGIN_PREFIX} {req_id}\n<回复内容>\n{DONE_PREFIX} {req_id}\n"
         ),
         "codex" | "opencode" | "droid" => format!(
-            "{REQ_ID_PREFIX} {req_id}\n\n{body}\n\nReply using exactly this format:\n{BEGIN_PREFIX} {req_id}\n<reply>\n{DONE_PREFIX} {req_id}\n"
+            "{REQ_ID_PREFIX} {req_id}\n\n{body}\n\n请严格按照以下格式回复：\n{BEGIN_PREFIX} {req_id}\n<回复内容>\n{DONE_PREFIX} {req_id}\n"
         ),
         _ => format!(
-            "{REQ_ID_PREFIX} {req_id}\n\n{body}\n\nIMPORTANT:\n- End your reply with this exact final line:\n{DONE_PREFIX} {req_id}\n"
+            "{REQ_ID_PREFIX} {req_id}\n\n{body}\n\n注意：\n- 请将下面这一行原样作为最后一行输出：\n{DONE_PREFIX} {req_id}\n"
         ),
     }
 }
@@ -1453,7 +1443,7 @@ fn sanitize_stderr_for_reply(stderr: &str) -> String {
         if t.is_empty() {
             continue;
         }
-        if t.starts_with("[CCB_ASYNC_SUBMITTED") {
+        if t.starts_with("[RCCB_ASYNC_SUBMITTED") {
             continue;
         }
         out.push(line);
@@ -1574,12 +1564,12 @@ mod tests {
     }
 
     #[test]
-    fn ccb_autostart_env_keys_cover_all_wrappers() {
-        assert!(CCB_AUTOSTART_ENV_KEYS.contains(&"CCB_CASKD_AUTOSTART"));
-        assert!(CCB_AUTOSTART_ENV_KEYS.contains(&"CCB_GASKD_AUTOSTART"));
-        assert!(CCB_AUTOSTART_ENV_KEYS.contains(&"CCB_OASKD_AUTOSTART"));
-        assert!(CCB_AUTOSTART_ENV_KEYS.contains(&"CCB_LASKD_AUTOSTART"));
-        assert!(CCB_AUTOSTART_ENV_KEYS.contains(&"CCB_DASKD_AUTOSTART"));
+    fn rccb_autostart_env_keys_cover_all_wrappers() {
+        assert!(RCCB_AUTOSTART_ENV_KEYS.contains(&"RCCB_CASKD_AUTOSTART"));
+        assert!(RCCB_AUTOSTART_ENV_KEYS.contains(&"RCCB_GASKD_AUTOSTART"));
+        assert!(RCCB_AUTOSTART_ENV_KEYS.contains(&"RCCB_OASKD_AUTOSTART"));
+        assert!(RCCB_AUTOSTART_ENV_KEYS.contains(&"RCCB_LASKD_AUTOSTART"));
+        assert!(RCCB_AUTOSTART_ENV_KEYS.contains(&"RCCB_DASKD_AUTOSTART"));
     }
 
     #[test]
@@ -1649,7 +1639,7 @@ mod tests {
     fn extract_reply_prefers_latest_done_for_req() {
         let req_id = "req-777";
         let raw = format!(
-            "noise\nCCB_DONE: old-req\n{} {}\nreal answer line 1\nreal answer line 2\n{} {}\n",
+            "noise\nRCCB_DONE: old-req\n{} {}\nreal answer line 1\nreal answer line 2\n{} {}\n",
             BEGIN_PREFIX, req_id, DONE_PREFIX, req_id
         );
         let got = extract_reply_for_req(&raw, req_id);
@@ -1696,7 +1686,7 @@ mod tests {
     #[test]
     fn extract_reply_returns_empty_when_only_other_req_done_exists() {
         let req_id = "req-current";
-        let raw = "old reply\nCCB_DONE: req-old\n";
+        let raw = "old reply\nRCCB_DONE: req-old\n";
         let got = extract_reply_for_req(raw, req_id);
         assert!(got.is_empty());
     }
@@ -1705,10 +1695,10 @@ mod tests {
     fn pane_window_for_req_uses_latest_req_marker() {
         let req_id = "req-current";
         let raw = format!(
-            "banner\nCCB_REQ_ID: old-req\nold body\nCCB_DONE: old-req\nnoise\n> CCB_REQ_ID: {req_id}\nIMPORTANT\nCCB_BEGIN: {req_id}\nstep 1\nCCB_DONE: {req_id}\n"
+            "banner\nRCCB_REQ_ID: old-req\nold body\nRCCB_DONE: old-req\nnoise\n> RCCB_REQ_ID: {req_id}\nIMPORTANT\nRCCB_BEGIN: {req_id}\nstep 1\nRCCB_DONE: {req_id}\n"
         );
         let got = pane_window_for_req(&raw, req_id).expect("window");
-        assert!(got.starts_with(&format!("> CCB_REQ_ID: {req_id}")));
+        assert!(got.starts_with(&format!("> RCCB_REQ_ID: {req_id}")));
         assert!(!got.contains("banner"));
         assert!(!got.contains("old body"));
     }
@@ -1716,24 +1706,24 @@ mod tests {
     #[test]
     fn codex_prompt_uses_begin_and_done_markers() {
         let prompt = wrap_prompt_for_provider("codex", "hello", "req-123");
-        assert!(prompt.contains("CCB_BEGIN: req-123"));
-        assert!(prompt.contains("CCB_DONE: req-123"));
-        assert!(prompt.contains("Reply using exactly this format"));
+        assert!(prompt.contains("RCCB_BEGIN: req-123"));
+        assert!(prompt.contains("RCCB_DONE: req-123"));
+        assert!(prompt.contains("请严格按照以下格式回复"));
     }
 
     #[test]
     fn gemini_prompt_uses_begin_and_done_markers() {
         let prompt = wrap_prompt_for_provider("gemini", "hello", "req-123");
-        assert!(prompt.contains("CCB_BEGIN: req-123"));
-        assert!(prompt.contains("CCB_DONE: req-123"));
-        assert!(prompt.contains("Reply using exactly this format"));
+        assert!(prompt.contains("RCCB_BEGIN: req-123"));
+        assert!(prompt.contains("RCCB_DONE: req-123"));
+        assert!(prompt.contains("请严格按照以下格式回复"));
     }
 
     #[test]
     fn extract_reply_for_req_ignores_pane_prompt_when_begin_exists() {
         let req_id = "req-pane";
         let raw = format!(
-            "› CCB_REQ_ID: {req_id}\n\nhello\n\nReply using exactly this format:\nCCB_BEGIN: {req_id}\nstep 1\nstep 2\nCCB_DONE: {req_id}\n"
+            "› RCCB_REQ_ID: {req_id}\n\nhello\n\n请严格按照以下格式回复：\nRCCB_BEGIN: {req_id}\nstep 1\nstep 2\nRCCB_DONE: {req_id}\n"
         );
         let got = extract_reply_for_req(&raw, req_id);
         assert_eq!(got, "step 1\nstep 2");

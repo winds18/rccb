@@ -69,10 +69,10 @@ fn run_hook(parts: Vec<String>, timeout: Duration, input: CompletionHookInput) {
         .env("RCCB_HOOK_INSTANCE_ID", &input.instance_id)
         .env("RCCB_HOOK_PROJECT_DIR", &input.project_dir)
         .env("RCCB_HOOK_WORK_DIR", &input.work_dir)
-        .env("CCB_CALLER", &input.caller)
-        .env("CCB_REQ_ID", &input.req_id)
-        .env("CCB_DONE_SEEN", if input.done_seen { "1" } else { "0" })
-        .env("CCB_COMPLETION_STATUS", &normalized_status);
+        .env("RCCB_CALLER", &input.caller)
+        .env("RCCB_REQ_ID", &input.req_id)
+        .env("RCCB_DONE_SEEN", if input.done_seen { "1" } else { "0" })
+        .env("RCCB_COMPLETION_STATUS", &normalized_status);
 
     let mut child = match cmd.spawn() {
         Ok(c) => c,
@@ -239,14 +239,14 @@ mod tests {
 
     #[test]
     fn split_shell_like_handles_quotes() {
-        let raw = r#"hook --name "ccb notify" --tag 'task done' --path foo\ bar"#;
+        let raw = r#"hook --name "rccb notify" --tag 'task done' --path foo\ bar"#;
         let args = split_shell_like(raw);
         assert_eq!(
             args,
             vec![
                 "hook".to_string(),
                 "--name".to_string(),
-                "ccb notify".to_string(),
+                "rccb notify".to_string(),
                 "--tag".to_string(),
                 "task done".to_string(),
                 "--path".to_string(),

@@ -600,9 +600,9 @@ fn handle_connection(
                 req_id: Some(target_req_id.clone()),
                 exit_code: if found { 0 } else { 1 },
                 reply: if found {
-                    "cancel signal submitted".to_string()
+                    "取消信号已提交".to_string()
                 } else {
-                    "request not found or already finished".to_string()
+                    "请求不存在或已结束".to_string()
                 },
                 provider: None,
                 meta: Some(json!({
@@ -703,7 +703,7 @@ fn handle_connection(
                         id: request_id,
                         req_id: Some(req_id),
                         exit_code: 0,
-                        reply: "submitted".to_string(),
+                        reply: "已提交".to_string(),
                         provider: Some(req.provider),
                         meta: Some(json!({"status": "queued"})),
                     };
@@ -758,7 +758,7 @@ fn forward_stream_events(
                     request_id.to_string(),
                     None,
                     None,
-                    "request timeout while streaming".to_string(),
+                    "流式请求超时".to_string(),
                 );
                 debug_wire_out_event(context, &event);
                 write_json_event_line(stream, &event)?;
@@ -1362,7 +1362,7 @@ fn worker_loop(
                 );
                 crate::provider::ProviderExecResult {
                     exit_code: 1,
-                    reply: format!("provider execution failed: {}", err),
+                    reply: format!("执行者运行失败：{}", err),
                     done_seen: false,
                     done_ms: None,
                     anchor_seen: false,
@@ -2033,12 +2033,12 @@ fn build_orchestrator_result_prompt(
 ) -> String {
     let reply = clamp_bus_text(reply.trim(), orchestrator_callback_max_chars());
     let reply = if reply.trim().is_empty() {
-        "(empty reply)".to_string()
+        "（空回复）".to_string()
     } else {
         reply
     };
     format!(
-        "RCCB_RESULT\nreq_id={req_id}\nexecutor={executor}\nstatus={status}\nexit_code={exit_code}\n\nExecutor result:\n{reply}\n\nContinue orchestration only.\nDo not execute bash, edit files, or run tests yourself.\nIf more work is needed, delegate it to an executor via RCCB."
+        "RCCB_RESULT\nreq_id={req_id}\n执行者={executor}\n状态={status}\n退出码={exit_code}\n\n执行结果：\n{reply}\n\n你现在只继续做编排工作。\n不要自己执行 bash、修改文件或运行测试。\n如果还需要后续动作，请继续通过 RCCB 委派给执行者。"
     )
 }
 
@@ -2202,9 +2202,9 @@ mod tests {
         let prompt =
             build_orchestrator_result_prompt("req-1", "codex", "completed", 0, "step 1\nstep 2");
         assert!(prompt.contains("RCCB_RESULT"));
-        assert!(prompt.contains("executor=codex"));
+        assert!(prompt.contains("执行者=codex"));
         assert!(prompt.contains("step 1"));
-        assert!(prompt.contains("Do not execute bash"));
-        assert!(prompt.contains("delegate it to an executor via RCCB"));
+        assert!(prompt.contains("不要自己执行 bash"));
+        assert!(prompt.contains("通过 RCCB 委派给执行者"));
     }
 }

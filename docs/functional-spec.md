@@ -2,7 +2,7 @@
 
 ## 1. 重构目标
 
-`rccb` 以 `ccb` 源码为依据重构核心链路，优先保证通信可靠性和执行一致性。
+`rccb` 以既有桥接方案为依据重构核心链路，优先保证通信可靠性和执行一致性。
 
 目标：
 
@@ -81,26 +81,26 @@
       - timeout: `RCCB_<PROVIDER>_NATIVE_TIMEOUT_S` -> `RCCB_NATIVE_TIMEOUT_S` -> profile `timeout_s` -> request `timeout_s`
       - quiet: `RCCB_<PROVIDER>_NATIVE_QUIET` -> `RCCB_NATIVE_QUIET` -> profile `quiet` -> request `quiet`
       - wrap: `RCCB_<PROVIDER>_NATIVE_NO_WRAP` -> `RCCB_NATIVE_NO_WRAP` -> profile `no_wrap`
-   - 成功判定：`exit_code=0` 即视为 `completed`（`CCB_DONE` 仅作为辅助标记）。
-2. `ccb`（兼容模式）
-   - 通过 CCB 包装命令执行 provider：
+   - 成功判定：`exit_code=0` 即视为 `completed`（`RCCB_DONE` 仅作为辅助标记）。
+2. `bridge`（外部 launcher 模式）
+   - 通过外部 launcher 包装命令执行 provider：
      - `codex -> cask`
      - `gemini -> gask`
      - `opencode -> oask`
      - `droid -> dask`
      - `claude -> lask`
-   - 继承 CCB 会话发现/路由能力，兼容 wezterm 与 tmux 会话。
+   - 继承外部 launcher 的会话发现与路由能力，兼容 wezterm 与 tmux 会话。
    - 命令路径可覆盖：
      - `RCCB_<PROVIDER>_CMD`
-     - `RCCB_CCB_BIN_DIR`
-     - `RCCB_CCB_ROOT`
+     - `RCCB_BRIDGE_BIN_DIR`
+     - `RCCB_BRIDGE_ROOT`
 3. `stub`（开发联调）
    - 仅用于通信链路调试，不用于真实 provider 执行。
 
 请求级环境变量注入（所有模式）：
 
-1. `CCB_CALLER`
-2. `CCB_REQ_ID`
+1. `RCCB_CALLER`
+2. `RCCB_REQ_ID`
 
 ## 4. daemon 协议（核心）
 
@@ -192,8 +192,8 @@
 4. hook 输入：
    - reply 通过 `stdin` 传入
    - 上下文通过 `RCCB_HOOK_*` 环境变量传入
-5. 兼容性：
-   - 同步注入 `CCB_CALLER/CCB_REQ_ID/CCB_DONE_SEEN/CCB_COMPLETION_STATUS`
+5. 补充变量：
+   - 同步注入 `RCCB_CALLER/RCCB_REQ_ID/RCCB_DONE_SEEN/RCCB_COMPLETION_STATUS`
 
 ## 5. 命令接口
 

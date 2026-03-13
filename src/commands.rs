@@ -582,9 +582,9 @@ fn split_layout_groups(executors: &[String]) -> (Vec<String>, Vec<String>) {
         return (Vec::new(), Vec::new());
     }
 
-    // Match original CCB launch feel:
-    // - <=4 providers total: left side is orchestrator only.
-    // - 5 providers total: left side split into two panes.
+    // 保持 provider pane 启动布局稳定：
+    // - provider 总数 <=4：左侧只保留编排者。
+    // - provider 总数 =5：左侧拆成上下两个 pane。
     let total = executors.len() + 1;
     if total <= 4 {
         return (Vec::new(), executors.to_vec());
@@ -1020,7 +1020,7 @@ fn orchestrator_guardrail_prompt(orchestrator: &str, executors: &[String]) -> St
         executors.join(", ")
     };
     format!(
-        "RCCB orchestration mode is active.\n\nYou are the orchestrator provider: {orchestrator}.\nAvailable executors: {executor_list}.\n\nSTRICT RULES:\n- Do not run bash commands yourself.\n- Do not edit files or run tests yourself.\n- Use RCCB delegation for every execution task.\n- Keep your role focused on planning, decomposition, dispatch, validation, and summarization.\n\nDelegation pattern:\n`rccb --project-dir . ask --instance default --provider <executor> --caller {orchestrator} \"<task>\"`\n\nExecutor results will be pushed back to you automatically as `RCCB_RESULT` messages.\nWhen a result arrives, continue orchestration only. If more work is needed, delegate again instead of executing directly."
+        "RCCB 编排模式已启用。\n\n你当前是编排者：{orchestrator}。\n可用执行者：{executor_list}。\n\n严格规则：\n- 不要自己执行 bash 命令。\n- 不要自己修改文件或运行测试。\n- 所有执行任务都必须通过 RCCB 委派给执行者。\n- 你的职责只包括：规划、拆解、分派、验收、汇总。\n\n推荐委派格式：\n`rccb --project-dir . ask --instance default --provider <执行者> --caller {orchestrator} \"<任务>\"`\n\n执行者完成后，最终结果会自动以 `RCCB_RESULT` 消息回注给你。\n收到结果后继续做编排；如果还需要动作，请再次委派，而不是自己执行。"
     )
 }
 
@@ -1164,8 +1164,8 @@ fn provider_raw_start_cmd(provider: &str) -> String {
         }
     }
 
-    if env_bool("RCCB_USE_CCB_PROVIDER_LAUNCH", false) {
-        if let Some(ccb_cmd) = provider_ccb_start_cmd(provider) {
+    if env_bool("RCCB_USE_BRIDGE_PROVIDER_LAUNCH", false) {
+        if let Some(ccb_cmd) = provider_bridge_start_cmd(provider) {
             return ccb_cmd;
         }
     }
@@ -1180,59 +1180,48 @@ fn provider_raw_start_cmd(provider: &str) -> String {
     }
 }
 
-fn provider_ccb_start_cmd(provider: &str) -> Option<String> {
-    let launch = resolve_ccb_launch_cmd()?;
+fn provider_bridge_start_cmd(provider: &str) -> Option<String> {
+    let launch = resolve_bridge_launch_cmd()?;
     let provider = provider.trim().to_ascii_lowercase();
     if provider.is_empty() {
         return None;
     }
     Some(format!(
         "{} {} {}",
-        ccb_autostart_exports(),
+        rccb_autostart_exports(),
         launch,
         shell_quote(&provider)
     ))
 }
 
-fn resolve_ccb_launch_cmd() -> Option<String> {
-    if let Ok(v) = env::var("RCCB_CCB_PROVIDER_LAUNCH_CMD") {
+fn resolve_bridge_launch_cmd() -> Option<String> {
+    if let Ok(v) = env::var("RCCB_BRIDGE_PROVIDER_LAUNCH_CMD") {
         let v = v.trim();
         if !v.is_empty() {
             return Some(v.to_string());
         }
     }
-
-    if find_in_path("ccb").is_some() {
-        return Some("ccb".to_string());
-    }
-
-    let local = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .map(|p| p.join("claude_code_bridge").join("ccb"))?;
-    if is_executable_file(&local) {
-        return Some(shell_quote(&local.display().to_string()));
-    }
     None
 }
 
-fn ccb_autostart_exports() -> String {
+fn rccb_autostart_exports() -> String {
     [
-        "CCB_ASKD_AUTOSTART=1",
-        "CCB_CASKD_AUTOSTART=1",
-        "CCB_GASKD_AUTOSTART=1",
-        "CCB_OASKD_AUTOSTART=1",
-        "CCB_LASKD_AUTOSTART=1",
-        "CCB_DASKD_AUTOSTART=1",
-        "CCB_CASKD=1",
-        "CCB_GASKD=1",
-        "CCB_OASKD=1",
-        "CCB_LASKD=1",
-        "CCB_DASKD=1",
-        "CCB_AUTO_CASKD=1",
-        "CCB_AUTO_GASKD=1",
-        "CCB_AUTO_OASKD=1",
-        "CCB_AUTO_LASKD=1",
-        "CCB_AUTO_DASKD=1",
+        "RCCB_ASKD_AUTOSTART=1",
+        "RCCB_CASKD_AUTOSTART=1",
+        "RCCB_GASKD_AUTOSTART=1",
+        "RCCB_OASKD_AUTOSTART=1",
+        "RCCB_LASKD_AUTOSTART=1",
+        "RCCB_DASKD_AUTOSTART=1",
+        "RCCB_CASKD=1",
+        "RCCB_GASKD=1",
+        "RCCB_OASKD=1",
+        "RCCB_LASKD=1",
+        "RCCB_DASKD=1",
+        "RCCB_AUTO_CASKD=1",
+        "RCCB_AUTO_GASKD=1",
+        "RCCB_AUTO_OASKD=1",
+        "RCCB_AUTO_LASKD=1",
+        "RCCB_AUTO_DASKD=1",
     ]
     .join(" ")
 }
@@ -1246,35 +1235,6 @@ fn env_bool(key: &str, default: bool) -> bool {
         "0" | "false" | "no" | "off" => false,
         _ => default,
     }
-}
-
-fn is_executable_file(path: &Path) -> bool {
-    if !path.is_file() {
-        return false;
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if let Ok(meta) = fs::metadata(path) {
-            return meta.permissions().mode() & 0o111 != 0;
-        }
-        false
-    }
-    #[cfg(not(unix))]
-    {
-        true
-    }
-}
-
-fn find_in_path(name: &str) -> Option<PathBuf> {
-    let path = env::var_os("PATH")?;
-    for dir in env::split_paths(&path) {
-        let candidate = dir.join(name);
-        if is_executable_file(&candidate) {
-            return Some(candidate);
-        }
-    }
-    None
 }
 
 fn resolve_shell_path() -> String {
@@ -3403,7 +3363,7 @@ pub fn cmd_ask(
             let req_id_print = parsed.req_id.unwrap_or_else(|| "-".to_string());
             let provider_print = parsed.provider.unwrap_or_else(|| provider.to_string());
             println!(
-                "submitted: req_id={} provider={} instance={}",
+                "已提交：req_id={} provider={} instance={}",
                 req_id_print, provider_print, instance
             );
             if req_id_print != "-" {
@@ -3483,7 +3443,7 @@ fn cmd_ask_stream(host: &str, port: u16, req: Value, timeout_s: f64) -> Result<(
                     }
                     if exit_code != 0 {
                         let reply = if done_reply.is_empty() {
-                            "stream done with non-zero exit".to_string()
+                            "流式任务以非零退出码结束".to_string()
                         } else {
                             done_reply
                         };
@@ -3493,7 +3453,9 @@ fn cmd_ask_stream(host: &str, port: u16, req: Value, timeout_s: f64) -> Result<(
                     break;
                 }
                 "error" => {
-                    let reply = event.reply.unwrap_or_else(|| "stream error".to_string());
+                    let reply = event
+                        .reply
+                        .unwrap_or_else(|| "流式任务发生错误".to_string());
                     bail!("ask stream failed: {}", reply);
                 }
                 other => {
@@ -3961,7 +3923,7 @@ mod tests {
     fn orchestrator_guardrail_prompt_mentions_delegate_only_rules() {
         let prompt =
             orchestrator_guardrail_prompt("claude", &["codex".to_string(), "gemini".to_string()]);
-        assert!(prompt.contains("Do not run bash commands yourself"));
+        assert!(prompt.contains("不要自己执行 bash 命令"));
         assert!(prompt.contains("codex, gemini"));
         assert!(prompt.contains("--caller claude"));
         assert!(prompt.contains("RCCB_RESULT"));
@@ -3996,18 +3958,18 @@ mod tests {
     #[test]
     fn provider_start_cmd_uses_raw_provider_command() {
         let _guard = env_lock().lock().unwrap();
-        let old_ccb = std::env::var("RCCB_USE_CCB_PROVIDER_LAUNCH").ok();
+        let old_ccb = std::env::var("RCCB_USE_BRIDGE_PROVIDER_LAUNCH").ok();
         unsafe {
-            std::env::remove_var("RCCB_USE_CCB_PROVIDER_LAUNCH");
+            std::env::remove_var("RCCB_USE_BRIDGE_PROVIDER_LAUNCH");
         }
         let cmd = provider_start_cmd(Path::new("/tmp/rccb-proj"), "default", "codex");
         if let Some(v) = old_ccb {
             unsafe {
-                std::env::set_var("RCCB_USE_CCB_PROVIDER_LAUNCH", v);
+                std::env::set_var("RCCB_USE_BRIDGE_PROVIDER_LAUNCH", v);
             }
         } else {
             unsafe {
-                std::env::remove_var("RCCB_USE_CCB_PROVIDER_LAUNCH");
+                std::env::remove_var("RCCB_USE_BRIDGE_PROVIDER_LAUNCH");
             }
         }
         assert!(cmd.contains("codex"));
