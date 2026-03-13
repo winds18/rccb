@@ -508,6 +508,10 @@ fn send_text_to_pane(target: &PaneDispatchTarget, text: &str) -> Result<()> {
             if !paste_status.success() {
                 bail!("tmux paste-buffer failed: status={}", paste_status);
             }
+            let enter_delay_ms = pane_enter_delay_ms("RCCB_TMUX_ENTER_DELAY_MS", 300);
+            if enter_delay_ms > 0 {
+                thread::sleep(Duration::from_millis(enter_delay_ms));
+            }
             let enter_status = Command::new("tmux")
                 .args(["send-keys", "-t", target.pane_id.trim(), "Enter"])
                 .status()
@@ -532,29 +536,57 @@ fn send_text_to_pane(target: &PaneDispatchTarget, text: &str) -> Result<()> {
             if !status.success() {
                 bail!("wezterm send-text failed: status={}", status);
             }
-
-            let mut enter = Command::new(bin)
-                .args([
-                    "cli",
-                    "send-text",
-                    "--pane-id",
-                    target.pane_id.trim(),
-                    "--no-paste",
-                ])
-                .stdin(Stdio::piped())
-                .spawn()
-                .with_context(|| format!("wezterm send-enter spawn failed: bin={}", bin))?;
-            if let Some(stdin) = enter.stdin.as_mut() {
-                stdin
-                    .write_all(b"\r")
-                    .context("wezterm send-enter write failed")?;
+            let paste_delay_ms = pane_enter_delay_ms("RCCB_WEZTERM_PASTE_DELAY_MS", 120);
+            if paste_delay_ms > 0 {
+                thread::sleep(Duration::from_millis(paste_delay_ms));
             }
-            let enter_status = enter.wait().context("wezterm send-enter wait failed")?;
-            if !enter_status.success() {
-                bail!("wezterm send-enter failed: status={}", enter_status);
-            }
-            Ok(())
+            send_wezterm_enter(bin, target.pane_id.trim())
         }
+    }
+}
+
+fn send_wezterm_enter(bin: &str, pane_id: &str) -> Result<()> {
+    for key in ["Enter", "Return"] {
+        let status = Command::new(bin)
+            .args(["cli", "send-key", "--pane-id", pane_id, "--key", key])
+            .status();
+        if let Ok(status) = status {
+            if status.success() {
+                return Ok(());
+            }
+        }
+
+        let status = Command::new(bin)
+            .args(["cli", "send-key", "--pane-id", pane_id, key])
+            .status();
+        if let Ok(status) = status {
+            if status.success() {
+                return Ok(());
+            }
+        }
+    }
+
+    let mut enter = Command::new(bin)
+        .args(["cli", "send-text", "--pane-id", pane_id, "--no-paste"])
+        .stdin(Stdio::piped())
+        .spawn()
+        .with_context(|| format!("wezterm send-enter spawn failed: bin={}", bin))?;
+    if let Some(stdin) = enter.stdin.as_mut() {
+        stdin
+            .write_all(b"\r")
+            .context("wezterm send-enter write failed")?;
+    }
+    let enter_status = enter.wait().context("wezterm send-enter wait failed")?;
+    if !enter_status.success() {
+        bail!("wezterm send-enter failed: status={}", enter_status);
+    }
+    Ok(())
+}
+
+fn pane_enter_delay_ms(name: &str, default_ms: u64) -> u64 {
+    match env::var(name) {
+        Ok(raw) => raw.trim().parse::<u64>().unwrap_or(default_ms).min(5000),
+        Err(_) => default_ms,
     }
 }
 
