@@ -549,6 +549,8 @@ fn send_wezterm_enter(bin: &str, pane_id: &str) -> Result<()> {
     for key in ["Enter", "Return"] {
         let status = Command::new(bin)
             .args(["cli", "send-key", "--pane-id", pane_id, "--key", key])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .status();
         if let Ok(status) = status {
             if status.success() {
@@ -558,6 +560,8 @@ fn send_wezterm_enter(bin: &str, pane_id: &str) -> Result<()> {
 
         let status = Command::new(bin)
             .args(["cli", "send-key", "--pane-id", pane_id, key])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .status();
         if let Ok(status) = status {
             if status.success() {
@@ -569,6 +573,8 @@ fn send_wezterm_enter(bin: &str, pane_id: &str) -> Result<()> {
     let mut enter = Command::new(bin)
         .args(["cli", "send-text", "--pane-id", pane_id, "--no-paste"])
         .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .spawn()
         .with_context(|| format!("wezterm send-enter spawn failed: bin={}", bin))?;
     if let Some(stdin) = enter.stdin.as_mut() {
