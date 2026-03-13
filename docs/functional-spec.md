@@ -242,6 +242,7 @@
    - 默认优先走实时总线（`ask.subscribe`），失败自动回退轮询
    - 连接中断后自动按 `from_seq` 续读，减少消息丢失
    - 自动跟踪该 provider 最新任务（优先 queued/running）
+   - 可使用 `--all` 进入全局追踪模式，观察全部 provider/req_id（debug pane 默认使用）
    - 可追加 `--follow` 进入常驻追踪模式（任务结束后继续等待下一条）
    - `--follow + --provider` 默认不超时
    - 轮询路径文本模式下日志默认节流（`RCCB_WATCH_MAX_LOG_LINES`，默认 10）
@@ -250,6 +251,21 @@
    - debug 自动日志 pane 可通过以下环境变量控制：
      `RCCB_DEBUG_WATCH_PANE`、`RCCB_DEBUG_WATCH_PROVIDER`、`RCCB_DEBUG_WATCH_PANE_PERCENT`
    - provider/orchestrator pane 不显示旁路日志；旁路状态与流式信息只在 debug 日志 pane 展示
+   - 当开启 orchestrator strict mode 时，执行者完成后的最终结果会后台回注给编排者 pane（仅最终结果，不回注过程日志）
+
+### 5.3.1 Orchestrator Strict Mode
+
+1. 默认开启条件：快捷 pane 启动且存在至少一个执行者
+2. 目标：
+   - 编排者只负责思考、拆解、委派、验收、总结
+   - 实际执行统一由执行者完成
+3. 行为：
+   - 编排者 pane 启动后自动收到 strict guardrail 提示
+   - 若 `ask.request.caller == orchestrator` 且目标 provider 为执行者，则任务完成后自动将最终结果回注给编排者 pane
+   - 同时将结果写入 `.rccb/tmp/<instance>/orchestrator/<orchestrator>.jsonl` 作为 inbox 记录
+4. 开关：
+   - `RCCB_ORCHESTRATOR_STRICT=0` 可关闭
+   - `RCCB_ORCHESTRATOR_CALLBACK_MAX_CHARS=<400-32000>` 可限制回注结果长度
 6. `status --as-json` 额外返回 `in_flight_count` 与 `in_flight_req_ids`
 
 ### 5.4 调试

@@ -24,6 +24,9 @@ use crate::layout::{
     session_instance_dir, state_path, tasks_instance_dir, tasks_root_dir, tmp_instance_dir,
 };
 use crate::protocol::{connect_and_send, send_wire_message};
+use crate::provider::{
+    dispatch_text_to_pane, PaneBackend as ProviderPaneBackend, PaneDispatchTarget,
+};
 use crate::types::{AskBusEvent, AskEvent, AskResponse, InstanceState};
 
 pub fn cmd_init(project_dir: &Path, force: bool) -> Result<()> {
@@ -505,6 +508,7 @@ fn run_interactive_layout(
                 &backend,
                 &provider_panes,
             )?;
+            maybe_prime_orchestrator_pane(&backend, anchor_pane, &orchestrator, &providers[1..]);
             ensure_orchestrator_focus(&backend, anchor_pane);
             run_orchestrator_foreground(project_dir, SHORTCUT_INSTANCE, &orchestrator)
         }
@@ -538,6 +542,7 @@ fn run_interactive_layout(
                 &backend,
                 &provider_panes,
             )?;
+            maybe_prime_orchestrator_pane(&backend, anchor_pane, &orchestrator, &providers[1..]);
             ensure_orchestrator_focus(&backend, anchor_pane);
             run_orchestrator_foreground(project_dir, SHORTCUT_INSTANCE, &orchestrator)
         }
@@ -953,6 +958,70 @@ fn debug_watch_pane_percent() -> u8 {
         Err(_) => return default,
     };
     value.clamp(10, 80) as u8
+}
+
+fn maybe_prime_orchestrator_pane(
+    backend: &LaunchBackend,
+    pane_id: &str,
+    orchestrator: &str,
+    executors: &[String],
+) {
+    if !orchestrator_strict_mode_enabled(executors) {
+        return;
+    }
+    let Some(target) = pane_dispatch_target_from_launch_backend(backend, pane_id) else {
+        return;
+    };
+    let prompt = orchestrator_guardrail_prompt(orchestrator, executors);
+    let delay_ms = orchestrator_prime_delay_ms();
+    thread::spawn(move || {
+        if delay_ms > 0 {
+            thread::sleep(Duration::from_millis(delay_ms));
+        }
+        if let Err(err) = dispatch_text_to_pane(&target, &prompt) {
+            eprintln!("警告：编排者 strict guardrail 注入失败：{}", err);
+        }
+    });
+}
+
+fn pane_dispatch_target_from_launch_backend(
+    backend: &LaunchBackend,
+    pane_id: &str,
+) -> Option<PaneDispatchTarget> {
+    let pane = pane_id.trim();
+    if pane.is_empty() {
+        return None;
+    }
+    let backend = match backend {
+        LaunchBackend::Tmux { .. } => ProviderPaneBackend::Tmux,
+        LaunchBackend::Wezterm { bin, .. } => ProviderPaneBackend::Wezterm { bin: bin.clone() },
+    };
+    Some(PaneDispatchTarget {
+        backend,
+        pane_id: pane.to_string(),
+    })
+}
+
+fn orchestrator_strict_mode_enabled(executors: &[String]) -> bool {
+    !executors.is_empty() && env_bool("RCCB_ORCHESTRATOR_STRICT", true)
+}
+
+fn orchestrator_prime_delay_ms() -> u64 {
+    match env::var("RCCB_ORCHESTRATOR_PRIME_DELAY_MS") {
+        Ok(raw) => raw.trim().parse::<u64>().unwrap_or(1200).min(10000),
+        Err(_) => 1200,
+    }
+}
+
+fn orchestrator_guardrail_prompt(orchestrator: &str, executors: &[String]) -> String {
+    let executor_list = if executors.is_empty() {
+        "-".to_string()
+    } else {
+        executors.join(", ")
+    };
+    format!(
+        "RCCB orchestration mode is active.\n\nYou are the orchestrator provider: {orchestrator}.\nAvailable executors: {executor_list}.\n\nSTRICT RULES:\n- Do not run bash commands yourself.\n- Do not edit files or run tests yourself.\n- Use RCCB delegation for every execution task.\n- Keep your role focused on planning, decomposition, dispatch, validation, and summarization.\n\nDelegation pattern:\n`rccb --project-dir . ask --instance default --provider <executor> --caller {orchestrator} \"<task>\"`\n\nExecutor results will be pushed back to you automatically as `RCCB_RESULT` messages.\nWhen a result arrives, continue orchestration only. If more work is needed, delegate again instead of executing directly."
+    )
 }
 
 fn run_orchestrator_foreground(project_dir: &Path, instance: &str, provider: &str) -> Result<i32> {
@@ -3537,10 +3606,10 @@ mod tests {
     use super::{
         build_debug_watch_command, cleanup_inflight_tasks, compact_watch_line,
         debug_watch_pane_percent, is_in_flight_status, is_terminal_bus_task_event,
-        is_terminal_task_status, load_task_by_req_id, provider_start_cmd,
-        resolve_debug_watch_provider, select_watch_req_for_provider,
-        select_watch_req_for_provider_follow, split_layout_groups, split_percent_for_equal_stack,
-        task_file_for_req_id, watch_bus_enabled,
+        is_terminal_task_status, load_task_by_req_id, orchestrator_guardrail_prompt,
+        orchestrator_strict_mode_enabled, provider_start_cmd, resolve_debug_watch_provider,
+        select_watch_req_for_provider, select_watch_req_for_provider_follow, split_layout_groups,
+        split_percent_for_equal_stack, task_file_for_req_id, watch_bus_enabled,
     };
     use crate::io_utils::{now_unix, now_unix_ms, update_task_status, write_json_pretty};
     use crate::layout::{ensure_project_layout, tasks_instance_dir};
@@ -3886,6 +3955,36 @@ mod tests {
             .expect("debug watch command");
         assert!(cmd.contains("--provider"));
         assert!(cmd.contains("codex"));
+    }
+
+    #[test]
+    fn orchestrator_guardrail_prompt_mentions_delegate_only_rules() {
+        let prompt =
+            orchestrator_guardrail_prompt("claude", &["codex".to_string(), "gemini".to_string()]);
+        assert!(prompt.contains("Do not run bash commands yourself"));
+        assert!(prompt.contains("codex, gemini"));
+        assert!(prompt.contains("--caller claude"));
+        assert!(prompt.contains("RCCB_RESULT"));
+    }
+
+    #[test]
+    fn orchestrator_strict_mode_defaults_on_when_executors_exist() {
+        let _guard = env_lock().lock().unwrap();
+        let old = std::env::var("RCCB_ORCHESTRATOR_STRICT").ok();
+        unsafe {
+            std::env::remove_var("RCCB_ORCHESTRATOR_STRICT");
+        }
+        assert!(orchestrator_strict_mode_enabled(&["codex".to_string()]));
+        assert!(!orchestrator_strict_mode_enabled(&[]));
+        if let Some(v) = old {
+            unsafe {
+                std::env::set_var("RCCB_ORCHESTRATOR_STRICT", v);
+            }
+        } else {
+            unsafe {
+                std::env::remove_var("RCCB_ORCHESTRATOR_STRICT");
+            }
+        }
     }
 
     #[test]

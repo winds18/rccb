@@ -41,13 +41,18 @@ rccb claude codex gemini opencode droid
 7. 所有 provider pane 保持真实 CLI 执行视图，不显示旁路日志，不注入任务状态镜像
 8. 默认采用静默后台通信：任务下发/回传不打扰 CLI 输入区；可通过命令查看状态和输出
 9. `debug` 开启时会自动创建一个日志 pane（位于编排者 pane 上方），默认跟踪首个执行者并持续 `watch --follow`，所有旁路日志仅在这个 debug pane 显示
-9. 可选开关：
+10. 默认启用 `orchestrator strict mode`：当存在执行者时，编排者 pane 会自动收到“只做思考/委派”的 guardrail；执行者完成后，若 `caller` 指向编排者，会自动把最终结果后台回注给编排者 pane
+11. 可选开关：
    - `RCCB_WATCH_MAX_LOG_LINES=<N>`：`watch` 每次刷新最多展示 N 行日志（默认 10，避免刷屏）
    - `RCCB_CODEX_PANE_EXEC=0`：关闭 codex 的 pane 执行（默认开启；无 pane 时自动回退后台 native）
+   - `RCCB_GEMINI_PANE_EXEC=0`：关闭 gemini 的 pane 执行（默认开启；无 pane 时自动回退后台 native）
    - `RCCB_OPENCODE_PANE_EXEC=0`：关闭 opencode 的 pane 执行（默认开启；无 pane 时自动回退后台 native）
+   - `RCCB_DROID_PANE_EXEC=0`：关闭 droid 的 pane 执行（默认开启；无 pane 时自动回退后台 native）
    - `RCCB_DEBUG_WATCH_PANE=0`：关闭 debug 自动日志 pane（默认开启）
-   - `RCCB_DEBUG_WATCH_PROVIDER=<provider>`：指定 debug 日志 pane 跟踪的 provider（默认首个执行者，无执行者时跟踪编排者）
+   - `RCCB_DEBUG_WATCH_PROVIDER=<provider>`：指定 debug 日志 pane 跟踪的 provider；默认全局跟踪全部 provider，设为 `all` 或留空也是全局模式
    - `RCCB_DEBUG_WATCH_PANE_PERCENT=<10-80>`：debug 日志 pane 占比（默认 25）
+   - `RCCB_ORCHESTRATOR_STRICT=0`：关闭编排者 strict mode（默认开启，且仅在存在执行者时生效）
+   - `RCCB_ORCHESTRATOR_CALLBACK_MAX_CHARS=<N>`：限制回注给编排者的结果长度（默认 12000）
 
 provider CLI 启动命令可覆盖：
 
@@ -66,6 +71,14 @@ WezTerm CLI 可覆盖：
 ```bash
 RCCB_DEBUG=1 rccb claude gemini opencode
 ```
+
+编排者 strict mode 下推荐委派格式：
+
+```bash
+rccb --project-dir . ask --instance default --provider codex --caller claude "实现 xxx 并自测"
+```
+
+当 `caller` 等于当前编排者 provider 时，执行者完成后最终结果会自动后台回注到编排者 pane，供其继续思考和编排。
 
 ### 2) 显式 start
 

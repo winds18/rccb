@@ -28,7 +28,8 @@ use crate::layout::{
 };
 use crate::protocol::{write_json_event_line, write_json_line, write_json_value_line};
 use crate::provider::{
-    execute_provider_request, PaneBackend as ProviderPaneBackend, PaneDispatchTarget,
+    dispatch_text_to_pane, execute_provider_request, PaneBackend as ProviderPaneBackend,
+    PaneDispatchTarget,
 };
 use crate::types::{
     AskBusEvent, AskEvent, AskRequest, AskResponse, DaemonContext, InstanceState,
@@ -1405,7 +1406,7 @@ fn worker_loop(
         let resp = AskResponse {
             msg_type: format!("{}.response", PROTOCOL_PREFIX),
             v: PROTOCOL_VERSION,
-            id: req.id,
+            id: req.id.clone(),
             req_id: Some(task.req_id.clone()),
             exit_code: exec.exit_code,
             reply,
@@ -1440,6 +1441,16 @@ fn worker_loop(
                 exit_code: Some(resp.exit_code),
                 meta: resp.meta.clone(),
             },
+        );
+
+        maybe_callback_orchestrator_async(
+            &context,
+            orchestrator.as_deref(),
+            &req,
+            &task.req_id,
+            task_status,
+            resp.exit_code,
+            &resp.reply,
         );
 
         notify_completion_async(CompletionHookInput {
@@ -1911,6 +1922,151 @@ fn resolve_provider_pane_dispatch_target(
     Ok(Some(PaneDispatchTarget { backend, pane_id }))
 }
 
+fn maybe_callback_orchestrator_async(
+    context: &DaemonContext,
+    orchestrator: Option<&str>,
+    req: &AskRequest,
+    req_id: &str,
+    status: &str,
+    exit_code: i32,
+    reply: &str,
+) {
+    if !orchestrator_strict_mode_enabled() {
+        return;
+    }
+    let Some(orchestrator_provider) = orchestrator
+        .map(|v| v.trim().to_ascii_lowercase())
+        .filter(|v| !v.is_empty())
+    else {
+        return;
+    };
+    if !req
+        .caller
+        .trim()
+        .eq_ignore_ascii_case(&orchestrator_provider)
+    {
+        return;
+    }
+    if req
+        .provider
+        .trim()
+        .eq_ignore_ascii_case(&orchestrator_provider)
+    {
+        return;
+    }
+
+    let prompt = build_orchestrator_result_prompt(req_id, &req.provider, status, exit_code, reply);
+    let req_id = req_id.to_string();
+    let inbox_entry = json!({
+        "ts_unix": now_unix(),
+        "instance": context.instance_id,
+        "orchestrator": orchestrator_provider,
+        "executor": req.provider,
+        "caller": req.caller,
+        "req_id": req_id,
+        "status": status,
+        "exit_code": exit_code,
+        "reply": reply,
+    });
+    let context = context.clone();
+    thread::spawn(move || {
+        let daemon_log =
+            logs_instance_dir(&context.project_dir, &context.instance_id).join("daemon.log");
+        if let Err(err) = append_orchestrator_inbox(&context, &orchestrator_provider, &inbox_entry)
+        {
+            let _ = write_line(
+                daemon_log.clone(),
+                &format!(
+                    "[WARN] orchestrator inbox append failed provider={} req_id={} err={}",
+                    orchestrator_provider, req_id, err
+                ),
+            );
+        }
+
+        match resolve_provider_pane_dispatch_target(&context, &orchestrator_provider) {
+            Ok(Some(target)) => {
+                if let Err(err) = dispatch_text_to_pane(&target, &prompt) {
+                    let _ = write_line(
+                        daemon_log,
+                        &format!(
+                            "[WARN] orchestrator callback send failed provider={} req_id={} err={}",
+                            orchestrator_provider, req_id, err
+                        ),
+                    );
+                }
+            }
+            Ok(None) => {}
+            Err(err) => {
+                let _ = write_line(
+                    daemon_log,
+                    &format!(
+                        "[WARN] orchestrator callback resolve failed provider={} req_id={} err={}",
+                        orchestrator_provider, req_id, err
+                    ),
+                );
+            }
+        }
+    });
+}
+
+fn append_orchestrator_inbox(
+    context: &DaemonContext,
+    orchestrator: &str,
+    entry: &Value,
+) -> Result<()> {
+    let path = tmp_instance_dir(&context.project_dir, &context.instance_id)
+        .join("orchestrator")
+        .join(format!("{}.jsonl", sanitize_filename(orchestrator)));
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let line = serde_json::to_string(entry).context("serialize orchestrator inbox entry failed")?;
+    write_line(path, &line)
+}
+
+fn build_orchestrator_result_prompt(
+    req_id: &str,
+    executor: &str,
+    status: &str,
+    exit_code: i32,
+    reply: &str,
+) -> String {
+    let reply = clamp_bus_text(reply.trim(), orchestrator_callback_max_chars());
+    let reply = if reply.trim().is_empty() {
+        "(empty reply)".to_string()
+    } else {
+        reply
+    };
+    format!(
+        "RCCB_RESULT\nreq_id={req_id}\nexecutor={executor}\nstatus={status}\nexit_code={exit_code}\n\nExecutor result:\n{reply}\n\nContinue orchestration only.\nDo not execute bash, edit files, or run tests yourself.\nIf more work is needed, delegate it to an executor via RCCB."
+    )
+}
+
+fn orchestrator_strict_mode_enabled() -> bool {
+    env_bool("RCCB_ORCHESTRATOR_STRICT", true)
+}
+
+fn orchestrator_callback_max_chars() -> usize {
+    match std::env::var("RCCB_ORCHESTRATOR_CALLBACK_MAX_CHARS") {
+        Ok(raw) => match raw.trim().parse::<usize>() {
+            Ok(v) => v.clamp(400, 32000),
+            Err(_) => 12000,
+        },
+        Err(_) => 12000,
+    }
+}
+
+fn env_bool(key: &str, default: bool) -> bool {
+    let Ok(raw) = std::env::var(key) else {
+        return default;
+    };
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => true,
+        "0" | "false" | "no" | "off" => false,
+        _ => default,
+    }
+}
+
 fn current_orchestrator(context: &DaemonContext) -> Option<String> {
     context
         .shared_state
@@ -2006,7 +2162,7 @@ fn update_heartbeat(context: &DaemonContext) -> Result<()> {
 mod tests {
     use std::sync::{Mutex, OnceLock};
 
-    use super::relay_progress_lines;
+    use super::{build_orchestrator_result_prompt, relay_progress_lines};
 
     fn env_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -2039,5 +2195,16 @@ mod tests {
                 std::env::remove_var("RCCB_PANE_DELTA_MAX_LINES");
             }
         }
+    }
+
+    #[test]
+    fn orchestrator_result_prompt_enforces_delegate_only_follow_up() {
+        let prompt =
+            build_orchestrator_result_prompt("req-1", "codex", "completed", 0, "step 1\nstep 2");
+        assert!(prompt.contains("RCCB_RESULT"));
+        assert!(prompt.contains("executor=codex"));
+        assert!(prompt.contains("step 1"));
+        assert!(prompt.contains("Do not execute bash"));
+        assert!(prompt.contains("delegate it to an executor via RCCB"));
     }
 }

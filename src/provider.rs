@@ -321,7 +321,7 @@ fn execute_native_via_pane(
             target.pane_id
         )
     })?;
-    send_text_to_pane(target, pane_prompt)
+    dispatch_text_to_pane(target, pane_prompt)
         .with_context(|| format!("send task to pane failed: pane={}", target.pane_id))?;
 
     let timeout = if effective_timeout_s < 0.0 {
@@ -468,7 +468,7 @@ fn capture_pane_text(target: &PaneDispatchTarget, start_line: i32) -> Result<Str
     }
 }
 
-fn send_text_to_pane(target: &PaneDispatchTarget, text: &str) -> Result<()> {
+pub fn dispatch_text_to_pane(target: &PaneDispatchTarget, text: &str) -> Result<()> {
     let payload = text.replace('\r', "");
     match &target.backend {
         PaneBackend::Tmux => {
