@@ -861,70 +861,81 @@ fn maybe_spawn_debug_watch_pane(
     }
 
     let watch_provider = resolve_debug_watch_provider(providers);
-    let watch_cmd = build_debug_watch_command(project_dir, instance, &watch_provider)?;
+    let watch_cmd = build_debug_watch_command(project_dir, instance, watch_provider.as_deref())?;
     let pane_percent = debug_watch_pane_percent();
+    let pane_title = watch_provider
+        .as_ref()
+        .map(|provider| format!("RCCB-LOG-{}", provider))
+        .unwrap_or_else(|| "RCCB-LOG-ALL".to_string());
     let pane = match backend {
         LaunchBackend::Tmux { .. } => spawn_tmux_custom_pane(
             orchestrator_pane,
             "top",
             Some(pane_percent),
             &watch_cmd,
-            &format!("RCCB-LOG-{}", watch_provider),
+            &pane_title,
         )?,
         LaunchBackend::Wezterm { bin, .. } => {
             spawn_wezterm_custom_pane(bin, orchestrator_pane, "--top", pane_percent, &watch_cmd)?
         }
     };
     println!(
-        "已拉起 debug 日志 pane：provider={} pane={}",
-        watch_provider, pane
+        "已拉起 debug 日志 pane：scope={} pane={}",
+        watch_provider.unwrap_or_else(|| "all".to_string()),
+        pane
     );
     Ok(Some(pane))
 }
 
-fn build_debug_watch_command(project_dir: &Path, instance: &str, provider: &str) -> Result<String> {
+fn build_debug_watch_command(
+    project_dir: &Path,
+    instance: &str,
+    provider: Option<&str>,
+) -> Result<String> {
     let exe = env::current_exe().context("获取当前 rccb 可执行文件路径失败")?;
+    let scope = match provider {
+        Some(provider) => format!("--provider {}", shell_quote(provider)),
+        None => "--all".to_string(),
+    };
     Ok(format!(
-        "{exe} --project-dir {project} watch --instance {instance} --provider {provider} --with-provider-log --with-debug-log --follow --pane-ui",
+        "{exe} --project-dir {project} watch --instance {instance} {scope} --with-provider-log --with-debug-log --follow --pane-ui",
         exe = shell_quote(&exe.display().to_string()),
         project = shell_quote(&project_dir.display().to_string()),
         instance = shell_quote(instance),
-        provider = shell_quote(provider),
+        scope = scope,
     ))
 }
 
-fn resolve_debug_watch_provider(providers: &[String]) -> String {
-    let fallback = if providers.len() > 1 {
-        providers[1].clone()
-    } else {
-        providers[0].clone()
-    };
+fn resolve_debug_watch_provider(providers: &[String]) -> Option<String> {
     let Ok(raw) = env::var("RCCB_DEBUG_WATCH_PROVIDER") else {
-        return fallback;
+        return None;
     };
     let candidate = raw.trim();
     if candidate.is_empty() {
-        return fallback;
+        return None;
+    }
+    if matches!(candidate.to_ascii_lowercase().as_str(), "all" | "*") {
+        return None;
     }
 
     let normalized = match normalize_provider(candidate) {
         Ok(v) => v.to_string(),
         Err(err) => {
             eprintln!(
-                "警告：RCCB_DEBUG_WATCH_PROVIDER 无效（{}），回退为 {}",
-                err, fallback
+                "警告：RCCB_DEBUG_WATCH_PROVIDER 无效（{}），回退为全局 debug 视图",
+                err
             );
-            return fallback;
+            return None;
         }
     };
     if providers.iter().any(|p| p == &normalized) {
-        normalized
+        Some(normalized)
     } else {
         eprintln!(
-            "警告：RCCB_DEBUG_WATCH_PROVIDER={} 不在当前 provider 列表中，回退为 {}",
-            normalized, fallback
+            "警告：RCCB_DEBUG_WATCH_PROVIDER={} 不在当前 provider 列表中，回退为全局 debug 视图",
+            normalized
         );
-        fallback
+        None
     }
 }
 
@@ -1667,6 +1678,7 @@ pub fn cmd_watch(
     instance: &str,
     req_id: Option<&str>,
     provider: Option<&str>,
+    all: bool,
     poll_ms: u64,
     timeout_s: f64,
     follow: bool,
@@ -1684,10 +1696,13 @@ pub fn cmd_watch(
         .transpose()?
         .map(|v| v.to_string());
 
+    if all && (fixed_req_id.is_some() || watch_provider.is_some()) {
+        bail!("--all 不能与 --req-id 或 --provider 同时使用");
+    }
     if fixed_req_id.is_some() && watch_provider.is_some() {
         bail!("--req-id 与 --provider 不能同时使用");
     }
-    if fixed_req_id.is_none() && watch_provider.is_none() {
+    if !all && fixed_req_id.is_none() && watch_provider.is_none() {
         bail!("需要提供 --req-id 或 --provider");
     }
 
@@ -1698,6 +1713,17 @@ pub fn cmd_watch(
     };
 
     if watch_bus_enabled() {
+        if all {
+            return watch_all_via_bus(
+                project_dir,
+                instance,
+                effective_timeout_s,
+                with_provider_log,
+                with_debug_log,
+                pane_ui,
+                as_json,
+            );
+        }
         match watch_via_bus(
             project_dir,
             instance,
@@ -1909,6 +1935,49 @@ pub fn cmd_watch(
 
         thread::sleep(poll);
     }
+}
+
+fn watch_all_via_bus(
+    project_dir: &Path,
+    instance: &str,
+    effective_timeout_s: f64,
+    with_provider_log: bool,
+    with_debug_log: bool,
+    pane_ui: bool,
+    as_json: bool,
+) -> Result<()> {
+    let state_file = state_path(project_dir, instance);
+    if !state_file.exists() {
+        bail!("watch all failed: instance={} not started", instance);
+    }
+    let state = load_state(&state_file)?;
+    if state.status != "running" || !is_process_alive(state.pid) {
+        bail!("watch all failed: instance={} daemon not running", instance);
+    }
+    let host = state
+        .daemon_host
+        .filter(|v| !v.trim().is_empty())
+        .ok_or_else(|| anyhow!("watch all failed: missing daemon_host"))?;
+    let port = state
+        .daemon_port
+        .ok_or_else(|| anyhow!("watch all failed: missing daemon_port"))?;
+    let token = state
+        .daemon_token
+        .filter(|v| !v.trim().is_empty())
+        .ok_or_else(|| anyhow!("watch all failed: missing daemon_token"))?;
+
+    run_watch_all_via_bus(
+        project_dir,
+        instance,
+        &host,
+        port,
+        &token,
+        effective_timeout_s,
+        with_provider_log,
+        with_debug_log,
+        pane_ui,
+        as_json,
+    )
 }
 
 fn watch_bus_enabled() -> bool {
@@ -2305,6 +2374,182 @@ fn run_watch_via_bus(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+fn run_watch_all_via_bus(
+    project_dir: &Path,
+    instance: &str,
+    host: &str,
+    port: u16,
+    token: &str,
+    effective_timeout_s: f64,
+    with_provider_log: bool,
+    with_debug_log: bool,
+    pane_ui: bool,
+    as_json: bool,
+) -> Result<()> {
+    let deadline = if effective_timeout_s <= 0.0 {
+        None
+    } else {
+        Some(Instant::now() + Duration::from_secs_f64(effective_timeout_s.max(0.1)))
+    };
+    let mut debug_log_offset = 0u64;
+    let mut last_seq = 0u64;
+    let mut backoff = Duration::from_millis(120);
+    let reconnect_cap = Duration::from_secs(2);
+
+    if pane_ui {
+        emit_watch_pane_header(instance, Some("all"), None);
+    }
+
+    loop {
+        if let Some(limit) = deadline {
+            if Instant::now() >= limit {
+                bail!(
+                    "watch timeout: instance={} scope=all timeout_s={}",
+                    instance,
+                    effective_timeout_s
+                );
+            }
+        }
+
+        let mut sub_req = json!({
+            "type": format!("{}.subscribe", PROTOCOL_PREFIX),
+            "v": PROTOCOL_VERSION,
+            "id": format!("watch-all-{}-{}", std::process::id(), crate::io_utils::now_unix_ms()),
+            "token": token,
+            "follow": true,
+            "from_now": false,
+        });
+        if last_seq > 0 {
+            sub_req["from_seq"] = Value::Number(last_seq.into());
+        }
+
+        let mut reader = match connect_and_send(host, port, sub_req, 12.0) {
+            Ok(v) => v,
+            Err(err) => {
+                if let Some(limit) = deadline {
+                    if Instant::now() >= limit {
+                        return Err(
+                            err.context("connect ask.subscribe(all) failed (timeout reached)")
+                        );
+                    }
+                }
+                thread::sleep(backoff);
+                backoff = (backoff.saturating_mul(2)).min(reconnect_cap);
+                continue;
+            }
+        };
+        backoff = Duration::from_millis(120);
+
+        loop {
+            if let Some(limit) = deadline {
+                if Instant::now() >= limit {
+                    bail!(
+                        "watch timeout: instance={} scope=all timeout_s={}",
+                        instance,
+                        effective_timeout_s
+                    );
+                }
+            }
+
+            let mut line = String::new();
+            let n = match reader.read_line(&mut line) {
+                Ok(v) => v,
+                Err(err) => {
+                    if matches!(
+                        err.kind(),
+                        io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+                    ) {
+                        continue;
+                    }
+                    break;
+                }
+            };
+            if n == 0 {
+                break;
+            }
+
+            let value: Value = match serde_json::from_str(&line) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            let msg_type = value
+                .get("type")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            if msg_type == format!("{}.response", PROTOCOL_PREFIX) {
+                let parsed: AskResponse =
+                    serde_json::from_value(value).context("invalid ask.response in watch all")?;
+                if parsed.exit_code != 0 {
+                    bail!(
+                        "watch subscribe(all) failed: exit_code={} reply={}",
+                        parsed.exit_code,
+                        parsed.reply
+                    );
+                }
+                continue;
+            }
+            if msg_type != format!("{}.bus", PROTOCOL_PREFIX) {
+                continue;
+            }
+
+            let event: AskBusEvent =
+                serde_json::from_value(value).context("invalid ask.bus payload")?;
+            if event.seq > last_seq {
+                last_seq = event.seq;
+            }
+
+            if as_json {
+                println!("{}", serde_json::to_string(&event)?);
+                continue;
+            }
+
+            if event.event == "keepalive" || event.event == "subscribed" {
+                continue;
+            }
+
+            if matches!(event.event.as_str(), "dispatched" | "start" | "done") {
+                println!(
+                    "[task] req_id={} provider={} status={} exit={}",
+                    event.req_id.as_deref().unwrap_or("-"),
+                    event.provider.as_deref().unwrap_or("-"),
+                    event.status.as_deref().unwrap_or("-"),
+                    event
+                        .exit_code
+                        .map(|v| v.to_string())
+                        .unwrap_or_else(|| "-".to_string()),
+                );
+                if event.event == "done" {
+                    if let Some(reply) = event.reply.as_deref() {
+                        if !reply.trim().is_empty() {
+                            println!("[reply] {}", reply);
+                        }
+                    }
+                }
+            }
+
+            if with_provider_log {
+                if let Some(delta) = event.delta.as_deref() {
+                    if !delta.trim().is_empty() {
+                        emit_watch_bus_delta(
+                            event.provider.as_deref().unwrap_or("provider"),
+                            event.req_id.as_deref().unwrap_or("-"),
+                            delta,
+                            pane_ui,
+                            false,
+                        )?;
+                    }
+                }
+            }
+
+            if with_debug_log {
+                let debug_log = logs_instance_dir(project_dir, instance).join("debug.log");
+                tail_log_all(&debug_log, "debug", &mut debug_log_offset, pane_ui, false)?;
+            }
+        }
+    }
+}
+
 fn is_terminal_bus_task_event(event: &AskBusEvent) -> bool {
     if event.event != "done" {
         return false;
@@ -2636,6 +2881,65 @@ fn tail_log_for_req(
     }
     let view = &matched[start..];
     emit_compact_text_lines(source, view, pane_ui);
+    Ok(())
+}
+
+fn tail_log_all(
+    path: &Path,
+    source: &str,
+    offset: &mut u64,
+    pane_ui: bool,
+    as_json: bool,
+) -> Result<()> {
+    let mut file = match File::open(path) {
+        Ok(f) => f,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => {
+            return Err(err).with_context(|| format!("open log failed: {}", path.display()));
+        }
+    };
+
+    let len = file.metadata()?.len();
+    if *offset > len {
+        *offset = 0;
+    }
+
+    file.seek(SeekFrom::Start(*offset))?;
+    let mut buf = Vec::new();
+    file.read_to_end(&mut buf)?;
+    *offset = len;
+    if buf.is_empty() {
+        return Ok(());
+    }
+
+    let txt = String::from_utf8_lossy(&buf);
+    let lines: Vec<String> = txt
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| line.to_string())
+        .collect();
+    if lines.is_empty() {
+        return Ok(());
+    }
+
+    if as_json {
+        for line in lines {
+            println!(
+                "{}",
+                serde_json::to_string(&json!({
+                    "event": "log",
+                    "source": source,
+                    "path": path.display().to_string(),
+                    "line": line
+                }))?
+            );
+        }
+        return Ok(());
+    }
+
+    let max_lines = watch_max_log_lines();
+    let start = lines.len().saturating_sub(max_lines);
+    emit_compact_text_lines(source, &lines[start..], pane_ui);
     Ok(())
 }
 
@@ -3490,7 +3794,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_debug_watch_provider_defaults_to_first_executor() {
+    fn resolve_debug_watch_provider_defaults_to_all() {
         let _guard = env_lock().lock().unwrap();
         let old = std::env::var("RCCB_DEBUG_WATCH_PROVIDER").ok();
         unsafe {
@@ -3507,7 +3811,7 @@ mod tests {
                 std::env::set_var("RCCB_DEBUG_WATCH_PROVIDER", v);
             }
         }
-        assert_eq!(resolved, "gemini");
+        assert_eq!(resolved, None);
     }
 
     #[test]
@@ -3532,7 +3836,7 @@ mod tests {
                 std::env::remove_var("RCCB_DEBUG_WATCH_PROVIDER");
             }
         }
-        assert_eq!(resolved, "opencode");
+        assert_eq!(resolved, Some("opencode".to_string()));
     }
 
     #[test]
@@ -3567,12 +3871,21 @@ mod tests {
     }
 
     #[test]
-    fn build_debug_watch_command_uses_pane_ui_mode() {
-        let cmd = build_debug_watch_command(Path::new("/tmp/rccb-proj"), "default", "codex")
+    fn build_debug_watch_command_uses_global_pane_ui_mode() {
+        let cmd = build_debug_watch_command(Path::new("/tmp/rccb-proj"), "default", None)
             .expect("debug watch command");
         assert!(cmd.contains("--pane-ui"));
         assert!(cmd.contains("--with-provider-log"));
         assert!(cmd.contains("--with-debug-log"));
+        assert!(cmd.contains("--all"));
+    }
+
+    #[test]
+    fn build_debug_watch_command_can_scope_specific_provider() {
+        let cmd = build_debug_watch_command(Path::new("/tmp/rccb-proj"), "default", Some("codex"))
+            .expect("debug watch command");
+        assert!(cmd.contains("--provider"));
+        assert!(cmd.contains("codex"));
     }
 
     #[test]

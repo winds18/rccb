@@ -151,6 +151,13 @@ pub enum Command {
         #[arg(long, help = "按 provider 追踪最新任务（与 --req-id 二选一）")]
         provider: Option<String>,
 
+        #[arg(
+            long,
+            default_value_t = false,
+            help = "全局追踪所有 provider/req_id（适合 debug pane）"
+        )]
+        all: bool,
+
         #[arg(long, default_value_t = 800, help = "轮询间隔（毫秒）")]
         poll_ms: u64,
 

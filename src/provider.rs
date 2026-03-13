@@ -294,7 +294,7 @@ fn native_should_use_pane_exec(provider: &str) -> bool {
     }
     matches!(
         provider.trim().to_ascii_lowercase().as_str(),
-        "codex" | "opencode"
+        "codex" | "opencode" | "gemini" | "droid"
     )
 }
 
@@ -1277,7 +1277,7 @@ fn wrap_prompt_for_provider(provider: &str, message: &str, req_id: &str) -> Stri
             "{REQ_ID_PREFIX} {req_id}\n\n{body}\n\nReply using exactly this format:\n{BEGIN_PREFIX} {req_id}\n<reply>\n{DONE_PREFIX} {req_id}\n"
         ),
         "gemini" => format!(
-            "{REQ_ID_PREFIX} {req_id}\n\n{body}\n\nIMPORTANT - you MUST follow these rules:\n1. Reply in English with an execution summary.\n2. Your FINAL line MUST be exactly:\n{DONE_PREFIX} {req_id}\n"
+            "{REQ_ID_PREFIX} {req_id}\n\n{body}\n\nReply using exactly this format:\n{BEGIN_PREFIX} {req_id}\n<reply>\n{DONE_PREFIX} {req_id}\n"
         ),
         "codex" | "opencode" | "droid" => format!(
             "{REQ_ID_PREFIX} {req_id}\n\n{body}\n\nReply using exactly this format:\n{BEGIN_PREFIX} {req_id}\n<reply>\n{DONE_PREFIX} {req_id}\n"
@@ -1569,11 +1569,14 @@ mod tests {
             std::env::remove_var("RCCB_PANE_EXEC");
             std::env::remove_var("RCCB_CODEX_PANE_EXEC");
             std::env::remove_var("RCCB_OPENCODE_PANE_EXEC");
+            std::env::remove_var("RCCB_GEMINI_PANE_EXEC");
+            std::env::remove_var("RCCB_DROID_PANE_EXEC");
         }
 
         assert!(native_should_use_pane_exec("codex"));
         assert!(native_should_use_pane_exec("opencode"));
-        assert!(!native_should_use_pane_exec("gemini"));
+        assert!(native_should_use_pane_exec("gemini"));
+        assert!(native_should_use_pane_exec("droid"));
 
         if let Some(v) = old_global {
             unsafe {
@@ -1675,6 +1678,14 @@ mod tests {
     #[test]
     fn codex_prompt_uses_begin_and_done_markers() {
         let prompt = wrap_prompt_for_provider("codex", "hello", "req-123");
+        assert!(prompt.contains("CCB_BEGIN: req-123"));
+        assert!(prompt.contains("CCB_DONE: req-123"));
+        assert!(prompt.contains("Reply using exactly this format"));
+    }
+
+    #[test]
+    fn gemini_prompt_uses_begin_and_done_markers() {
+        let prompt = wrap_prompt_for_provider("gemini", "hello", "req-123");
         assert!(prompt.contains("CCB_BEGIN: req-123"));
         assert!(prompt.contains("CCB_DONE: req-123"));
         assert!(prompt.contains("Reply using exactly this format"));
