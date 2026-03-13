@@ -315,7 +315,7 @@ fn execute_native_via_pane(
         .unwrap_or(800.0)
         .clamp(200.0, 4000.0) as i32;
 
-    let mut previous = capture_pane_text(target, capture_lines).with_context(|| {
+    let previous_snapshot = capture_pane_text(target, capture_lines).with_context(|| {
         format!(
             "capture pane before dispatch failed: pane={}",
             target.pane_id
@@ -331,6 +331,7 @@ fn execute_native_via_pane(
     };
 
     let mut transcript = String::new();
+    let mut previous_window = pane_window_for_req(&previous_snapshot, req_id).unwrap_or_default();
     loop {
         if should_cancel() {
             return Ok(ProviderExecResult {
@@ -373,8 +374,9 @@ fn execute_native_via_pane(
             Err(_) => continue,
         };
 
-        let delta = pane_output_delta(&previous, &current);
-        previous = current.clone();
+        let current_window = pane_window_for_req(&current, req_id).unwrap_or_default();
+        let delta = pane_output_delta(&previous_window, &current_window);
+        previous_window = current_window.clone();
 
         if !delta.is_empty() {
             transcript.push_str(&delta);
@@ -387,7 +389,7 @@ fn execute_native_via_pane(
         }
 
         if contains_done_line_for_req(&transcript, req_id)
-            || contains_done_line_for_req(&current, req_id)
+            || contains_done_line_for_req(&current_window, req_id)
         {
             break;
         }
@@ -395,10 +397,13 @@ fn execute_native_via_pane(
 
     let mut reply = extract_reply_for_req(&transcript, req_id);
     if reply.trim().is_empty() {
-        reply = extract_reply_for_req(&previous, req_id);
+        reply = extract_reply_for_req(&previous_window, req_id);
     }
     if reply.trim().is_empty() {
-        reply = transcript.trim().to_string();
+        reply = strip_done_text(&previous_window, req_id);
+    }
+    if reply.trim().is_empty() {
+        reply = strip_done_text(&transcript, req_id);
     }
 
     Ok(ProviderExecResult {
@@ -580,6 +585,19 @@ fn pane_output_delta(previous: &str, current: &str) -> String {
         }
     }
     current.to_string()
+}
+
+fn pane_window_for_req(text: &str, req_id: &str) -> Option<String> {
+    let marker = format!("{} {}", REQ_ID_PREFIX, req_id);
+    let lines: Vec<&str> = text.lines().collect();
+    let start = lines.iter().enumerate().rev().find_map(|(idx, line)| {
+        if line.contains(&marker) {
+            Some(idx)
+        } else {
+            None
+        }
+    })?;
+    Some(lines[start..].join("\n"))
 }
 
 fn run_stub(req: &AskRequest, req_id: &str) -> ProviderExecResult {
@@ -1262,7 +1280,7 @@ fn wrap_prompt_for_provider(provider: &str, message: &str, req_id: &str) -> Stri
             "{REQ_ID_PREFIX} {req_id}\n\n{body}\n\nIMPORTANT - you MUST follow these rules:\n1. Reply in English with an execution summary.\n2. Your FINAL line MUST be exactly:\n{DONE_PREFIX} {req_id}\n"
         ),
         "codex" | "opencode" | "droid" => format!(
-            "{REQ_ID_PREFIX} {req_id}\n\n{body}\n\nIMPORTANT:\n- Reply normally, in English.\n- End your reply with this exact final line:\n{DONE_PREFIX} {req_id}\n"
+            "{REQ_ID_PREFIX} {req_id}\n\n{body}\n\nReply using exactly this format:\n{BEGIN_PREFIX} {req_id}\n<reply>\n{DONE_PREFIX} {req_id}\n"
         ),
         _ => format!(
             "{REQ_ID_PREFIX} {req_id}\n\n{body}\n\nIMPORTANT:\n- End your reply with this exact final line:\n{DONE_PREFIX} {req_id}\n"
@@ -1640,6 +1658,36 @@ mod tests {
         let raw = "old reply\nCCB_DONE: req-old\n";
         let got = extract_reply_for_req(raw, req_id);
         assert!(got.is_empty());
+    }
+
+    #[test]
+    fn pane_window_for_req_uses_latest_req_marker() {
+        let req_id = "req-current";
+        let raw = format!(
+            "banner\nCCB_REQ_ID: old-req\nold body\nCCB_DONE: old-req\nnoise\n> CCB_REQ_ID: {req_id}\nIMPORTANT\nCCB_BEGIN: {req_id}\nstep 1\nCCB_DONE: {req_id}\n"
+        );
+        let got = pane_window_for_req(&raw, req_id).expect("window");
+        assert!(got.starts_with(&format!("> CCB_REQ_ID: {req_id}")));
+        assert!(!got.contains("banner"));
+        assert!(!got.contains("old body"));
+    }
+
+    #[test]
+    fn codex_prompt_uses_begin_and_done_markers() {
+        let prompt = wrap_prompt_for_provider("codex", "hello", "req-123");
+        assert!(prompt.contains("CCB_BEGIN: req-123"));
+        assert!(prompt.contains("CCB_DONE: req-123"));
+        assert!(prompt.contains("Reply using exactly this format"));
+    }
+
+    #[test]
+    fn extract_reply_for_req_ignores_pane_prompt_when_begin_exists() {
+        let req_id = "req-pane";
+        let raw = format!(
+            "› CCB_REQ_ID: {req_id}\n\nhello\n\nReply using exactly this format:\nCCB_BEGIN: {req_id}\nstep 1\nstep 2\nCCB_DONE: {req_id}\n"
+        );
+        let got = extract_reply_for_req(&raw, req_id);
+        assert_eq!(got, "step 1\nstep 2");
     }
 
     #[test]
