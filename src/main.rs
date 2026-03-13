@@ -62,6 +62,7 @@ fn main() -> Result<()> {
             follow,
             with_provider_log,
             with_debug_log,
+            pane_ui,
             as_json,
         } => cmd_watch(
             &project_dir,
@@ -73,6 +74,7 @@ fn main() -> Result<()> {
             follow,
             with_provider_log,
             with_debug_log,
+            pane_ui,
             as_json,
         ),
         Command::Stop { instance } => cmd_stop(&project_dir, &instance),

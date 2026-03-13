@@ -178,6 +178,13 @@ pub enum Command {
         )]
         with_debug_log: bool,
 
+        #[arg(
+            long,
+            default_value_t = false,
+            help = "使用适合 pane 前端的紧凑输出样式"
+        )]
+        pane_ui: bool,
+
         #[arg(long, default_value_t = false, help = "以 JSON 事件流输出")]
         as_json: bool,
     },

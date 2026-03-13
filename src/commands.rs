@@ -886,7 +886,7 @@ fn maybe_spawn_debug_watch_pane(
 fn build_debug_watch_command(project_dir: &Path, instance: &str, provider: &str) -> Result<String> {
     let exe = env::current_exe().context("获取当前 rccb 可执行文件路径失败")?;
     Ok(format!(
-        "{exe} --project-dir {project} watch --instance {instance} --provider {provider} --with-provider-log --with-debug-log --follow",
+        "{exe} --project-dir {project} watch --instance {instance} --provider {provider} --with-provider-log --with-debug-log --follow --pane-ui",
         exe = shell_quote(&exe.display().to_string()),
         project = shell_quote(&project_dir.display().to_string()),
         instance = shell_quote(instance),
@@ -1702,6 +1702,7 @@ pub fn cmd_watch(
     follow: bool,
     with_provider_log: bool,
     with_debug_log: bool,
+    pane_ui: bool,
     as_json: bool,
 ) -> Result<()> {
     ensure_project_layout(project_dir)?;
@@ -1736,6 +1737,7 @@ pub fn cmd_watch(
             follow,
             with_provider_log,
             with_debug_log,
+            pane_ui,
             as_json,
         ) {
             Ok(true) => return Ok(()),
@@ -1764,6 +1766,11 @@ pub fn cmd_watch(
     let follow_started_at = now_unix();
     let mut followed_done_req_ids: HashSet<String> = HashSet::new();
     let tail_like_quiet = follow && with_provider_log && !as_json;
+    let pane_mode = pane_ui && !as_json;
+
+    if pane_mode {
+        emit_watch_pane_header(instance, watch_provider.as_deref(), fixed_req_id.as_deref());
+    }
 
     loop {
         if let Some(limit) = deadline {
@@ -1803,7 +1810,7 @@ pub fn cmd_watch(
         }
 
         let Some(active_req_id) = current_req_id.as_deref() else {
-            if !printed_waiting && !tail_like_quiet {
+            if !printed_waiting && !tail_like_quiet && !pane_mode {
                 if as_json {
                     println!(
                         "{}",
@@ -1842,10 +1849,17 @@ pub fn cmd_watch(
                     announced_req_id = Some(active_req_id.to_string());
                     continue;
                 }
-                println!(
-                    "watch tracking: instance={} provider={} req_id={}",
-                    instance, provider_name, active_req_id
-                );
+                if pane_mode {
+                    println!(
+                        "[track] provider={} req_id={}",
+                        provider_name, active_req_id
+                    );
+                } else {
+                    println!(
+                        "watch tracking: instance={} provider={} req_id={}",
+                        instance, provider_name, active_req_id
+                    );
+                }
             }
             announced_req_id = Some(active_req_id.to_string());
         }
@@ -1854,7 +1868,7 @@ pub fn cmd_watch(
         match task {
             Some(cur) => {
                 if last_task.as_ref() != Some(&cur) && !tail_like_quiet {
-                    emit_watch_task(&cur, as_json)?;
+                    emit_watch_task(&cur, as_json, pane_mode)?;
                     last_task = Some(cur.clone());
                 }
 
@@ -1867,6 +1881,7 @@ pub fn cmd_watch(
                             active_req_id,
                             "provider",
                             &mut provider_log_offset,
+                            pane_mode,
                             as_json,
                         )?;
                     }
@@ -1879,6 +1894,7 @@ pub fn cmd_watch(
                         active_req_id,
                         "debug",
                         &mut debug_log_offset,
+                        pane_mode,
                         as_json,
                     )?;
                 }
@@ -1900,7 +1916,7 @@ pub fn cmd_watch(
                 }
             }
             None => {
-                if !printed_waiting && !tail_like_quiet {
+                if !printed_waiting && !tail_like_quiet && !pane_mode {
                     if as_json {
                         println!(
                             "{}",
@@ -1943,6 +1959,7 @@ fn watch_via_bus(
     follow: bool,
     with_provider_log: bool,
     with_debug_log: bool,
+    pane_ui: bool,
     as_json: bool,
 ) -> Result<bool> {
     let state_file = state_path(project_dir, instance);
@@ -1980,6 +1997,7 @@ fn watch_via_bus(
         follow,
         with_provider_log,
         with_debug_log,
+        pane_ui,
         as_json,
     )?;
     Ok(true)
@@ -1998,6 +2016,7 @@ fn run_watch_via_bus(
     follow: bool,
     with_provider_log: bool,
     with_debug_log: bool,
+    pane_ui: bool,
     as_json: bool,
 ) -> Result<()> {
     let deadline = if effective_timeout_s <= 0.0 {
@@ -2030,14 +2049,19 @@ fn run_watch_via_bus(
     let mut debug_log_offset = 0u64;
     let mut printed_waiting = false;
     let tail_like_quiet = follow && with_provider_log && !as_json;
+    let pane_mode = pane_ui && !as_json;
     let mut last_seq = 0u64;
     let mut backoff = Duration::from_millis(120);
     let reconnect_cap = Duration::from_secs(2);
 
+    if pane_mode {
+        emit_watch_pane_header(instance, watch_provider, fixed_req_id);
+    }
+
     if let Some(req_id) = tracked_req_id.as_deref() {
         if let Some(task) = load_task_by_req_id(project_dir, instance, req_id)? {
             if !tail_like_quiet {
-                emit_watch_task(&task, as_json)?;
+                emit_watch_task(&task, as_json, pane_mode)?;
             }
             last_task = Some(task.clone());
             if is_terminal_task_status(&task.status) {
@@ -2066,7 +2090,7 @@ fn run_watch_via_bus(
             }
         }
 
-        if tracked_req_id.is_none() && !tail_like_quiet && !printed_waiting {
+        if tracked_req_id.is_none() && !tail_like_quiet && !printed_waiting && !pane_mode {
             if as_json {
                 println!(
                     "{}",
@@ -2225,16 +2249,27 @@ fn run_watch_via_bus(
                     if announced_req_id.as_deref() != Some(active_req_id) {
                         if let Some(provider_name) = watch_provider {
                             if !tail_like_quiet {
-                                println!(
-                                    "watch tracking: instance={} provider={} req_id={}",
-                                    instance, provider_name, active_req_id
-                                );
+                                if pane_mode {
+                                    println!(
+                                        "[track] provider={} req_id={}",
+                                        provider_name, active_req_id
+                                    );
+                                } else {
+                                    println!(
+                                        "watch tracking: instance={} provider={} req_id={}",
+                                        instance, provider_name, active_req_id
+                                    );
+                                }
                             }
                         } else if !tail_like_quiet {
-                            println!(
-                                "watch tracking: instance={} req_id={}",
-                                instance, active_req_id
-                            );
+                            if pane_mode {
+                                println!("[track] req_id={}", active_req_id);
+                            } else {
+                                println!(
+                                    "watch tracking: instance={} req_id={}",
+                                    instance, active_req_id
+                                );
+                            }
                         }
                         announced_req_id = Some(active_req_id.to_string());
                     }
@@ -2248,6 +2283,7 @@ fn run_watch_via_bus(
                             event.provider.as_deref().unwrap_or("provider"),
                             event.req_id.as_deref().unwrap_or("-"),
                             delta,
+                            pane_mode,
                             false,
                         )?;
                     }
@@ -2261,7 +2297,7 @@ fn run_watch_via_bus(
                 if let Some(active_req_id) = tracked_req_id.as_deref() {
                     if let Some(cur) = load_task_by_req_id(project_dir, instance, active_req_id)? {
                         if last_task.as_ref() != Some(&cur) {
-                            emit_watch_task(&cur, false)?;
+                            emit_watch_task(&cur, false, pane_mode)?;
                             last_task = Some(cur);
                         }
                     }
@@ -2276,6 +2312,7 @@ fn run_watch_via_bus(
                         active_req_id,
                         "debug",
                         &mut debug_log_offset,
+                        pane_mode,
                         as_json,
                     )?;
                 }
@@ -2308,7 +2345,13 @@ fn is_terminal_bus_task_event(event: &AskBusEvent) -> bool {
     event.exit_code.map(|code| code != 0).unwrap_or(false)
 }
 
-fn emit_watch_bus_delta(source: &str, req_id: &str, delta: &str, as_json: bool) -> Result<()> {
+fn emit_watch_bus_delta(
+    source: &str,
+    req_id: &str,
+    delta: &str,
+    pane_ui: bool,
+    as_json: bool,
+) -> Result<()> {
     if as_json {
         println!(
             "{}",
@@ -2330,12 +2373,20 @@ fn emit_watch_bus_delta(source: &str, req_id: &str, delta: &str, as_json: bool) 
             continue;
         }
         emitted = true;
-        println!("[{}] [STREAM] req_id={} {}", source, req_id, line);
+        if pane_ui {
+            println!("[{}] {}", short_watch_source(source), line);
+        } else {
+            println!("[{}] [STREAM] req_id={} {}", source, req_id, line);
+        }
     }
     if !emitted {
         let tail = normalized.trim();
         if !tail.is_empty() {
-            println!("[{}] [STREAM] req_id={} {}", source, req_id, tail);
+            if pane_ui {
+                println!("[{}] {}", short_watch_source(source), tail);
+            } else {
+                println!("[{}] [STREAM] req_id={} {}", source, req_id, tail);
+            }
         }
     }
     Ok(())
@@ -2490,7 +2541,7 @@ fn task_file_for_req_id(project_dir: &Path, instance: &str, req_id: &str) -> Pat
         .join(format!("task-{}.json", sanitize_filename(req_id)))
 }
 
-fn emit_watch_task(task: &TaskView, as_json: bool) -> Result<()> {
+fn emit_watch_task(task: &TaskView, as_json: bool, pane_ui: bool) -> Result<()> {
     if as_json {
         println!(
             "{}",
@@ -2502,29 +2553,45 @@ fn emit_watch_task(task: &TaskView, as_json: bool) -> Result<()> {
         return Ok(());
     }
 
-    println!(
-        "watch: instance={} req_id={} provider={} status={} exit={} created={} started={} completed={}",
-        task.instance,
-        task.req_id.clone().unwrap_or_else(|| "-".to_string()),
-        task.provider.clone().unwrap_or_else(|| "-".to_string()),
-        task.status,
-        task.exit_code
-            .map(|v| v.to_string())
-            .unwrap_or_else(|| "-".to_string()),
-        task.created_at_unix
-            .map(|v| v.to_string())
-            .unwrap_or_else(|| "-".to_string()),
-        task.started_at_unix
-            .map(|v| v.to_string())
-            .unwrap_or_else(|| "-".to_string()),
-        task.completed_at_unix
-            .map(|v| v.to_string())
-            .unwrap_or_else(|| "-".to_string()),
-    );
+    if pane_ui {
+        println!(
+            "[task] req_id={} provider={} status={} exit={}",
+            task.req_id.clone().unwrap_or_else(|| "-".to_string()),
+            task.provider.clone().unwrap_or_else(|| "-".to_string()),
+            task.status,
+            task.exit_code
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "-".to_string()),
+        );
+    } else {
+        println!(
+            "watch: instance={} req_id={} provider={} status={} exit={} created={} started={} completed={}",
+            task.instance,
+            task.req_id.clone().unwrap_or_else(|| "-".to_string()),
+            task.provider.clone().unwrap_or_else(|| "-".to_string()),
+            task.status,
+            task.exit_code
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            task.created_at_unix
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            task.started_at_unix
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            task.completed_at_unix
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "-".to_string()),
+        );
+    }
     if is_terminal_task_status(&task.status) {
         if let Some(reply) = task.reply.as_deref() {
             if !reply.trim().is_empty() {
-                println!("reply: {}", reply);
+                if pane_ui {
+                    println!("[reply] {}", reply);
+                } else {
+                    println!("reply: {}", reply);
+                }
             }
         }
     }
@@ -2536,6 +2603,7 @@ fn tail_log_for_req(
     req_id: &str,
     source: &str,
     offset: &mut u64,
+    pane_ui: bool,
     as_json: bool,
 ) -> Result<()> {
     let mut file = match File::open(path) {
@@ -2590,14 +2658,14 @@ fn tail_log_for_req(
     let max_lines = watch_max_log_lines();
     let total = matched.len();
     let start = total.saturating_sub(max_lines);
-    if start > 0 {
+    if start > 0 && !pane_ui {
         println!(
             "[{}] +{} 行省略（可设置 RCCB_WATCH_MAX_LOG_LINES 调整）",
             source, start
         );
     }
     let view = &matched[start..];
-    emit_compact_text_lines(source, view);
+    emit_compact_text_lines(source, view, pane_ui);
     Ok(())
 }
 
@@ -2610,7 +2678,7 @@ fn watch_max_log_lines() -> usize {
         .unwrap_or(10)
 }
 
-fn emit_compact_text_lines(source: &str, lines: &[String]) {
+fn emit_compact_text_lines(source: &str, lines: &[String], pane_ui: bool) {
     let mut prev: Option<&str> = None;
     let mut count = 0usize;
     for line in lines {
@@ -2620,7 +2688,7 @@ fn emit_compact_text_lines(source: &str, lines: &[String]) {
                 count += 1;
             }
             Some(p) => {
-                print_compact_line(source, p, count);
+                print_compact_line(source, p, count, pane_ui);
                 prev = Some(cur);
                 count = 1;
             }
@@ -2631,16 +2699,47 @@ fn emit_compact_text_lines(source: &str, lines: &[String]) {
         }
     }
     if let Some(p) = prev {
-        print_compact_line(source, p, count);
+        print_compact_line(source, p, count, pane_ui);
     }
 }
 
-fn print_compact_line(source: &str, line: &str, count: usize) {
+fn print_compact_line(source: &str, line: &str, count: usize, pane_ui: bool) {
+    let source = short_watch_source(source);
+    let line = if pane_ui {
+        compact_watch_line(line)
+    } else {
+        line.to_string()
+    };
+
     if count <= 1 {
         println!("[{}] {}", source, line);
     } else {
         println!("[{}] {} (x{})", source, line, count);
     }
+}
+
+fn emit_watch_pane_header(instance: &str, provider: Option<&str>, req_id: Option<&str>) {
+    println!(
+        "== RCCB Live == instance={} provider={} req_id={}",
+        instance,
+        provider.unwrap_or("-"),
+        req_id.unwrap_or("-")
+    );
+}
+
+fn short_watch_source(source: &str) -> &str {
+    match source {
+        "provider" => "out",
+        "debug" => "dbg",
+        other => other,
+    }
+}
+
+fn compact_watch_line(line: &str) -> String {
+    line.replace("[STREAM] ", "")
+        .replace("[INFO] ", "")
+        .trim()
+        .to_string()
 }
 
 fn is_terminal_task_status(status: &str) -> bool {
@@ -3162,9 +3261,10 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        cleanup_inflight_tasks, debug_watch_pane_percent, is_in_flight_status,
-        is_terminal_bus_task_event, is_terminal_task_status, load_task_by_req_id,
-        provider_start_cmd, resolve_debug_watch_provider, select_watch_req_for_provider,
+        build_debug_watch_command, cleanup_inflight_tasks, compact_watch_line,
+        debug_watch_pane_percent, is_in_flight_status, is_terminal_bus_task_event,
+        is_terminal_task_status, load_task_by_req_id, provider_start_cmd,
+        resolve_debug_watch_provider, select_watch_req_for_provider,
         select_watch_req_for_provider_follow, split_layout_groups, split_percent_for_equal_stack,
         task_file_for_req_id, watch_bus_enabled,
     };
@@ -3494,6 +3594,21 @@ mod tests {
                 std::env::remove_var("RCCB_DEBUG_WATCH_PANE_PERCENT");
             }
         }
+    }
+
+    #[test]
+    fn build_debug_watch_command_uses_pane_ui_mode() {
+        let cmd = build_debug_watch_command(Path::new("/tmp/rccb-proj"), "default", "codex")
+            .expect("debug watch command");
+        assert!(cmd.contains("--pane-ui"));
+        assert!(cmd.contains("--with-provider-log"));
+        assert!(cmd.contains("--with-debug-log"));
+    }
+
+    #[test]
+    fn compact_watch_line_strips_common_prefixes() {
+        let line = compact_watch_line("[STREAM] req_id=req-1 hello world");
+        assert_eq!(line, "req_id=req-1 hello world");
     }
 
     #[test]
