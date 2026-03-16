@@ -548,6 +548,9 @@ fn execute_native_via_tmux_feed(
     let poll_ms = parse_env_f64("RCCB_PANE_POLL_MS")
         .unwrap_or(300.0)
         .clamp(80.0, 3000.0) as u64;
+    let capture_lines = parse_env_f64("RCCB_PANE_CAPTURE_LINES")
+        .unwrap_or(800.0)
+        .clamp(200.0, 4000.0) as i32;
     let timeout = if effective_timeout_s < 0.0 {
         None
     } else {
@@ -555,18 +558,27 @@ fn execute_native_via_tmux_feed(
     };
     let feed_path = target.feed_file.as_ref().context("tmux feed 文件缺失")?;
     let mut feed_offset = current_feed_size(feed_path);
+    let previous_snapshot = capture_pane_text(target, capture_lines)
+        .with_context(|| format!("下发前抓取 tmux pane 内容失败：pane={}", target.pane_id))?;
 
     dispatch_text_to_pane(target, pane_prompt)
         .with_context(|| format!("向 pane 下发任务失败：pane={}", target.pane_id))?;
 
-    let mut transcript = String::new();
     let prompt_begin_count = count_begin_lines_for_req(pane_prompt, req_id);
     let prompt_done_count = count_done_lines_for_req(pane_prompt, req_id);
-    let mut prompt_echo_ready = false;
-    let mut observed_begin_count = 0usize;
-    let mut observed_done_count = 0usize;
-    let mut observed_reply_visible = false;
-    let mut final_reply_seen = false;
+    let initial_state = capture_initial_request_window(
+        target,
+        capture_lines,
+        req_id,
+        pane_prompt,
+        &previous_snapshot,
+    );
+    let mut previous_window = initial_state.window.clone();
+    let mut prompt_echo_ready = initial_state.prompt_echo_ready;
+    let mut observed_begin_count = initial_state.begin_count;
+    let mut observed_done_count = initial_state.done_count;
+    let mut observed_reply_visible = initial_state.final_reply_seen;
+    let mut final_reply_seen = initial_state.final_reply_seen;
 
     loop {
         if final_reply_seen {
@@ -594,16 +606,46 @@ fn execute_native_via_tmux_feed(
         let delta = read_feed_delta(feed_path, &mut feed_offset)?;
         let meaningful_activity = pane_delta_has_meaningful_activity(&delta);
         if !delta.is_empty() {
-            transcript.push_str(&delta);
-            if !transcript.ends_with('\n') {
-                transcript.push('\n');
-            }
             if !effective_quiet {
                 on_delta(delta);
             }
         }
 
-        let state = pane_request_state(&transcript, req_id, prompt_begin_count, prompt_done_count);
+        let current = match capture_pane_text(target, capture_lines) {
+            Ok(v) => v,
+            Err(_) => {
+                if meaningful_activity {
+                    last_activity = Instant::now();
+                }
+                if let Some(limit) = timeout {
+                    if last_activity.elapsed() >= limit {
+                        return Ok(ProviderExecResult {
+                            exit_code: 2,
+                            reply: "请求超时".to_string(),
+                            done_seen: false,
+                            done_ms: None,
+                            anchor_seen: true,
+                            anchor_ms: Some(0),
+                            fallback_scan: false,
+                            status: "timeout".to_string(),
+                            stderr: String::new(),
+                            effective_timeout_s,
+                            effective_quiet,
+                        });
+                    }
+                }
+                continue;
+            }
+        };
+
+        let current_window = pane_window_for_req(&current, req_id).unwrap_or_default();
+        previous_window = current_window.clone();
+        let state = pane_request_state(
+            &current_window,
+            req_id,
+            prompt_begin_count,
+            prompt_done_count,
+        );
         let prompt_became_ready = !prompt_echo_ready && state.prompt_echo_ready;
         if prompt_became_ready {
             prompt_echo_ready = true;
@@ -649,7 +691,10 @@ fn execute_native_via_tmux_feed(
         }
     }
 
-    let reply = extract_reply_for_req(&transcript, req_id);
+    let mut reply = extract_reply_for_req(&previous_window, req_id);
+    if reply.trim().is_empty() && should_fallback_to_strip_done(&previous_window, req_id) {
+        reply = strip_done_text(&previous_window, req_id);
+    }
     Ok(ProviderExecResult {
         exit_code: 0,
         reply: sanitize_reply_text(&reply),
