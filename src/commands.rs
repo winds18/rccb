@@ -112,7 +112,7 @@ pub fn cmd_start(
     } else {
         normalize_provider_list(&providers)?
     };
-    let effective_debug = resolve_start_debug(project_dir, instance, debug);
+    let effective_debug = resolve_start_debug(project_dir, instance, debug.then_some(true));
 
     start_instance(
         project_dir,
@@ -151,7 +151,7 @@ pub fn cmd_external_provider_launch(project_dir: &Path, raw: Vec<String>) -> Res
     if normalized.is_empty() {
         bail!("至少需要一个 provider");
     }
-    let effective_debug = resolve_start_debug(project_dir, "default", env_debug_enabled());
+    let effective_debug = resolve_start_debug(project_dir, "default", env_debug_override());
     ensure_project_layout(project_dir)?;
     restart_default_daemon_for_shortcut(project_dir)?;
     ensure_default_daemon_running(project_dir, &normalized, effective_debug)?;
@@ -222,7 +222,7 @@ fn cmd_legacy_ask_alias(
     ensure_default_daemon_running(
         project_dir,
         &provider_vec,
-        resolve_start_debug(project_dir, "default", false),
+        resolve_start_debug(project_dir, "default", None),
     )?;
 
     cmd_ask(
@@ -244,7 +244,7 @@ fn cmd_legacy_ping_alias(project_dir: &Path, provider: &str) -> Result<()> {
     ensure_default_daemon_running(
         project_dir,
         &provider_vec,
-        resolve_start_debug(project_dir, "default", false),
+        resolve_start_debug(project_dir, "default", None),
     )?;
     cmd_ping(project_dir, "default", 1.0)?;
     println!("provider={} 已就绪", provider);
@@ -3599,9 +3599,9 @@ fn send_shutdown(host: &str, port: u16, token: &str, timeout_s: f64) -> Result<(
     Ok(())
 }
 
-fn resolve_start_debug(project_dir: &Path, instance: &str, cli_debug: bool) -> bool {
-    if cli_debug {
-        return true;
+fn resolve_start_debug(project_dir: &Path, instance: &str, override_debug: Option<bool>) -> bool {
+    if let Some(v) = override_debug {
+        return v;
     }
     let existing_state = state_path(project_dir, instance);
     if !existing_state.exists() {
@@ -3612,15 +3612,13 @@ fn resolve_start_debug(project_dir: &Path, instance: &str, cli_debug: bool) -> b
         .unwrap_or(false)
 }
 
-fn env_debug_enabled() -> bool {
-    let raw = match env::var("RCCB_DEBUG") {
-        Ok(v) => v,
-        Err(_) => return false,
-    };
-    matches!(
-        raw.trim().to_ascii_lowercase().as_str(),
-        "1" | "true" | "yes" | "on"
-    )
+fn env_debug_override() -> Option<bool> {
+    let raw = env::var("RCCB_DEBUG").ok()?;
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Some(true),
+        "0" | "false" | "no" | "off" => Some(false),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -3641,7 +3639,7 @@ mod tests {
         split_percent_for_equal_stack, task_file_for_req_id, watch_bus_enabled,
     };
     use crate::io_utils::{now_unix, now_unix_ms, update_task_status, write_json_pretty};
-    use crate::layout::{ensure_project_layout, tasks_instance_dir};
+    use crate::layout::{ensure_project_layout, state_path, tasks_instance_dir};
     use crate::types::{AskBusEvent, InstanceState};
 
     fn env_lock() -> &'static Mutex<()> {
@@ -3677,6 +3675,53 @@ mod tests {
         assert!(watch_bus_enabled());
 
         std::env::remove_var("RCCB_WATCH_BUS");
+    }
+
+    #[test]
+    fn env_debug_override_recognizes_explicit_false() {
+        let _guard = env_lock().lock().expect("lock env");
+        unsafe {
+            std::env::set_var("RCCB_DEBUG", "0");
+        }
+        assert_eq!(super::env_debug_override(), Some(false));
+        unsafe {
+            std::env::remove_var("RCCB_DEBUG");
+        }
+    }
+
+    #[test]
+    fn resolve_start_debug_prefers_explicit_override_over_state() {
+        let project = std::env::temp_dir().join(format!("rccb-debug-{}", now_unix_ms()));
+        ensure_project_layout(&project).expect("layout");
+        let state = InstanceState {
+            schema_version: 1,
+            instance_id: "default".to_string(),
+            project_dir: project.display().to_string(),
+            pid: 1,
+            status: "running".to_string(),
+            started_at_unix: 1,
+            last_heartbeat_unix: 1,
+            stopped_at_unix: None,
+            providers: vec!["claude".to_string()],
+            orchestrator: Some("claude".to_string()),
+            executors: Vec::new(),
+            session_file: None,
+            last_task_id: None,
+            daemon_host: None,
+            daemon_port: None,
+            daemon_token: None,
+            debug_enabled: true,
+        };
+        write_json_pretty(&state_path(&project, "default"), &state).expect("write state");
+
+        assert!(!super::resolve_start_debug(
+            &project,
+            "default",
+            Some(false)
+        ));
+        assert!(super::resolve_start_debug(&project, "default", None));
+
+        let _ = fs::remove_dir_all(project);
     }
 
     #[test]
