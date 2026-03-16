@@ -298,6 +298,15 @@ pub enum Command {
         kind: String,
     },
 
+    #[command(hide = true)]
+    PaneFeed {
+        #[arg(long, default_value = "default")]
+        instance: String,
+
+        #[arg(long)]
+        provider: String,
+    },
+
     #[command(
         external_subcommand,
         about = "兼容快捷入口",

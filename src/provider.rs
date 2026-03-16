@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::env;
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 
-use crate::layout::sanitize_filename;
+use crate::layout::{launcher_feed_path, sanitize_filename};
 use crate::types::AskRequest;
 
 const REQ_ID_PREFIX: &str = "RCCB_REQ_ID:";
@@ -51,6 +51,7 @@ pub enum PaneBackend {
 pub struct PaneDispatchTarget {
     pub backend: PaneBackend,
     pub pane_id: String,
+    pub feed_file: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -196,6 +197,17 @@ pub fn execute_provider_request(
                 if native_should_use_pane_exec(&req.provider) {
                     let pane_prompt =
                         wrap_prompt_for_provider(&req.provider, &effective_message, req_id);
+                    if matches!(target.backend, PaneBackend::Tmux) && target.feed_file.is_some() {
+                        return execute_native_via_tmux_feed(
+                            req_id,
+                            &pane_prompt,
+                            effective_timeout_s,
+                            effective_quiet,
+                            target,
+                            &mut on_delta,
+                            &should_cancel,
+                        );
+                    }
                     return execute_native_via_pane(
                         req_id,
                         &pane_prompt,
@@ -507,6 +519,137 @@ fn execute_native_via_pane(
         reply = strip_done_text(&transcript, req_id);
     }
 
+    Ok(ProviderExecResult {
+        exit_code: 0,
+        reply: sanitize_reply_text(&reply),
+        done_seen: true,
+        done_ms: Some(started.elapsed().as_millis() as u64),
+        anchor_seen: true,
+        anchor_ms: Some(0),
+        fallback_scan: false,
+        status: "completed".to_string(),
+        stderr: String::new(),
+        effective_timeout_s,
+        effective_quiet,
+    })
+}
+
+fn execute_native_via_tmux_feed(
+    req_id: &str,
+    pane_prompt: &str,
+    effective_timeout_s: f64,
+    effective_quiet: bool,
+    target: &PaneDispatchTarget,
+    on_delta: &mut dyn FnMut(String),
+    should_cancel: &dyn Fn() -> bool,
+) -> Result<ProviderExecResult> {
+    let started = Instant::now();
+    let mut last_activity = started;
+    let poll_ms = parse_env_f64("RCCB_PANE_POLL_MS")
+        .unwrap_or(300.0)
+        .clamp(80.0, 3000.0) as u64;
+    let timeout = if effective_timeout_s < 0.0 {
+        None
+    } else {
+        Some(Duration::from_secs_f64(effective_timeout_s.max(0.1)))
+    };
+    let feed_path = target.feed_file.as_ref().context("tmux feed 文件缺失")?;
+    let mut feed_offset = current_feed_size(feed_path);
+
+    dispatch_text_to_pane(target, pane_prompt)
+        .with_context(|| format!("向 pane 下发任务失败：pane={}", target.pane_id))?;
+
+    let mut transcript = String::new();
+    let prompt_begin_count = count_begin_lines_for_req(pane_prompt, req_id);
+    let prompt_done_count = count_done_lines_for_req(pane_prompt, req_id);
+    let mut prompt_echo_ready = false;
+    let mut observed_begin_count = 0usize;
+    let mut observed_done_count = 0usize;
+    let mut observed_reply_visible = false;
+    let mut final_reply_seen = false;
+
+    loop {
+        if final_reply_seen {
+            break;
+        }
+
+        if should_cancel() {
+            return Ok(ProviderExecResult {
+                exit_code: 130,
+                reply: "请求已取消".to_string(),
+                done_seen: false,
+                done_ms: None,
+                anchor_seen: true,
+                anchor_ms: Some(0),
+                fallback_scan: false,
+                status: "canceled".to_string(),
+                stderr: String::new(),
+                effective_timeout_s,
+                effective_quiet,
+            });
+        }
+
+        thread::sleep(Duration::from_millis(poll_ms));
+
+        let delta = read_feed_delta(feed_path, &mut feed_offset)?;
+        let meaningful_activity = pane_delta_has_meaningful_activity(&delta);
+        if !delta.is_empty() {
+            transcript.push_str(&delta);
+            if !transcript.ends_with('\n') {
+                transcript.push('\n');
+            }
+            if !effective_quiet {
+                on_delta(delta);
+            }
+        }
+
+        let state = pane_request_state(&transcript, req_id, prompt_begin_count, prompt_done_count);
+        let prompt_became_ready = !prompt_echo_ready && state.prompt_echo_ready;
+        if prompt_became_ready {
+            prompt_echo_ready = true;
+        }
+
+        let markers_changed =
+            state.begin_count != observed_begin_count || state.done_count != observed_done_count;
+        observed_begin_count = state.begin_count;
+        observed_done_count = state.done_count;
+        let reply_became_visible = state.final_reply_seen && !observed_reply_visible;
+        observed_reply_visible = state.final_reply_seen;
+        if markers_changed || meaningful_activity {
+            last_activity = Instant::now();
+        }
+
+        if state.final_reply_seen
+            && (prompt_became_ready
+                || !prompt_echo_ready
+                || markers_changed
+                || reply_became_visible)
+        {
+            final_reply_seen = true;
+        }
+
+        if !final_reply_seen {
+            if let Some(limit) = timeout {
+                if last_activity.elapsed() >= limit {
+                    return Ok(ProviderExecResult {
+                        exit_code: 2,
+                        reply: "请求超时".to_string(),
+                        done_seen: false,
+                        done_ms: None,
+                        anchor_seen: true,
+                        anchor_ms: Some(0),
+                        fallback_scan: false,
+                        status: "timeout".to_string(),
+                        stderr: String::new(),
+                        effective_timeout_s,
+                        effective_quiet,
+                    });
+                }
+            }
+        }
+    }
+
+    let reply = extract_reply_for_req(&transcript, req_id);
     Ok(ProviderExecResult {
         exit_code: 0,
         reply: sanitize_reply_text(&reply),
@@ -1665,6 +1808,34 @@ fn sanitize_reply_text(reply: &str) -> String {
     lines.join("\n").trim_end().to_string()
 }
 
+fn current_feed_size(path: &Path) -> u64 {
+    fs::metadata(path).map(|m| m.len()).unwrap_or(0)
+}
+
+fn read_feed_delta(path: &Path, offset: &mut u64) -> Result<String> {
+    if !path.exists() {
+        return Ok(String::new());
+    }
+
+    let mut file = fs::OpenOptions::new()
+        .read(true)
+        .open(path)
+        .with_context(|| format!("打开 tmux feed 失败：{}", path.display()))?;
+    let len = file.metadata()?.len();
+    if *offset > len {
+        *offset = len;
+    }
+    if *offset == len {
+        return Ok(String::new());
+    }
+
+    file.seek(SeekFrom::Start(*offset))?;
+    let mut buf = Vec::new();
+    file.read_to_end(&mut buf)?;
+    *offset = len;
+    Ok(String::from_utf8_lossy(&buf).to_string())
+}
+
 fn pane_delta_has_meaningful_activity(delta: &str) -> bool {
     delta.lines().any(|line| {
         let semantic = pane_semantic_line(line);
@@ -1770,6 +1941,135 @@ fn trim_pane_right_gutter(text: &str) -> &str {
     text.split('█').next().unwrap_or(text)
 }
 
+pub fn cmd_pane_feed(project_dir: &Path, instance: &str, provider: &str) -> Result<()> {
+    let feed_path = launcher_feed_path(project_dir, instance, provider);
+    if let Some(parent) = feed_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let mut out = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&feed_path)
+        .with_context(|| format!("打开 tmux feed 输出文件失败：{}", feed_path.display()))?;
+    let mut stdin = std::io::stdin();
+    let mut buf = [0u8; 8192];
+    let mut pending_utf8 = Vec::<u8>::new();
+    let mut sanitizer = PaneFeedSanitizer::default();
+
+    loop {
+        let n = stdin.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        for chunk in decode_utf8_chunks(&mut pending_utf8, &buf[..n]) {
+            let cleaned = sanitizer.push_str(&chunk);
+            if !cleaned.is_empty() {
+                out.write_all(cleaned.as_bytes())?;
+                out.flush()?;
+            }
+        }
+    }
+
+    if !pending_utf8.is_empty() {
+        let tail = String::from_utf8_lossy(&pending_utf8).to_string();
+        let cleaned = sanitizer.push_str(&tail);
+        if !cleaned.is_empty() {
+            out.write_all(cleaned.as_bytes())?;
+        }
+    }
+    let tail = sanitizer.finish();
+    if !tail.is_empty() {
+        out.write_all(tail.as_bytes())?;
+    }
+    out.flush()?;
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum AnsiStripState {
+    #[default]
+    Normal,
+    Esc,
+    Csi,
+    Osc,
+    OscEsc,
+}
+
+#[derive(Default)]
+struct PaneFeedSanitizer {
+    state: AnsiStripState,
+    saw_cr: bool,
+}
+
+impl PaneFeedSanitizer {
+    fn push_str(&mut self, raw: &str) -> String {
+        let mut out = String::new();
+        for ch in raw.chars() {
+            match self.state {
+                AnsiStripState::Normal => match ch {
+                    '\u{1b}' => {
+                        self.saw_cr = false;
+                        self.state = AnsiStripState::Esc;
+                    }
+                    '\r' => {
+                        out.push('\n');
+                        self.saw_cr = true;
+                    }
+                    '\n' => {
+                        if self.saw_cr {
+                            self.saw_cr = false;
+                        } else {
+                            out.push('\n');
+                        }
+                    }
+                    '\t' => {
+                        self.saw_cr = false;
+                        out.push('\t');
+                    }
+                    c if c.is_control() => {
+                        self.saw_cr = false;
+                    }
+                    _ => {
+                        self.saw_cr = false;
+                        out.push(ch);
+                    }
+                },
+                AnsiStripState::Esc => match ch {
+                    '[' => self.state = AnsiStripState::Csi,
+                    ']' => self.state = AnsiStripState::Osc,
+                    _ => self.state = AnsiStripState::Normal,
+                },
+                AnsiStripState::Csi => {
+                    if ('@'..='~').contains(&ch) {
+                        self.state = AnsiStripState::Normal;
+                    }
+                }
+                AnsiStripState::Osc => {
+                    if ch == '\u{7}' {
+                        self.state = AnsiStripState::Normal;
+                    } else if ch == '\u{1b}' {
+                        self.state = AnsiStripState::OscEsc;
+                    }
+                }
+                AnsiStripState::OscEsc => {
+                    self.state = if ch == '\\' {
+                        AnsiStripState::Normal
+                    } else {
+                        AnsiStripState::Osc
+                    };
+                }
+            }
+        }
+        out
+    }
+
+    fn finish(&mut self) -> String {
+        self.state = AnsiStripState::Normal;
+        String::new()
+    }
+}
+
 fn sanitize_stderr_for_reply(stderr: &str) -> String {
     let mut out = Vec::new();
     for line in stderr.lines() {
@@ -1860,6 +2160,7 @@ mod tests {
 
     use super::*;
     use crate::constants::{PROTOCOL_PREFIX, PROTOCOL_VERSION};
+    use crate::io_utils::now_unix_ms;
     use crate::types::AskRequest;
 
     fn sample_request() -> AskRequest {
@@ -2119,6 +2420,24 @@ mod tests {
     fn pane_delta_has_meaningful_activity_accepts_tool_progress() {
         let delta = "╭────────────────────╮\n│ ✓  GoogleSearch Searching the web for: \"zeroclaw\" │\n╰────────────────────╯\n";
         assert!(pane_delta_has_meaningful_activity(delta));
+    }
+
+    #[test]
+    fn pane_feed_sanitizer_strips_ansi_sequences() {
+        let mut sanitizer = PaneFeedSanitizer::default();
+        let cleaned = sanitizer.push_str("\u{1b}[31mRCCB_BEGIN: req-1\r\nhello\u{1b}[0m\n");
+        assert_eq!(cleaned, "RCCB_BEGIN: req-1\nhello\n");
+    }
+
+    #[test]
+    fn read_feed_delta_reads_only_new_bytes() {
+        let path = std::env::temp_dir().join(format!("rccb-feed-{}.log", now_unix_ms()));
+        fs::write(&path, b"first\n").expect("write first");
+        let mut offset = current_feed_size(&path);
+        fs::write(&path, b"first\nsecond\n").expect("write second");
+        let delta = read_feed_delta(&path, &mut offset).expect("read delta");
+        assert_eq!(delta, "second\n");
+        let _ = fs::remove_file(path);
     }
 
     #[test]

@@ -20,8 +20,9 @@ use crate::io_utils::{
     normalize_provider_list, now_unix, read_stdin_all, update_task_status, write_json_pretty,
 };
 use crate::layout::{
-    ensure_project_layout, launcher_meta_path, logs_instance_dir, rccb_dir, sanitize_filename,
-    session_instance_dir, state_path, tasks_instance_dir, tasks_root_dir, tmp_instance_dir,
+    ensure_project_layout, launcher_feed_dir, launcher_feed_path, launcher_meta_path,
+    logs_instance_dir, rccb_dir, sanitize_filename, session_instance_dir, state_path,
+    tasks_instance_dir, tasks_root_dir, tmp_instance_dir,
 };
 use crate::protocol::{connect_and_send, send_wire_message};
 use crate::provider::{
@@ -1025,6 +1026,7 @@ fn pane_dispatch_target_from_launch_backend(
     Some(PaneDispatchTarget {
         backend,
         pane_id: pane.to_string(),
+        feed_file: None,
     })
 }
 
@@ -1142,6 +1144,9 @@ fn prepare_launcher_runtime(
     if let Some(parent) = launcher_meta.parent() {
         fs::create_dir_all(parent)?;
     }
+    if matches!(backend, LaunchBackend::Tmux { .. }) {
+        fs::create_dir_all(launcher_feed_dir(project_dir, instance))?;
+    }
 
     let orchestrator = providers
         .first()
@@ -1149,6 +1154,16 @@ fn prepare_launcher_runtime(
         .unwrap_or_else(|| "orchestrator".to_string());
     let mut entries = Vec::new();
     for provider in providers {
+        let feed_file = if matches!(backend, LaunchBackend::Tmux { .. }) {
+            let feed_path = launcher_feed_path(project_dir, instance, provider);
+            fs::write(&feed_path, b"")?;
+            if let Some(pane_id) = provider_panes.get(provider) {
+                attach_tmux_feed_pipe(project_dir, instance, provider, pane_id)?;
+            }
+            feed_path.display().to_string()
+        } else {
+            String::new()
+        };
         entries.push(LauncherProviderMeta {
             provider: provider.clone(),
             role: if provider == &orchestrator {
@@ -1156,7 +1171,7 @@ fn prepare_launcher_runtime(
             } else {
                 "executor".to_string()
             },
-            feed_file: String::new(),
+            feed_file,
             pane_id: provider_panes.get(provider).cloned(),
             pane_title: Some(format!("RCCB-{}", provider)),
         });
@@ -1176,6 +1191,23 @@ fn prepare_launcher_runtime(
         providers: entries,
     };
     write_json_pretty(&launcher_meta, &meta)
+}
+
+fn attach_tmux_feed_pipe(
+    project_dir: &Path,
+    instance: &str,
+    provider: &str,
+    pane_id: &str,
+) -> Result<()> {
+    let exe = env::current_exe().context("获取当前 rccb 可执行文件失败")?;
+    let cmd = format!(
+        "{} --project-dir {} pane-feed --instance {} --provider {}",
+        shell_quote(&exe.display().to_string()),
+        shell_quote(&project_dir.display().to_string()),
+        shell_quote(instance),
+        shell_quote(provider),
+    );
+    run_simple("tmux", &["pipe-pane", "-O", "-t", pane_id.trim(), &cmd])
 }
 
 fn provider_start_cmd(_project_dir: &Path, _instance: &str, provider: &str) -> String {

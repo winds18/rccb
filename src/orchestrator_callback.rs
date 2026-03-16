@@ -211,6 +211,7 @@ fn resolve_orchestrator_dispatch_target(
             Ok(Some(PaneDispatchTarget {
                 backend: ProviderPaneBackend::Tmux,
                 pane_id,
+                feed_file: None,
             }))
         }
         "wezterm" => {
@@ -226,6 +227,7 @@ fn resolve_orchestrator_dispatch_target(
             Ok(Some(PaneDispatchTarget {
                 backend: ProviderPaneBackend::Wezterm { bin },
                 pane_id,
+                feed_file: None,
             }))
         }
         other => Err(anyhow!("不支持的 launcher backend：{}", other)),

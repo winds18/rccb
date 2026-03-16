@@ -1974,6 +1974,8 @@ struct LauncherProviderMetaView {
     provider: String,
     #[serde(default)]
     pane_id: Option<String>,
+    #[serde(default)]
+    feed_file: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -1985,7 +1987,7 @@ enum PaneRelayBackend {
 fn resolve_provider_pane_backend(
     context: &DaemonContext,
     provider: &str,
-) -> Result<Option<(PaneRelayBackend, String)>> {
+) -> Result<Option<(PaneRelayBackend, String, Option<PathBuf>)>> {
     let path = launcher_meta_path(&context.project_dir, &context.instance_id);
     if !path.exists() {
         return Ok(None);
@@ -2005,6 +2007,14 @@ fn resolve_provider_pane_backend(
     let Some(pane_id) = pane_id else {
         return Ok(None);
     };
+    let feed_file = meta
+        .providers
+        .iter()
+        .find(|p| p.provider.trim().eq_ignore_ascii_case(provider.trim()))
+        .and_then(|p| p.feed_file.clone())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from);
 
     let backend = match meta.backend.trim().to_ascii_lowercase().as_str() {
         "tmux" => PaneRelayBackend::Tmux,
@@ -2017,21 +2027,26 @@ fn resolve_provider_pane_backend(
         _ => return Ok(None),
     };
 
-    Ok(Some((backend, pane_id)))
+    Ok(Some((backend, pane_id, feed_file)))
 }
 
 fn resolve_provider_pane_dispatch_target(
     context: &DaemonContext,
     provider: &str,
 ) -> Result<Option<PaneDispatchTarget>> {
-    let Some((backend, pane_id)) = resolve_provider_pane_backend(context, provider)? else {
+    let Some((backend, pane_id, feed_file)) = resolve_provider_pane_backend(context, provider)?
+    else {
         return Ok(None);
     };
     let backend = match backend {
         PaneRelayBackend::Tmux => ProviderPaneBackend::Tmux,
         PaneRelayBackend::Wezterm { bin } => ProviderPaneBackend::Wezterm { bin },
     };
-    Ok(Some(PaneDispatchTarget { backend, pane_id }))
+    Ok(Some(PaneDispatchTarget {
+        backend,
+        pane_id,
+        feed_file,
+    }))
 }
 
 fn orchestrator_callback_target(

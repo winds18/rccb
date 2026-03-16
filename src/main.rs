@@ -21,6 +21,7 @@ use crate::commands::{
 };
 use crate::io_utils::resolve_project_dir;
 use crate::orchestrator_callback::cmd_orchestrator_notify;
+use crate::provider::cmd_pane_feed;
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -117,6 +118,9 @@ fn main() -> Result<()> {
             req_id,
             kind,
         } => cmd_orchestrator_notify(&project_dir, &instance, &orchestrator, &req_id, &kind),
+        Command::PaneFeed { instance, provider } => {
+            cmd_pane_feed(&project_dir, &instance, &provider)
+        }
         Command::External(raw) => cmd_external_provider_launch(&project_dir, raw),
     }
 }
