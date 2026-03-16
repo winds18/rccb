@@ -3157,12 +3157,14 @@ pub fn cmd_ping(project_dir: &Path, instance: &str, timeout_s: f64) -> Result<()
     let state = load_state(&state_path(project_dir, instance))?;
     let host = state
         .daemon_host
+        .clone()
         .ok_or_else(|| anyhow!("missing daemon_host in state"))?;
     let port = state
         .daemon_port
         .ok_or_else(|| anyhow!("missing daemon_port in state"))?;
     let token = state
         .daemon_token
+        .clone()
         .ok_or_else(|| anyhow!("missing daemon_token in state"))?;
 
     let req = json!({
@@ -3191,12 +3193,14 @@ pub fn cmd_cancel(project_dir: &Path, instance: &str, req_id: &str) -> Result<()
     let state = load_state(&state_path(project_dir, instance))?;
     let host = state
         .daemon_host
+        .clone()
         .ok_or_else(|| anyhow!("missing daemon_host in state"))?;
     let port = state
         .daemon_port
         .ok_or_else(|| anyhow!("missing daemon_port in state"))?;
     let token = state
         .daemon_token
+        .clone()
         .ok_or_else(|| anyhow!("missing daemon_token in state"))?;
 
     let req = json!({
@@ -3344,12 +3348,14 @@ pub fn cmd_ask(
     let state = load_state(&state_path(project_dir, instance))?;
     let host = state
         .daemon_host
+        .clone()
         .ok_or_else(|| anyhow!("missing daemon_host in state"))?;
     let port = state
         .daemon_port
         .ok_or_else(|| anyhow!("missing daemon_port in state"))?;
     let token = state
         .daemon_token
+        .clone()
         .ok_or_else(|| anyhow!("missing daemon_token in state"))?;
 
     let message = if message_parts.is_empty() {
@@ -3404,6 +3410,9 @@ pub fn cmd_ask(
             }
             return Ok(());
         }
+        if should_suppress_sync_reply_for_orchestrator(&state, &provider, caller) {
+            return Ok(());
+        }
         if !parsed.reply.is_empty() {
             println!("{}", parsed.reply);
         }
@@ -3416,6 +3425,36 @@ pub fn cmd_ask(
         parsed.reply,
         parsed.req_id.unwrap_or_else(|| "-".to_string())
     )
+}
+
+fn should_suppress_sync_reply_for_orchestrator(
+    state: &InstanceState,
+    provider: &str,
+    caller: &str,
+) -> bool {
+    if env_bool("RCCB_ORCHESTRATOR_SYNC_STDOUT_RESULT", false) {
+        return false;
+    }
+
+    let Some(orchestrator) = state
+        .orchestrator
+        .as_deref()
+        .map(|v| v.trim().to_ascii_lowercase())
+        .filter(|v| !v.is_empty())
+    else {
+        return false;
+    };
+
+    let caller = caller.trim().to_ascii_lowercase();
+    let provider = provider.trim().to_ascii_lowercase();
+    if caller != orchestrator || provider == orchestrator {
+        return false;
+    }
+
+    state
+        .executors
+        .iter()
+        .any(|executor| executor.trim().eq_ignore_ascii_case(&provider))
 }
 
 fn cmd_ask_stream(host: &str, port: u16, req: Value, timeout_s: f64) -> Result<()> {
@@ -3603,7 +3642,7 @@ mod tests {
     };
     use crate::io_utils::{now_unix, now_unix_ms, update_task_status, write_json_pretty};
     use crate::layout::{ensure_project_layout, tasks_instance_dir};
-    use crate::types::AskBusEvent;
+    use crate::types::{AskBusEvent, InstanceState};
 
     fn env_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -3661,6 +3700,58 @@ mod tests {
 
         event.event = "delta".to_string();
         assert!(!is_terminal_bus_task_event(&event));
+    }
+
+    #[test]
+    fn suppresses_sync_reply_for_orchestrator_executor_call() {
+        let state = InstanceState {
+            schema_version: 1,
+            instance_id: "default".to_string(),
+            project_dir: ".".to_string(),
+            pid: 1,
+            status: "running".to_string(),
+            started_at_unix: 1,
+            last_heartbeat_unix: 1,
+            stopped_at_unix: None,
+            providers: vec!["claude".to_string(), "gemini".to_string()],
+            orchestrator: Some("claude".to_string()),
+            executors: vec!["gemini".to_string()],
+            session_file: None,
+            last_task_id: None,
+            daemon_host: None,
+            daemon_port: None,
+            daemon_token: None,
+            debug_enabled: false,
+        };
+        assert!(super::should_suppress_sync_reply_for_orchestrator(
+            &state, "gemini", "claude"
+        ));
+    }
+
+    #[test]
+    fn keeps_sync_reply_for_non_orchestrator_callers() {
+        let state = InstanceState {
+            schema_version: 1,
+            instance_id: "default".to_string(),
+            project_dir: ".".to_string(),
+            pid: 1,
+            status: "running".to_string(),
+            started_at_unix: 1,
+            last_heartbeat_unix: 1,
+            stopped_at_unix: None,
+            providers: vec!["claude".to_string(), "gemini".to_string()],
+            orchestrator: Some("claude".to_string()),
+            executors: vec!["gemini".to_string()],
+            session_file: None,
+            last_task_id: None,
+            daemon_host: None,
+            daemon_port: None,
+            daemon_token: None,
+            debug_enabled: false,
+        };
+        assert!(!super::should_suppress_sync_reply_for_orchestrator(
+            &state, "gemini", "manual"
+        ));
     }
 
     #[test]
