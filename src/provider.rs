@@ -17,6 +17,7 @@ use crate::types::AskRequest;
 const REQ_ID_PREFIX: &str = "RCCB_REQ_ID:";
 const BEGIN_PREFIX: &str = "RCCB_BEGIN:";
 const DONE_PREFIX: &str = "RCCB_DONE:";
+const REPLY_FORMAT_PROMPT_LINE: &str = "请严格按照以下格式回复：";
 
 #[derive(Debug, Clone)]
 pub struct ProviderExecResult {
@@ -50,6 +51,15 @@ pub enum PaneBackend {
 pub struct PaneDispatchTarget {
     pub backend: PaneBackend,
     pub pane_id: String,
+}
+
+#[derive(Debug, Clone, Default)]
+struct PaneRequestState {
+    window: String,
+    begin_count: usize,
+    done_count: usize,
+    prompt_echo_ready: bool,
+    final_reply_seen: bool,
 }
 
 const RCCB_AUTOSTART_ENV_KEYS: &[&str] = &[
@@ -357,13 +367,33 @@ fn execute_native_via_pane(
     };
 
     let mut transcript = String::new();
-    let mut previous_window =
-        capture_initial_request_window(target, capture_lines, req_id, &previous_snapshot);
-    let baseline_begin_count = count_begin_lines_for_req(pane_prompt, req_id)
-        .max(count_begin_lines_for_req(&previous_window, req_id));
-    let baseline_done_count = count_done_lines_for_req(pane_prompt, req_id)
-        .max(count_done_lines_for_req(&previous_window, req_id));
+    let prompt_begin_count = count_begin_lines_for_req(pane_prompt, req_id);
+    let prompt_done_count = count_done_lines_for_req(pane_prompt, req_id);
+    let initial_state = capture_initial_request_window(
+        target,
+        capture_lines,
+        req_id,
+        pane_prompt,
+        &previous_snapshot,
+    );
+    let mut previous_window = initial_state.window.clone();
+    let mut prompt_echo_ready = initial_state.prompt_echo_ready;
+    let mut baseline_begin_count = if prompt_echo_ready {
+        initial_state.begin_count
+    } else {
+        count_begin_lines_for_req(&previous_window, req_id)
+    };
+    let mut baseline_done_count = if prompt_echo_ready {
+        initial_state.done_count
+    } else {
+        count_done_lines_for_req(&previous_window, req_id)
+    };
+    let mut final_reply_seen = initial_state.final_reply_seen;
     loop {
+        if final_reply_seen {
+            break;
+        }
+
         if should_cancel() {
             return Ok(ProviderExecResult {
                 exit_code: 130,
@@ -419,14 +449,26 @@ fn execute_native_via_pane(
             }
         }
 
-        let pane_begin_count = count_begin_lines_for_req(&current_window, req_id);
-        let pane_done_count = count_done_lines_for_req(&current_window, req_id);
-        let transcript_begin_count = count_begin_lines_for_req(&transcript, req_id);
-        let transcript_done_count = count_done_lines_for_req(&transcript, req_id);
-        if (pane_begin_count > baseline_begin_count && pane_done_count > baseline_done_count)
-            || (transcript_begin_count > 0 && transcript_done_count > 0)
+        let state = pane_request_state(
+            &current_window,
+            req_id,
+            prompt_begin_count,
+            prompt_done_count,
+        );
+        let prompt_became_ready = !prompt_echo_ready && state.prompt_echo_ready;
+        if prompt_became_ready {
+            prompt_echo_ready = true;
+            baseline_begin_count = state.begin_count;
+            baseline_done_count = state.done_count;
+        }
+
+        if state.final_reply_seen
+            && (prompt_became_ready
+                || !prompt_echo_ready
+                || state.begin_count > baseline_begin_count
+                || state.done_count > baseline_done_count)
         {
-            break;
+            final_reply_seen = true;
         }
     }
 
@@ -434,10 +476,10 @@ fn execute_native_via_pane(
     if reply.trim().is_empty() {
         reply = extract_reply_for_req(&previous_window, req_id);
     }
-    if reply.trim().is_empty() {
+    if reply.trim().is_empty() && should_fallback_to_strip_done(&previous_window, req_id) {
         reply = strip_done_text(&previous_window, req_id);
     }
-    if reply.trim().is_empty() {
+    if reply.trim().is_empty() && should_fallback_to_strip_done(&transcript, req_id) {
         reply = strip_done_text(&transcript, req_id);
     }
 
@@ -460,9 +502,17 @@ fn capture_initial_request_window(
     target: &PaneDispatchTarget,
     capture_lines: i32,
     req_id: &str,
+    pane_prompt: &str,
     previous_snapshot: &str,
-) -> String {
-    let fallback = pane_window_for_req(previous_snapshot, req_id).unwrap_or_default();
+) -> PaneRequestState {
+    let prompt_begin_count = count_begin_lines_for_req(pane_prompt, req_id);
+    let prompt_done_count = count_done_lines_for_req(pane_prompt, req_id);
+    let fallback = pane_request_state(
+        &pane_window_for_req(previous_snapshot, req_id).unwrap_or_default(),
+        req_id,
+        prompt_begin_count,
+        prompt_done_count,
+    );
     let deadline = Instant::now() + Duration::from_millis(1200);
     loop {
         let current = match capture_pane_text(target, capture_lines) {
@@ -475,15 +525,47 @@ fn capture_initial_request_window(
                 continue;
             }
         };
-        let window = pane_window_for_req(&current, req_id).unwrap_or_default();
-        if !window.trim().is_empty() || Instant::now() >= deadline {
-            return if window.trim().is_empty() {
+        let state = pane_request_state(
+            &pane_window_for_req(&current, req_id).unwrap_or_default(),
+            req_id,
+            prompt_begin_count,
+            prompt_done_count,
+        );
+        if state.prompt_echo_ready || state.final_reply_seen || Instant::now() >= deadline {
+            return if state.window.trim().is_empty() {
                 fallback
             } else {
-                window
+                state
             };
         }
         thread::sleep(Duration::from_millis(40));
+    }
+}
+
+fn pane_request_state(
+    window: &str,
+    req_id: &str,
+    prompt_begin_count: usize,
+    prompt_done_count: usize,
+) -> PaneRequestState {
+    let begin_count = count_begin_lines_for_req(window, req_id);
+    let done_count = count_done_lines_for_req(window, req_id);
+    let prompt_echo_ready = if prompt_begin_count == 0 && prompt_done_count == 0 {
+        !window.trim().is_empty()
+    } else {
+        begin_count >= prompt_begin_count && done_count >= prompt_done_count
+    };
+    let reply = extract_reply_for_req(window, req_id);
+    let final_reply_seen = !reply.trim().is_empty()
+        && ((begin_count > prompt_begin_count || done_count > prompt_done_count)
+            || !looks_like_pane_prompt_echo(window, req_id));
+
+    PaneRequestState {
+        window: window.to_string(),
+        begin_count,
+        done_count,
+        prompt_echo_ready,
+        final_reply_seen,
     }
 }
 
@@ -1414,6 +1496,21 @@ fn is_begin_line_for_req(line: &str, req_id: &str) -> bool {
     line.trim() == format!("{} {}", BEGIN_PREFIX, req_id)
 }
 
+fn looks_like_pane_prompt_echo(text: &str, req_id: &str) -> bool {
+    let req_marker = format!("{} {}", REQ_ID_PREFIX, req_id);
+    let begin_marker = format!("{} {}", BEGIN_PREFIX, req_id);
+    let done_marker = format!("{} {}", DONE_PREFIX, req_id);
+    text.contains(&req_marker)
+        && text.contains(REPLY_FORMAT_PROMPT_LINE)
+        && text.contains(&begin_marker)
+        && text.contains(&done_marker)
+        && text.lines().any(is_reply_placeholder_line)
+}
+
+fn should_fallback_to_strip_done(text: &str, req_id: &str) -> bool {
+    count_begin_lines_for_req(text, req_id) == 0 && count_done_lines_for_req(text, req_id) == 0
+}
+
 fn extract_reply_for_req(text: &str, req_id: &str) -> String {
     let mut lines: Vec<String> = text.lines().map(|s| s.to_string()).collect();
     if lines.is_empty() {
@@ -1823,6 +1920,41 @@ mod tests {
         );
         let got = extract_reply_for_req(&raw, req_id);
         assert_eq!(got, "step 1\nstep 2");
+    }
+
+    #[test]
+    fn pane_request_state_treats_placeholder_prompt_as_not_completed() {
+        let req_id = "req-pane-placeholder";
+        let prompt = wrap_prompt_for_provider("gemini", "调研一下 zeroclaw", req_id);
+        let state = pane_request_state(&prompt, req_id, 1, 1);
+        assert!(state.prompt_echo_ready);
+        assert!(!state.final_reply_seen);
+    }
+
+    #[test]
+    fn pane_request_state_detects_real_reply_after_prompt_echo() {
+        let req_id = "req-pane-done";
+        let prompt = wrap_prompt_for_provider("droid", "调研一下 zeroclaw", req_id);
+        let raw = format!("{prompt}\nRCCB_BEGIN: {req_id}\nzeroclaw report\nRCCB_DONE: {req_id}\n");
+        let state = pane_request_state(&raw, req_id, 1, 1);
+        assert!(state.prompt_echo_ready);
+        assert!(state.final_reply_seen);
+    }
+
+    #[test]
+    fn pane_request_state_accepts_real_reply_without_prompt_echo() {
+        let req_id = "req-pane-direct";
+        let raw = format!("RCCB_BEGIN: {req_id}\nreal answer\nRCCB_DONE: {req_id}\n");
+        let state = pane_request_state(&raw, req_id, 1, 1);
+        assert!(state.prompt_echo_ready);
+        assert!(state.final_reply_seen);
+    }
+
+    #[test]
+    fn should_fallback_to_strip_done_skips_wrapped_prompt_echo() {
+        let req_id = "req-pane-fallback";
+        let prompt = wrap_prompt_for_provider("gemini", "hello", req_id);
+        assert!(!should_fallback_to_strip_done(&prompt, req_id));
     }
 
     #[test]
