@@ -1475,16 +1475,21 @@ fn contains_done_line_for_req(text: &str, req_id: &str) -> bool {
 
 fn count_done_lines_for_req(text: &str, req_id: &str) -> usize {
     let target = format!("{} {}", DONE_PREFIX, req_id);
-    text.lines().filter(|line| line.trim() == target).count()
+    text.lines()
+        .filter(|line| pane_semantic_line(line) == target)
+        .count()
 }
 
 fn count_begin_lines_for_req(text: &str, req_id: &str) -> usize {
     let target = format!("{} {}", BEGIN_PREFIX, req_id);
-    text.lines().filter(|line| line.trim() == target).count()
+    text.lines()
+        .filter(|line| pane_semantic_line(line) == target)
+        .count()
 }
 
 fn is_any_done_line(line: &str) -> bool {
-    let t = line.trim();
+    let normalized = pane_semantic_line(line);
+    let t = normalized.as_str();
     if !t.starts_with(DONE_PREFIX) {
         return false;
     }
@@ -1493,7 +1498,7 @@ fn is_any_done_line(line: &str) -> bool {
 }
 
 fn is_begin_line_for_req(line: &str, req_id: &str) -> bool {
-    line.trim() == format!("{} {}", BEGIN_PREFIX, req_id)
+    pane_semantic_line(line) == format!("{} {}", BEGIN_PREFIX, req_id)
 }
 
 fn looks_like_pane_prompt_echo(text: &str, req_id: &str) -> bool {
@@ -1527,7 +1532,7 @@ fn extract_reply_for_req(text: &str, req_id: &str) -> String {
     let target_idxs: Vec<usize> = done_idxs
         .iter()
         .copied()
-        .filter(|i| lines[*i].trim() == target_done)
+        .filter(|i| pane_semantic_line(&lines[*i]) == target_done)
         .collect();
 
     if target_idxs.is_empty() {
@@ -1555,7 +1560,7 @@ fn extract_reply_for_req(text: &str, req_id: &str) -> String {
     lines = lines[start_i..target_i].to_vec();
     lines.retain(|line| !is_reply_placeholder_line(line));
     trim_blank_lines(&mut lines);
-    lines.join("\n").trim_end().to_string()
+    sanitize_reply_text(&lines.join("\n"))
 }
 
 fn strip_done_text(text: &str, req_id: &str) -> String {
@@ -1576,7 +1581,7 @@ fn strip_done_text(text: &str, req_id: &str) -> String {
 
     lines.retain(|line| !is_reply_placeholder_line(line));
     trim_blank_lines(&mut lines);
-    lines.join("\n").trim_end().to_string()
+    sanitize_reply_text(&lines.join("\n"))
 }
 
 fn trim_blank_lines(lines: &mut Vec<String>) {
@@ -1617,16 +1622,53 @@ fn is_trailing_noise_line(line: &str) -> bool {
 
 fn is_reply_placeholder_line(line: &str) -> bool {
     matches!(
-        line.trim(),
+        pane_semantic_line(line).as_str(),
         "<reply>" | "<回复内容>" | "你的真实回复内容写在这里" | "...你的实际回复内容..."
     )
 }
 
 fn sanitize_reply_text(reply: &str) -> String {
-    let mut lines: Vec<String> = reply.lines().map(|line| line.to_string()).collect();
+    let mut lines: Vec<String> = reply.lines().map(sanitize_reply_line).collect();
     lines.retain(|line| !is_reply_placeholder_line(line));
     trim_blank_lines(&mut lines);
     lines.join("\n").trim_end().to_string()
+}
+
+fn pane_semantic_line(line: &str) -> String {
+    let mut out = line.trim().to_string();
+
+    loop {
+        let stripped = out.trim_start_matches(['│', '┃', '╎', '▌', '▎', '▍', '▕', '▏', ' ']);
+        if stripped.len() == out.len() {
+            break;
+        }
+        out = stripped.to_string();
+    }
+
+    loop {
+        let stripped = out.trim_start_matches(['>', '›', '❯', ' ']);
+        if stripped.len() == out.len() {
+            break;
+        }
+        out = stripped.to_string();
+    }
+
+    out.trim().to_string()
+}
+
+fn sanitize_reply_line(line: &str) -> String {
+    let trimmed = line.trim();
+    if trimmed
+        .chars()
+        .all(|c| matches!(c, '▄' | '▀' | '─' | '╭' | '╮' | '╰' | '╯' | '│' | ' '))
+    {
+        return String::new();
+    }
+
+    let without_gutter = line
+        .trim_start_matches([' ', '│', '┃', '╎', '▌', '▎', '▍', '▕', '▏'])
+        .trim_end();
+    without_gutter.to_string()
 }
 
 fn sanitize_stderr_for_reply(stderr: &str) -> String {
@@ -1923,10 +1965,41 @@ mod tests {
     }
 
     #[test]
+    fn extract_reply_for_req_ignores_boxed_prompt_echo() {
+        let req_id = "req-pane-box";
+        let raw = format!(
+            "│ > RCCB_REQ_ID: {req_id}\n│\n│   调研一下 zeroclaw\n│\n│   请严格按照以下格式回复：\n│   RCCB_BEGIN: {req_id}\n│   <回复内容>\n│   RCCB_DONE: {req_id}\n"
+        );
+        let got = extract_reply_for_req(&raw, req_id);
+        assert!(got.is_empty());
+    }
+
+    #[test]
+    fn extract_reply_for_req_parses_boxed_reply_cleanly() {
+        let req_id = "req-pane-box-reply";
+        let raw = format!(
+            "│ > RCCB_REQ_ID: {req_id}\n│\n│   请严格按照以下格式回复：\n│   RCCB_BEGIN: {req_id}\n│   ZeroClaw 是一个 Rust 项目\n│   主要特点是高性能\n│   RCCB_DONE: {req_id}\n"
+        );
+        let got = extract_reply_for_req(&raw, req_id);
+        assert_eq!(got, "ZeroClaw 是一个 Rust 项目\n主要特点是高性能");
+    }
+
+    #[test]
     fn pane_request_state_treats_placeholder_prompt_as_not_completed() {
         let req_id = "req-pane-placeholder";
         let prompt = wrap_prompt_for_provider("gemini", "调研一下 zeroclaw", req_id);
         let state = pane_request_state(&prompt, req_id, 1, 1);
+        assert!(state.prompt_echo_ready);
+        assert!(!state.final_reply_seen);
+    }
+
+    #[test]
+    fn pane_request_state_treats_boxed_prompt_echo_as_not_completed() {
+        let req_id = "req-pane-boxed-placeholder";
+        let raw = format!(
+            "│ > RCCB_REQ_ID: {req_id}\n│\n│   请严格按照以下格式回复：\n│   RCCB_BEGIN: {req_id}\n│   <回复内容>\n│   RCCB_DONE: {req_id}\n"
+        );
+        let state = pane_request_state(&raw, req_id, 1, 1);
         assert!(state.prompt_echo_ready);
         assert!(!state.final_reply_seen);
     }
