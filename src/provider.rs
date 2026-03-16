@@ -382,6 +382,7 @@ fn execute_native_via_pane(
     let mut observed_begin_count = initial_state.begin_count;
     let mut observed_done_count = initial_state.done_count;
     let mut final_reply_seen = initial_state.final_reply_seen;
+    let mut observed_reply_visible = initial_state.final_reply_seen;
     loop {
         if final_reply_seen {
             break;
@@ -459,11 +460,17 @@ fn execute_native_via_pane(
             state.begin_count != observed_begin_count || state.done_count != observed_done_count;
         observed_begin_count = state.begin_count;
         observed_done_count = state.done_count;
+        let reply_became_visible = state.final_reply_seen && !observed_reply_visible;
+        observed_reply_visible = state.final_reply_seen;
         if markers_changed || meaningful_activity {
             last_activity = Instant::now();
         }
 
-        if state.final_reply_seen && (prompt_became_ready || !prompt_echo_ready || markers_changed)
+        if state.final_reply_seen
+            && (prompt_became_ready
+                || !prompt_echo_ready
+                || markers_changed
+                || reply_became_visible)
         {
             final_reply_seen = true;
         }
@@ -2148,6 +2155,17 @@ mod tests {
     fn pane_request_state_accepts_real_reply_without_prompt_echo() {
         let req_id = "req-pane-direct";
         let raw = format!("RCCB_BEGIN: {req_id}\nreal answer\nRCCB_DONE: {req_id}\n");
+        let state = pane_request_state(&raw, req_id, 1, 1);
+        assert!(state.prompt_echo_ready);
+        assert!(state.final_reply_seen);
+    }
+
+    #[test]
+    fn pane_request_state_detects_in_place_reply_replacing_placeholder() {
+        let req_id = "req-pane-in-place";
+        let raw = format!(
+            "  ┃  RCCB_BEGIN: {req_id}                                                   █\n  ┃  ZeroClaw 项目调研报告                                                   █    Context\n  ┃  核心语言是 Rust                                                         █    0 tokens\n  ┃  RCCB_DONE: {req_id}                                                    █    LSPs will activate as files are read\n"
+        );
         let state = pane_request_state(&raw, req_id, 1, 1);
         assert!(state.prompt_echo_ready);
         assert!(state.final_reply_seen);
