@@ -1730,7 +1730,7 @@ fn pane_semantic_line(line: &str) -> String {
         out = stripped.to_string();
     }
 
-    out.trim().to_string()
+    trim_pane_right_gutter(&out).trim().to_string()
 }
 
 fn strip_decorative_prefix(text: &str) -> Option<&str> {
@@ -1754,7 +1754,13 @@ fn sanitize_reply_line(line: &str) -> String {
     let without_gutter = line
         .trim_start_matches([' ', '│', '┃', '╎', '▌', '▎', '▍', '▕', '▏'])
         .trim_end();
-    without_gutter.to_string()
+    trim_pane_right_gutter(without_gutter)
+        .trim_end()
+        .to_string()
+}
+
+fn trim_pane_right_gutter(text: &str) -> &str {
+    text.split('█').next().unwrap_or(text)
 }
 
 fn sanitize_stderr_for_reply(stderr: &str) -> String {
@@ -2078,6 +2084,22 @@ mod tests {
         );
         let got = extract_reply_for_req(&raw, req_id);
         assert_eq!(got, "ZeroClaw 项目调研报告\n- Rust");
+    }
+
+    #[test]
+    fn pane_semantic_line_strips_opencode_right_sidebar() {
+        let line = "  ┃  RCCB_DONE: req-opencode                                                    █    LSPs will activate as files are read";
+        assert_eq!(pane_semantic_line(line), "RCCB_DONE: req-opencode");
+    }
+
+    #[test]
+    fn extract_reply_for_req_handles_opencode_sidebar_markers() {
+        let req_id = "req-opencode-sidebar";
+        let raw = format!(
+            "  ┃  RCCB_BEGIN: {req_id}                                                   █\n  ┃  ZeroClaw 项目调研报告                                                   █    Context\n  ┃  核心语言是 Rust                                                         █    0 tokens\n  ┃  RCCB_DONE: {req_id}                                                    █    LSPs will activate as files are read\n"
+        );
+        let got = extract_reply_for_req(&raw, req_id);
+        assert_eq!(got, "ZeroClaw 项目调研报告\n核心语言是 Rust");
     }
 
     #[test]
