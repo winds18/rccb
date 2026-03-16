@@ -8,7 +8,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Context, Result};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sysinfo::{Pid, System};
 
@@ -414,16 +414,18 @@ enum LaunchBackend {
 
 const SHORTCUT_INSTANCE: &str = "default";
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct LauncherProviderMeta {
     provider: String,
     role: String,
     feed_file: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pane_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pane_title: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct LauncherMeta {
     schema_version: u32,
     instance: String,
@@ -497,6 +499,7 @@ fn run_interactive_layout(
     let run_result = match &backend {
         LaunchBackend::Tmux { anchor_pane } => {
             provider_panes.insert(orchestrator.clone(), anchor_pane.clone());
+            mark_anchor_pane(&backend, anchor_pane, &orchestrator);
             spawn_tmux_layout(
                 project_dir,
                 SHORTCUT_INSTANCE,
@@ -573,6 +576,13 @@ fn run_interactive_layout(
         bail!("编排者 `{}` 已退出，退出码 {}", orchestrator, code);
     }
     Ok(())
+}
+
+fn mark_anchor_pane(backend: &LaunchBackend, pane_id: &str, provider: &str) {
+    if let LaunchBackend::Tmux { .. } = backend {
+        let title = format!("RCCB-{}", provider);
+        let _ = run_simple("tmux", &["select-pane", "-t", pane_id.trim(), "-T", &title]);
+    }
 }
 
 fn ensure_orchestrator_focus(backend: &LaunchBackend, pane_id: &str) {
@@ -1036,7 +1046,7 @@ fn orchestrator_guardrail_prompt(orchestrator: &str, executors: &[String]) -> St
         executors.join(", ")
     };
     format!(
-        "RCCB 编排模式已启用。\n\n你当前是编排者：{orchestrator}。\n可用执行者：{executor_list}。\n\n严格规则：\n- 不要自己执行 bash 命令。\n- 不要自己修改文件或运行测试。\n- 所有执行任务都必须通过 RCCB 委派给执行者。\n- 你的职责只包括：规划、拆解、分派、验收、汇总。\n\n推荐委派格式：\n`rccb --project-dir . ask --instance default --provider <执行者> --caller {orchestrator} \"<任务>\"`\n\n运行期间，执行者状态会在后台持续更新，但不会插入到你的 pane 文本流中。\n只有任务真正完成后，最终结果才会以 `RCCB_RESULT` 回注给你。\n\n收到 `RCCB_RESULT` 后再继续编排；如果还需要动作，请再次委派，而不是自己执行。"
+        "RCCB 编排模式已启用。\n\n你当前是编排者：{orchestrator}。\n可用执行者：{executor_list}。\n\n严格规则：\n- 不要自己执行 bash 命令。\n- 不要自己修改文件或运行测试。\n- 所有执行任务都必须通过 RCCB 委派给执行者。\n- 你的职责只包括：规划、拆解、分派、验收、汇总。\n\n推荐委派格式：\n`rccb --project-dir . ask --instance default --provider <执行者> --caller {orchestrator} \"<任务>\"`\n\n运行期间，执行者状态会先写入后台 inbox；如启用状态回调，系统会间歇性推送有效进展给你。\n最终结果会通过 RCCB callback 回注；如果回注失败，系统会自动重试。\n\n收到 `RCCB_RESULT` 后再继续编排；如果还需要动作，请再次委派，而不是自己执行。"
     )
 }
 
@@ -1148,6 +1158,7 @@ fn prepare_launcher_runtime(
             },
             feed_file: String::new(),
             pane_id: provider_panes.get(provider).cloned(),
+            pane_title: Some(format!("RCCB-{}", provider)),
         });
     }
 

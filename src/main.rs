@@ -6,6 +6,7 @@ mod daemon;
 mod im;
 mod io_utils;
 mod layout;
+mod orchestrator_callback;
 mod protocol;
 mod provider;
 mod types;
@@ -19,6 +20,7 @@ use crate::commands::{
     cmd_send, cmd_start, cmd_status, cmd_stop, cmd_tasks, cmd_watch,
 };
 use crate::io_utils::resolve_project_dir;
+use crate::orchestrator_callback::cmd_orchestrator_notify;
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -109,6 +111,12 @@ fn main() -> Result<()> {
         ),
         Command::Send { channel } => cmd_send(channel),
         Command::Debug { action } => cmd_debug(&project_dir, action),
+        Command::NotifyOrchestrator {
+            instance,
+            orchestrator,
+            req_id,
+            kind,
+        } => cmd_orchestrator_notify(&project_dir, &instance, &orchestrator, &req_id, &kind),
         Command::External(raw) => cmd_external_provider_launch(&project_dir, raw),
     }
 }

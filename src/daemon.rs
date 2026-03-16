@@ -1,6 +1,6 @@
 use std::collections::{HashMap, VecDeque};
 use std::fs::{self, OpenOptions};
-use std::io::{self, BufRead, BufReader};
+use std::io::{self, BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -26,10 +26,10 @@ use crate::layout::{
     ensure_project_layout, launcher_meta_path, lock_path, logs_instance_dir, sanitize_filename,
     sanitize_instance, session_instance_dir, state_path, tasks_instance_dir, tmp_instance_dir,
 };
+use crate::orchestrator_callback::OrchestratorNoticeKind;
 use crate::protocol::{write_json_event_line, write_json_line, write_json_value_line};
 use crate::provider::{
-    dispatch_text_to_pane, execute_provider_request, PaneBackend as ProviderPaneBackend,
-    PaneDispatchTarget,
+    execute_provider_request, PaneBackend as ProviderPaneBackend, PaneDispatchTarget,
 };
 use crate::types::{
     AskBusEvent, AskEvent, AskRequest, AskResponse, DaemonContext, InstanceState,
@@ -1779,7 +1779,13 @@ fn relay_task_completed(
         "exit_code": exit_code,
         "reply": reply,
     });
-    dispatch_orchestrator_notice_async(context, &orchestrator_provider, entry, Some(prompt));
+    dispatch_orchestrator_notice_async(
+        context,
+        &orchestrator_provider,
+        entry,
+        OrchestratorNoticeKind::Result,
+        Some(prompt),
+    );
 }
 
 fn relay_task_started(
@@ -1807,7 +1813,20 @@ fn relay_task_started(
         "message": "started",
         "timeout_s": timeout_s,
     });
-    dispatch_orchestrator_notice_async(context, &orchestrator_provider, entry, None);
+    let prompt = if orchestrator_started_callback_enabled() {
+        Some(build_orchestrator_started_prompt(
+            req_id, provider, timeout_s,
+        ))
+    } else {
+        None
+    };
+    dispatch_orchestrator_notice_async(
+        context,
+        &orchestrator_provider,
+        entry,
+        OrchestratorNoticeKind::Started,
+        prompt,
+    );
 }
 
 fn relay_task_progress(
@@ -1839,7 +1858,20 @@ fn relay_task_progress(
         "status": "running",
         "message": progress,
     });
-    dispatch_orchestrator_notice_async(context, &orchestrator_provider, entry, None);
+    let prompt = if orchestrator_progress_callback_enabled() {
+        Some(build_orchestrator_progress_prompt(
+            req_id, provider, &progress,
+        ))
+    } else {
+        None
+    };
+    dispatch_orchestrator_notice_async(
+        context,
+        &orchestrator_provider,
+        entry,
+        OrchestratorNoticeKind::Progress,
+        prompt,
+    );
 }
 
 fn relay_progress_lines(chunk: &str) -> Vec<String> {
@@ -2043,6 +2075,7 @@ fn dispatch_orchestrator_notice_async(
     context: &DaemonContext,
     orchestrator_provider: &str,
     inbox_entry: Value,
+    kind: OrchestratorNoticeKind,
     prompt: Option<String>,
 ) {
     let req_id = inbox_entry
@@ -2067,28 +2100,23 @@ fn dispatch_orchestrator_notice_async(
         }
 
         if let Some(prompt) = prompt {
-            match resolve_provider_pane_dispatch_target(&context, &orchestrator_provider) {
-                Ok(Some(target)) => {
-                    if let Err(err) = dispatch_text_to_pane(&target, &prompt) {
-                        let _ = write_line(
-                            daemon_log,
-                            &format!(
-                                "[WARN] orchestrator callback send failed provider={} req_id={} err={}",
-                                orchestrator_provider, req_id, err
-                            ),
-                        );
-                    }
-                }
-                Ok(None) => {}
-                Err(err) => {
-                    let _ = write_line(
-                        daemon_log,
-                        &format!(
-                            "[WARN] orchestrator callback resolve failed provider={} req_id={} err={}",
-                            orchestrator_provider, req_id, err
-                        ),
-                    );
-                }
+            if let Err(err) = run_orchestrator_callback_worker(
+                &context,
+                &orchestrator_provider,
+                &req_id,
+                kind,
+                &prompt,
+            ) {
+                let _ = write_line(
+                    daemon_log,
+                    &format!(
+                        "[WARN] orchestrator callback worker failed provider={} req_id={} kind={} err={}",
+                        orchestrator_provider,
+                        req_id,
+                        kind.as_str(),
+                        err
+                    ),
+                );
             }
         }
     });
@@ -2107,6 +2135,85 @@ fn append_orchestrator_inbox(
     }
     let line = serde_json::to_string(entry).context("serialize orchestrator inbox entry failed")?;
     write_line(path, &line)
+}
+
+fn run_orchestrator_callback_worker(
+    context: &DaemonContext,
+    orchestrator: &str,
+    req_id: &str,
+    kind: OrchestratorNoticeKind,
+    prompt: &str,
+) -> Result<()> {
+    if prompt.trim().is_empty() {
+        return Ok(());
+    }
+
+    let exe = std::env::current_exe().context("获取当前 rccb 可执行文件路径失败")?;
+    let mut child = std::process::Command::new(&exe)
+        .arg("--project-dir")
+        .arg(&context.project_dir)
+        .arg("notify-orchestrator")
+        .arg("--instance")
+        .arg(&context.instance_id)
+        .arg("--orchestrator")
+        .arg(orchestrator)
+        .arg("--req-id")
+        .arg(req_id)
+        .arg("--kind")
+        .arg(kind.as_str())
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .context("启动编排者 callback worker 失败")?;
+
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin
+            .write_all(prompt.as_bytes())
+            .context("写入编排者 callback worker stdin 失败")?;
+        stdin
+            .flush()
+            .context("刷新编排者 callback worker stdin 失败")?;
+    }
+
+    let timeout = Duration::from_millis(orchestrator_callback_worker_timeout_ms());
+    let started = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                if status.success() {
+                    return Ok(());
+                }
+                bail!("编排者 callback worker 退出异常：status={}", status);
+            }
+            Ok(None) => {
+                if started.elapsed() >= timeout {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    bail!(
+                        "编排者 callback worker 超时：timeout_ms={}",
+                        timeout.as_millis()
+                    );
+                }
+                thread::sleep(Duration::from_millis(40));
+            }
+            Err(err) => bail!("等待编排者 callback worker 失败：{}", err),
+        }
+    }
+}
+
+fn build_orchestrator_started_prompt(req_id: &str, executor: &str, timeout_s: f64) -> String {
+    format!(
+        "RCCB_STATUS\nreq_id={req_id}\n执行者={executor}\n状态=running\n\n执行者已开始处理，超时预算 {:.0} 秒。继续等待，不要重复派单。",
+        timeout_s.max(0.0)
+    )
+}
+
+fn build_orchestrator_progress_prompt(req_id: &str, executor: &str, message: &str) -> String {
+    let progress = clamp_bus_text(message.trim(), orchestrator_progress_callback_max_chars());
+    format!(
+        "RCCB_STATUS\nreq_id={req_id}\n执行者={executor}\n状态=running\n\n执行者仍在处理，最新进展：\n{progress}\n\n这不是最终结果，请继续等待，不要重复派单。"
+    )
 }
 
 fn build_orchestrator_result_prompt(
@@ -2131,6 +2238,14 @@ fn orchestrator_strict_mode_enabled() -> bool {
     env_bool("RCCB_ORCHESTRATOR_STRICT", true)
 }
 
+fn orchestrator_started_callback_enabled() -> bool {
+    env_bool("RCCB_ORCHESTRATOR_STARTED_CALLBACK", false)
+}
+
+fn orchestrator_progress_callback_enabled() -> bool {
+    env_bool("RCCB_ORCHESTRATOR_PROGRESS_CALLBACK", false)
+}
+
 fn orchestrator_callback_max_chars() -> usize {
     match std::env::var("RCCB_ORCHESTRATOR_CALLBACK_MAX_CHARS") {
         Ok(raw) => match raw.trim().parse::<usize>() {
@@ -2138,6 +2253,23 @@ fn orchestrator_callback_max_chars() -> usize {
             Err(_) => 12000,
         },
         Err(_) => 12000,
+    }
+}
+
+fn orchestrator_progress_callback_max_chars() -> usize {
+    match std::env::var("RCCB_ORCHESTRATOR_PROGRESS_MAX_CHARS") {
+        Ok(raw) => match raw.trim().parse::<usize>() {
+            Ok(v) => v.clamp(80, 1200),
+            Err(_) => 240,
+        },
+        Err(_) => 240,
+    }
+}
+
+fn orchestrator_callback_worker_timeout_ms() -> u64 {
+    match std::env::var("RCCB_ORCHESTRATOR_CALLBACK_WORKER_TIMEOUT_MS") {
+        Ok(raw) => raw.trim().parse::<u64>().unwrap_or(15000).min(60000),
+        Err(_) => 15000,
     }
 }
 
@@ -2247,7 +2379,10 @@ fn update_heartbeat(context: &DaemonContext) -> Result<()> {
 mod tests {
     use std::sync::{Mutex, OnceLock};
 
-    use super::{build_orchestrator_result_prompt, relay_progress_lines};
+    use super::{
+        build_orchestrator_progress_prompt, build_orchestrator_result_prompt,
+        build_orchestrator_started_prompt, relay_progress_lines,
+    };
 
     fn env_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -2299,5 +2434,23 @@ mod tests {
         assert!(prompt.contains("step 1"));
         assert!(prompt.contains("不要自己执行 bash"));
         assert!(prompt.contains("通过 RCCB 委派给执行者"));
+    }
+
+    #[test]
+    fn orchestrator_started_prompt_stays_compact() {
+        let prompt = build_orchestrator_started_prompt("req-1", "gemini", 300.0);
+        assert!(prompt.contains("RCCB_STATUS"));
+        assert!(prompt.contains("执行者=gemini"));
+        assert!(prompt.contains("超时预算 300 秒"));
+        assert!(prompt.contains("不要重复派单"));
+    }
+
+    #[test]
+    fn orchestrator_progress_prompt_includes_latest_progress() {
+        let prompt = build_orchestrator_progress_prompt("req-2", "droid", "正在搜索 zeroclaw 资料");
+        assert!(prompt.contains("RCCB_STATUS"));
+        assert!(prompt.contains("执行者=droid"));
+        assert!(prompt.contains("正在搜索 zeroclaw 资料"));
+        assert!(prompt.contains("这不是最终结果"));
     }
 }

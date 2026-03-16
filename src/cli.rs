@@ -283,6 +283,21 @@ pub enum Command {
         action: DebugAction,
     },
 
+    #[command(hide = true)]
+    NotifyOrchestrator {
+        #[arg(long, default_value = "default")]
+        instance: String,
+
+        #[arg(long)]
+        orchestrator: String,
+
+        #[arg(long)]
+        req_id: String,
+
+        #[arg(long)]
+        kind: String,
+    },
+
     #[command(
         external_subcommand,
         about = "兼容快捷入口",
