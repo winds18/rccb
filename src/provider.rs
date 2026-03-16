@@ -1646,6 +1646,13 @@ fn is_reply_placeholder_line(line: &str) -> bool {
 
 fn sanitize_reply_text(reply: &str) -> String {
     let mut lines: Vec<String> = reply.lines().map(sanitize_reply_line).collect();
+    lines.retain(|line| {
+        let semantic = pane_semantic_line(line);
+        let trimmed = semantic.trim();
+        !(trimmed.starts_with(REQ_ID_PREFIX)
+            || trimmed.starts_with(BEGIN_PREFIX)
+            || trimmed.starts_with(DONE_PREFIX))
+    });
     lines.retain(|line| !is_reply_placeholder_line(line));
     trim_blank_lines(&mut lines);
     lines.join("\n").trim_end().to_string()
@@ -1719,7 +1726,20 @@ fn pane_semantic_line(line: &str) -> String {
         out = stripped.to_string();
     }
 
+    while let Some(stripped) = strip_decorative_prefix(&out) {
+        out = stripped.to_string();
+    }
+
     out.trim().to_string()
+}
+
+fn strip_decorative_prefix(text: &str) -> Option<&str> {
+    for prefix in ["✦ ", "✦", "• ", "● ", "○ ", "◆ ", "◇ "] {
+        if let Some(stripped) = text.strip_prefix(prefix) {
+            return Some(stripped.trim_start());
+        }
+    }
+    None
 }
 
 fn sanitize_reply_line(line: &str) -> String {
@@ -2048,6 +2068,16 @@ mod tests {
         );
         let got = extract_reply_for_req(&raw, req_id);
         assert_eq!(got, "ZeroClaw 是一个 Rust 项目\n主要特点是高性能");
+    }
+
+    #[test]
+    fn extract_reply_for_req_handles_gemini_prefixed_markers() {
+        let req_id = "req-gemini-prefixed";
+        let raw = format!(
+            "✦ I will search for information.\n✓  GoogleSearch Searching the web for: \"zeroclaw\"\n✦ RCCB_BEGIN: {req_id}\nZeroClaw 项目调研报告\n- Rust\n✦ RCCB_DONE: {req_id}\n"
+        );
+        let got = extract_reply_for_req(&raw, req_id);
+        assert_eq!(got, "ZeroClaw 项目调研报告\n- Rust");
     }
 
     #[test]
