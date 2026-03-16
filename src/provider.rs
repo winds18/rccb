@@ -348,6 +348,7 @@ fn execute_native_via_pane(
     should_cancel: &dyn Fn() -> bool,
 ) -> Result<ProviderExecResult> {
     let started = Instant::now();
+    let mut last_activity = started;
     let poll_ms = parse_env_f64("RCCB_PANE_POLL_MS")
         .unwrap_or(300.0)
         .clamp(80.0, 3000.0) as u64;
@@ -378,16 +379,8 @@ fn execute_native_via_pane(
     );
     let mut previous_window = initial_state.window.clone();
     let mut prompt_echo_ready = initial_state.prompt_echo_ready;
-    let mut baseline_begin_count = if prompt_echo_ready {
-        initial_state.begin_count
-    } else {
-        count_begin_lines_for_req(&previous_window, req_id)
-    };
-    let mut baseline_done_count = if prompt_echo_ready {
-        initial_state.done_count
-    } else {
-        count_done_lines_for_req(&previous_window, req_id)
-    };
+    let mut observed_begin_count = initial_state.begin_count;
+    let mut observed_done_count = initial_state.done_count;
     let mut final_reply_seen = initial_state.final_reply_seen;
     loop {
         if final_reply_seen {
@@ -410,33 +403,35 @@ fn execute_native_via_pane(
             });
         }
 
-        if let Some(limit) = timeout {
-            if started.elapsed() >= limit {
-                return Ok(ProviderExecResult {
-                    exit_code: 2,
-                    reply: "请求超时".to_string(),
-                    done_seen: false,
-                    done_ms: None,
-                    anchor_seen: true,
-                    anchor_ms: Some(0),
-                    fallback_scan: false,
-                    status: "timeout".to_string(),
-                    stderr: String::new(),
-                    effective_timeout_s,
-                    effective_quiet,
-                });
-            }
-        }
-
         thread::sleep(Duration::from_millis(poll_ms));
 
         let current = match capture_pane_text(target, capture_lines) {
             Ok(v) => v,
-            Err(_) => continue,
+            Err(_) => {
+                if let Some(limit) = timeout {
+                    if last_activity.elapsed() >= limit {
+                        return Ok(ProviderExecResult {
+                            exit_code: 2,
+                            reply: "请求超时".to_string(),
+                            done_seen: false,
+                            done_ms: None,
+                            anchor_seen: true,
+                            anchor_ms: Some(0),
+                            fallback_scan: false,
+                            status: "timeout".to_string(),
+                            stderr: String::new(),
+                            effective_timeout_s,
+                            effective_quiet,
+                        });
+                    }
+                }
+                continue;
+            }
         };
 
         let current_window = pane_window_for_req(&current, req_id).unwrap_or_default();
         let delta = pane_output_delta(&previous_window, &current_window);
+        let meaningful_activity = pane_delta_has_meaningful_activity(&delta);
         previous_window = current_window.clone();
 
         if !delta.is_empty() {
@@ -458,17 +453,39 @@ fn execute_native_via_pane(
         let prompt_became_ready = !prompt_echo_ready && state.prompt_echo_ready;
         if prompt_became_ready {
             prompt_echo_ready = true;
-            baseline_begin_count = state.begin_count;
-            baseline_done_count = state.done_count;
         }
 
-        if state.final_reply_seen
-            && (prompt_became_ready
-                || !prompt_echo_ready
-                || state.begin_count > baseline_begin_count
-                || state.done_count > baseline_done_count)
+        let markers_changed =
+            state.begin_count != observed_begin_count || state.done_count != observed_done_count;
+        observed_begin_count = state.begin_count;
+        observed_done_count = state.done_count;
+        if markers_changed || meaningful_activity {
+            last_activity = Instant::now();
+        }
+
+        if state.final_reply_seen && (prompt_became_ready || !prompt_echo_ready || markers_changed)
         {
             final_reply_seen = true;
+        }
+
+        if !final_reply_seen {
+            if let Some(limit) = timeout {
+                if last_activity.elapsed() >= limit {
+                    return Ok(ProviderExecResult {
+                        exit_code: 2,
+                        reply: "请求超时".to_string(),
+                        done_seen: false,
+                        done_ms: None,
+                        anchor_seen: true,
+                        anchor_ms: Some(0),
+                        fallback_scan: false,
+                        status: "timeout".to_string(),
+                        stderr: String::new(),
+                        effective_timeout_s,
+                        effective_quiet,
+                    });
+                }
+            }
         }
     }
 
@@ -1634,6 +1651,55 @@ fn sanitize_reply_text(reply: &str) -> String {
     lines.join("\n").trim_end().to_string()
 }
 
+fn pane_delta_has_meaningful_activity(delta: &str) -> bool {
+    delta.lines().any(|line| {
+        let semantic = pane_semantic_line(line);
+        let trimmed = semantic.trim();
+        if trimmed.is_empty() {
+            return false;
+        }
+        if trimmed.starts_with(REQ_ID_PREFIX)
+            || trimmed.starts_with(BEGIN_PREFIX)
+            || trimmed.starts_with(DONE_PREFIX)
+        {
+            return false;
+        }
+        if matches!(trimmed, "<reply>" | "<回复内容>") {
+            return false;
+        }
+        if trimmed.starts_with(REPLY_FORMAT_PROMPT_LINE)
+            || trimmed.starts_with("Type your message")
+            || trimmed.starts_with("Press Ctrl+O")
+            || trimmed.starts_with("You can also use Ctrl+P")
+            || trimmed.starts_with("? for help")
+            || trimmed.starts_with("shift+tab to cycle modes")
+            || trimmed == "IDE"
+        {
+            return false;
+        }
+        if trimmed.chars().all(|c| {
+            matches!(
+                c,
+                '▄' | '▀'
+                    | '─'
+                    | '╭'
+                    | '╮'
+                    | '╰'
+                    | '╯'
+                    | '│'
+                    | ' '
+                    | '◌'
+                    | '⠸'
+                    | '⠼'
+                    | '✻'
+            )
+        }) {
+            return false;
+        }
+        true
+    })
+}
+
 fn pane_semantic_line(line: &str) -> String {
     let mut out = line.trim().to_string();
 
@@ -1982,6 +2048,18 @@ mod tests {
         );
         let got = extract_reply_for_req(&raw, req_id);
         assert_eq!(got, "ZeroClaw 是一个 Rust 项目\n主要特点是高性能");
+    }
+
+    #[test]
+    fn pane_delta_has_meaningful_activity_ignores_box_ui_noise() {
+        let delta = "│\n╰────────────────────╯\nType your message or @path/to/file\n";
+        assert!(!pane_delta_has_meaningful_activity(delta));
+    }
+
+    #[test]
+    fn pane_delta_has_meaningful_activity_accepts_tool_progress() {
+        let delta = "╭────────────────────╮\n│ ✓  GoogleSearch Searching the web for: \"zeroclaw\" │\n╰────────────────────╯\n";
+        assert!(pane_delta_has_meaningful_activity(delta));
     }
 
     #[test]

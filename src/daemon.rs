@@ -1002,11 +1002,7 @@ impl WorkerPool {
         let sender = self.get_worker_sender(&request.provider)?;
 
         let (resp_tx, resp_rx) = mpsc::channel::<AskResponse>();
-        let timeout = if request.timeout_s < 0.0 {
-            Duration::from_secs(24 * 3600)
-        } else {
-            Duration::from_secs_f64(request.timeout_s + 5.0)
-        };
+        let timeout = sync_response_wait_timeout(request.timeout_s);
         let cancel_flag = self.register_cancel_flag(&req_id)?;
 
         if let Err(err) = sender.send(WorkerTask {
@@ -1173,6 +1169,20 @@ impl WorkerPool {
             guard.remove(req_id);
         }
     }
+}
+
+fn sync_response_wait_timeout(timeout_s: f64) -> Duration {
+    if timeout_s < 0.0 {
+        return Duration::from_secs(24 * 3600);
+    }
+
+    let base = timeout_s.max(0.1);
+    let extended = if base >= 60.0 {
+        (base * 2.0) + 5.0
+    } else {
+        base + 5.0
+    };
+    Duration::from_secs_f64(extended)
 }
 
 fn rejected_response(instance_id: &str, request: AskRequest, req_id: String) -> AskResponse {
@@ -2378,10 +2388,11 @@ fn update_heartbeat(context: &DaemonContext) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use std::sync::{Mutex, OnceLock};
+    use std::time::Duration;
 
     use super::{
         build_orchestrator_progress_prompt, build_orchestrator_result_prompt,
-        build_orchestrator_started_prompt, relay_progress_lines,
+        build_orchestrator_started_prompt, relay_progress_lines, sync_response_wait_timeout,
     };
 
     fn env_lock() -> &'static Mutex<()> {
@@ -2452,5 +2463,17 @@ mod tests {
         assert!(prompt.contains("执行者=droid"));
         assert!(prompt.contains("正在搜索 zeroclaw 资料"));
         assert!(prompt.contains("这不是最终结果"));
+    }
+
+    #[test]
+    fn sync_response_wait_timeout_extends_long_requests() {
+        assert_eq!(
+            sync_response_wait_timeout(10.0),
+            Duration::from_secs_f64(15.0)
+        );
+        assert_eq!(
+            sync_response_wait_timeout(300.0),
+            Duration::from_secs_f64(605.0)
+        );
     }
 }
