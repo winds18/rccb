@@ -48,6 +48,9 @@ pub fn cmd_init(project_dir: &Path, force: bool) -> Result<()> {
     for p in bootstrap.profile_templates {
         println!("native profile 模板：{}", p.display());
     }
+    for p in bootstrap.wrapper_scripts {
+        println!("provider 包装脚本：{}", p.display());
+    }
     for p in bootstrap.rule_templates {
         println!("规则模板：{}", p.display());
     }
@@ -94,6 +97,7 @@ enum BootstrapMode {
 struct ProjectBootstrapSummary {
     config_path: PathBuf,
     profile_templates: Vec<PathBuf>,
+    wrapper_scripts: Vec<PathBuf>,
     rule_templates: Vec<PathBuf>,
 }
 
@@ -104,10 +108,12 @@ fn ensure_project_bootstrap(
     ensure_project_layout(project_dir)?;
     let config_path = write_config_template(project_dir, mode)?;
     let profile_templates = write_native_profile_templates(project_dir, mode)?;
+    let wrapper_scripts = write_provider_launch_wrappers(project_dir, mode)?;
     let rule_templates = ensure_project_rule_bootstrap(project_dir, mode)?;
     Ok(ProjectBootstrapSummary {
         config_path,
         profile_templates,
+        wrapper_scripts,
         rule_templates,
     })
 }
@@ -149,6 +155,94 @@ fn write_config_template(project_dir: &Path, mode: BootstrapMode) -> Result<Path
     });
     write_json_pretty(&config_path, &template)?;
     Ok(config_path)
+}
+
+fn write_provider_launch_wrappers(project_dir: &Path, mode: BootstrapMode) -> Result<Vec<PathBuf>> {
+    let bin_dir = rccb_dir(project_dir).join("bin");
+    fs::create_dir_all(&bin_dir)?;
+
+    let mut written = Vec::new();
+    for provider in SUPPORTED_PROVIDERS {
+        let path = bin_dir.join(provider);
+        if path.exists() && matches!(mode, BootstrapMode::MissingOnly) {
+            continue;
+        }
+        write_wrapper_script(&path, provider)?;
+        written.push(path);
+    }
+    Ok(written)
+}
+
+fn write_wrapper_script(path: &Path, provider: &str) -> Result<()> {
+    let script = build_provider_wrapper_script(provider)?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(path, script.as_bytes())
+        .with_context(|| format!("写入 provider 包装脚本失败：{}", path.display()))?;
+    set_executable(path)?;
+    Ok(())
+}
+
+fn build_provider_wrapper_script(provider: &str) -> Result<String> {
+    let base = provider.trim().to_ascii_lowercase();
+    let script = match base.as_str() {
+        "claude" => {
+            r#"#!/usr/bin/env zsh
+set -euo pipefail
+agent="${RCCB_PROVIDER_AGENT:-}"
+if [[ -n "$agent" ]]; then
+  exec claude --agent "$agent" "$@"
+fi
+exec claude "$@"
+"#
+        }
+        "opencode" => {
+            r#"#!/usr/bin/env zsh
+set -euo pipefail
+agent="${RCCB_PROVIDER_AGENT:-}"
+if [[ -n "$agent" ]]; then
+  exec opencode --agent "$agent" "$@"
+fi
+exec opencode "$@"
+"#
+        }
+        "codex" => {
+            r#"#!/usr/bin/env zsh
+set -euo pipefail
+exec codex "$@"
+"#
+        }
+        "gemini" => {
+            r#"#!/usr/bin/env zsh
+set -euo pipefail
+exec gemini "$@"
+"#
+        }
+        "droid" => {
+            r#"#!/usr/bin/env zsh
+set -euo pipefail
+exec droid "$@"
+"#
+        }
+        other => bail!("unsupported provider wrapper: {}", other),
+    };
+    Ok(script.to_string())
+}
+
+#[cfg(unix)]
+fn set_executable(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut perms = fs::metadata(path)?.permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(path, perms)?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn set_executable(_path: &Path) -> Result<()> {
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1864,11 +1958,34 @@ fn attach_tmux_feed_pipe(
     run_simple("tmux", &["pipe-pane", "-O", "-t", pane_id.trim(), &cmd])
 }
 
-fn provider_start_cmd(_project_dir: &Path, _instance: &str, provider: &str) -> String {
-    provider_raw_start_cmd(provider)
+fn provider_start_cmd(project_dir: &Path, instance: &str, provider: &str) -> String {
+    let raw = provider_raw_start_cmd(project_dir, provider);
+    let role = launcher_provider_role(project_dir, instance, provider);
+    let specialty = default_provider_specialty(provider, role.as_deref());
+    let agent = default_provider_agent(provider, role.as_deref());
+
+    let mut prefixes = Vec::new();
+    if let Some(role) = role.as_deref().filter(|v| !v.trim().is_empty()) {
+        prefixes.push(format!("RCCB_PROVIDER_ROLE={}", shell_quote(role)));
+    }
+    if let Some(specialty) = specialty.filter(|v| !v.trim().is_empty()) {
+        prefixes.push(format!(
+            "RCCB_PROVIDER_SPECIALTY={}",
+            shell_quote(specialty)
+        ));
+    }
+    if let Some(agent) = agent.filter(|v| !v.trim().is_empty()) {
+        prefixes.push(format!("RCCB_PROVIDER_AGENT={}", shell_quote(agent)));
+    }
+
+    if prefixes.is_empty() {
+        raw
+    } else {
+        format!("{} {}", prefixes.join(" "), raw)
+    }
 }
 
-fn provider_raw_start_cmd(provider: &str) -> String {
+fn provider_raw_start_cmd(project_dir: &Path, provider: &str) -> String {
     let key = format!("RCCB_{}_START_CMD", provider.trim().to_ascii_uppercase());
     if let Ok(v) = env::var(&key) {
         let v = v.trim();
@@ -1881,6 +1998,13 @@ fn provider_raw_start_cmd(provider: &str) -> String {
         if let Some(ccb_cmd) = provider_bridge_start_cmd(provider) {
             return ccb_cmd;
         }
+    }
+
+    let project_wrapper = rccb_dir(project_dir)
+        .join("bin")
+        .join(provider.trim().to_ascii_lowercase());
+    if is_executable_file(&project_wrapper) {
+        return shell_quote(&project_wrapper.display().to_string());
     }
 
     match provider.trim().to_ascii_lowercase().as_str() {
@@ -1907,6 +2031,40 @@ fn provider_bridge_start_cmd(provider: &str) -> Option<String> {
     ))
 }
 
+fn launcher_provider_role(project_dir: &Path, instance: &str, provider: &str) -> Option<String> {
+    let meta_path = launcher_meta_path(project_dir, instance);
+    let raw = fs::read_to_string(meta_path).ok()?;
+    let meta: LauncherMeta = serde_json::from_str(&raw).ok()?;
+    meta.providers
+        .into_iter()
+        .find(|entry| entry.provider.eq_ignore_ascii_case(provider))
+        .map(|entry| entry.role)
+}
+
+fn default_provider_specialty(provider: &str, role: Option<&str>) -> Option<&'static str> {
+    match provider.trim().to_ascii_lowercase().as_str() {
+        "claude" => Some(if !matches!(role, Some("executor")) {
+            "编排者"
+        } else {
+            "复核者"
+        }),
+        "opencode" => Some("编码者"),
+        "gemini" => Some("调研者"),
+        "droid" => Some("文档记录者"),
+        "codex" => Some("代码审计者"),
+        _ => None,
+    }
+}
+
+fn default_provider_agent(provider: &str, role: Option<&str>) -> Option<&'static str> {
+    match provider.trim().to_ascii_lowercase().as_str() {
+        "claude" if !matches!(role, Some("executor")) => Some("orchestrator"),
+        "claude" => Some("reviewer"),
+        "opencode" => Some("coder"),
+        _ => None,
+    }
+}
+
 fn resolve_bridge_launch_cmd() -> Option<String> {
     if let Ok(v) = env::var("RCCB_BRIDGE_PROVIDER_LAUNCH_CMD") {
         let v = v.trim();
@@ -1915,6 +2073,27 @@ fn resolve_bridge_launch_cmd() -> Option<String> {
         }
     }
     None
+}
+
+fn is_executable_file(path: &Path) -> bool {
+    if !path.exists() || !path.is_file() {
+        return false;
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(meta) = fs::metadata(path) {
+            return meta.permissions().mode() & 0o111 != 0;
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        return true;
+    }
+
+    false
 }
 
 fn rccb_autostart_exports() -> String {
@@ -4728,6 +4907,8 @@ mod tests {
         assert!(project.join(".claude/commands/rccb-research.md").exists());
         assert!(project.join(".rccb/config.example.json").exists());
         assert!(project.join(".rccb/providers/codex.example.json").exists());
+        assert!(project.join(".rccb/bin/codex").exists());
+        assert!(project.join(".rccb/bin/claude").exists());
 
         let _ = fs::remove_dir_all(&project);
     }
@@ -5043,13 +5224,15 @@ mod tests {
     }
 
     #[test]
-    fn provider_start_cmd_uses_raw_provider_command() {
+    fn provider_start_cmd_prefers_project_wrapper_and_role_env() {
         let _guard = env_lock().lock().unwrap();
         let old_ccb = std::env::var("RCCB_USE_BRIDGE_PROVIDER_LAUNCH").ok();
         unsafe {
             std::env::remove_var("RCCB_USE_BRIDGE_PROVIDER_LAUNCH");
         }
-        let cmd = provider_start_cmd(Path::new("/tmp/rccb-proj"), "default", "codex");
+        let project = std::env::temp_dir().join(format!("rccb-start-wrapper-{}", now_unix_ms()));
+        ensure_project_bootstrap(&project, BootstrapMode::RefreshGenerated).expect("bootstrap");
+        let cmd = provider_start_cmd(&project, "default", "opencode");
         if let Some(v) = old_ccb {
             unsafe {
                 std::env::set_var("RCCB_USE_BRIDGE_PROVIDER_LAUNCH", v);
@@ -5059,8 +5242,11 @@ mod tests {
                 std::env::remove_var("RCCB_USE_BRIDGE_PROVIDER_LAUNCH");
             }
         }
-        assert!(cmd.contains("codex"));
+        assert!(cmd.contains("RCCB_PROVIDER_AGENT"));
+        assert!(cmd.contains("RCCB_PROVIDER_SPECIALTY"));
+        assert!(cmd.contains(".rccb/bin/opencode"));
         assert!(!cmd.contains("tail -n0 -F"));
+        let _ = fs::remove_dir_all(&project);
     }
 
     #[test]

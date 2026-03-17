@@ -211,6 +211,7 @@
 2. 初始化输出：
    - `.rccb/config.example.json`
    - `.rccb/providers/*.example.json`（native profile 模板）
+   - `.rccb/bin/*`（provider 启动包装脚本）
    - `AGENTS.md`、`CLAUDE.md`、`GEMINI.md`
    - `.agents/skills/rccb-delegate/SKILL.md`
    - `.opencode/skills/rccb-delegate/SKILL.md`
@@ -225,7 +226,7 @@
 3. 覆盖策略：
    - 普通模式仅补缺失文件
    - `--force` 会刷新所有 RCCB 生成模板
-   - `debug` 启动会刷新 RCCB 生成模板，包括 `.rccb/config.example.json`、`providers/*.example.json` 与托管规则
+   - `debug` 启动会刷新 RCCB 生成模板，包括 `.rccb/config.example.json`、`providers/*.example.json`、`.rccb/bin/*` 与托管规则
    - `AGENTS.md` / `CLAUDE.md` / `GEMINI.md` 通过托管区块 + 用户区块的方式保留用户自定义内容
 
 ### 5.1 启动

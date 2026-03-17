@@ -19,6 +19,7 @@ rccb --project-dir . init
 
 - `./.rccb/config.example.json`
 - `./.rccb/providers/*.example.json`（native provider profile 模板）
+- `./.rccb/bin/*`（provider 启动包装脚本）
 - `./AGENTS.md`（跨 provider 共享协作规则，含托管区块与用户区块）
 - `./CLAUDE.md`
 - `./GEMINI.md`
@@ -37,6 +38,7 @@ rccb --project-dir . init
 
 - 普通模式：只补缺失文件，不覆盖已有项目级规则
 - `debug` 模式：刷新 RCCB 生成模板，包括 `.rccb/config.example.json`、`providers/*.example.json` 与项目级托管规则
+- 启动包装脚本也属于 RCCB 生成模板，`debug` 模式会一并刷新
 - `AGENTS.md` / `CLAUDE.md` / `GEMINI.md` 会保留用户区块，方便写项目个性化规则
 
 ## 编排启动
