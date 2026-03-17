@@ -1702,8 +1702,11 @@ fn wrap_prompt_for_provider(provider: &str, message: &str, req_id: &str) -> Stri
         "gemini" => format!(
             "{REQ_ID_PREFIX} {req_id}\n\n{body}\n\n请严格按照以下格式回复：\n{BEGIN_PREFIX} {req_id}\n<回复内容>\n{DONE_PREFIX} {req_id}\n"
         ),
-        "codex" | "opencode" | "droid" => format!(
+        "codex" | "opencode" => format!(
             "{REQ_ID_PREFIX} {req_id}\n\n{body}\n\n请严格按照以下格式回复：\n{BEGIN_PREFIX} {req_id}\n<回复内容>\n{DONE_PREFIX} {req_id}\n"
+        ),
+        "droid" => format!(
+            "{REQ_ID_PREFIX} {req_id}\n\n{body}\n\n如果任务需要输出文档并保存，请遵守以下规则：\n- 先判断是否属于长期项目文档；若用户未指定目录，先询问是否创建项目级目录。\n- 如果只是单次零散文档，默认保存到当前目录 `./temp/rccb-docs/`。\n- 回复时不要只返回一个路径；至少同时返回 `saved_files` 和简要摘要。\n\n请严格按照以下格式回复：\n{BEGIN_PREFIX} {req_id}\n<回复内容>\n{DONE_PREFIX} {req_id}\n"
         ),
         _ => format!(
             "{REQ_ID_PREFIX} {req_id}\n\n{body}\n\n注意：\n- 请将下面这一行原样作为最后一行输出：\n{DONE_PREFIX} {req_id}\n"
@@ -2578,6 +2581,14 @@ mod tests {
         let prompt = wrap_prompt_for_provider("gemini", "hello", "req-123");
         assert!(prompt.contains("RCCB_BEGIN: req-123"));
         assert!(prompt.contains("RCCB_DONE: req-123"));
+        assert!(prompt.contains("请严格按照以下格式回复"));
+    }
+
+    #[test]
+    fn droid_prompt_mentions_document_delivery_contract() {
+        let prompt = wrap_prompt_for_provider("droid", "写一份公告", "req-123");
+        assert!(prompt.contains("saved_files"));
+        assert!(prompt.contains("./temp/rccb-docs/"));
         assert!(prompt.contains("请严格按照以下格式回复"));
     }
 

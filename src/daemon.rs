@@ -58,6 +58,12 @@ struct SubscribeRequest {
     timeout_s: Option<f64>,
 }
 
+#[derive(Debug, Clone)]
+struct NormalizedExecutorReply {
+    reply: String,
+    delivery_file: Option<PathBuf>,
+}
+
 fn default_subscribe_follow() -> bool {
     true
 }
@@ -1393,12 +1399,6 @@ fn worker_loop(
                 }
             }
         };
-        let reply = exec.reply.clone();
-        let reply_artifact = write_reply_artifact(&context, &task.req_id, &reply).ok();
-        let reply_artifact_str = reply_artifact
-            .as_ref()
-            .map(|p| p.to_string_lossy().to_string());
-        let _ = update_task_artifact(&task.task_file, "reply_file", reply_artifact_str.as_deref());
         let task_status = match exec.status.as_str() {
             "completed" => "completed",
             "timeout" => "timeout",
@@ -1406,6 +1406,23 @@ fn worker_loop(
             "incomplete" => "incomplete",
             _ => "failed",
         };
+        let normalized_reply =
+            normalize_executor_reply(&context, &req, &task.req_id, task_status, &exec.reply);
+        let reply = normalized_reply.reply.clone();
+        let reply_artifact = write_reply_artifact(&context, &task.req_id, &reply).ok();
+        let reply_artifact_str = reply_artifact
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string());
+        let _ = update_task_artifact(&task.task_file, "reply_file", reply_artifact_str.as_deref());
+        let delivery_file_str = normalized_reply
+            .delivery_file
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string());
+        let _ = update_task_artifact(
+            &task.task_file,
+            "delivery_file",
+            delivery_file_str.as_deref(),
+        );
 
         let _ = update_task_status(
             &task.task_file,
@@ -1425,6 +1442,7 @@ fn worker_loop(
             task_status,
             exec.exit_code,
             &reply,
+            delivery_file_str.as_deref(),
         );
 
         let resp = AskResponse {
@@ -1528,6 +1546,102 @@ fn write_reply_artifact(context: &DaemonContext, req_id: &str, reply: &str) -> R
     fs::write(&path, reply.as_bytes())
         .with_context(|| format!("写入任务结果文件失败：{}", path.display()))?;
     Ok(path)
+}
+
+fn normalize_executor_reply(
+    context: &DaemonContext,
+    req: &AskRequest,
+    req_id: &str,
+    status: &str,
+    reply: &str,
+) -> NormalizedExecutorReply {
+    if req.provider != "droid" || status != "completed" {
+        return NormalizedExecutorReply {
+            reply: reply.to_string(),
+            delivery_file: None,
+        };
+    }
+
+    let trimmed = reply.trim();
+    if trimmed.is_empty() || reply_declares_saved_files(trimmed) {
+        return NormalizedExecutorReply {
+            reply: reply.to_string(),
+            delivery_file: None,
+        };
+    }
+
+    if !looks_like_document_payload(&req.message, trimmed) {
+        return NormalizedExecutorReply {
+            reply: reply.to_string(),
+            delivery_file: None,
+        };
+    }
+
+    match materialize_droid_delivery_file(context, req, req_id, trimmed) {
+        Ok(path) => NormalizedExecutorReply {
+            reply: summarize_droid_delivery(trimmed, &path),
+            delivery_file: Some(path),
+        },
+        Err(_) => NormalizedExecutorReply {
+            reply: reply.to_string(),
+            delivery_file: None,
+        },
+    }
+}
+
+fn reply_declares_saved_files(reply: &str) -> bool {
+    let lowered = reply.to_ascii_lowercase();
+    lowered.contains("saved_files")
+        || lowered.contains("saved file")
+        || reply.contains("保存文件")
+        || reply.contains("存储路径")
+}
+
+fn looks_like_document_payload(message: &str, reply: &str) -> bool {
+    let doc_hint = [
+        "文档", "公告", "纪要", "手册", "说明", "报告", "规则", "制度", "方案", "草稿",
+    ]
+    .iter()
+    .any(|needle| message.contains(needle));
+    doc_hint || reply.lines().count() >= 8 || reply.chars().count() >= 240
+}
+
+fn materialize_droid_delivery_file(
+    context: &DaemonContext,
+    req: &AskRequest,
+    req_id: &str,
+    reply: &str,
+) -> Result<PathBuf> {
+    let work_dir = Path::new(req.work_dir.trim());
+    let base_dir = if req.work_dir.trim().is_empty() {
+        context.project_dir.as_path()
+    } else {
+        work_dir
+    };
+    let delivery_dir = base_dir.join("temp").join("rccb-docs");
+    fs::create_dir_all(&delivery_dir)
+        .with_context(|| format!("创建文档交付目录失败：{}", delivery_dir.display()))?;
+
+    let filename = format!("droid-doc-{}.md", sanitize_filename(req_id));
+    let path = delivery_dir.join(filename);
+    fs::write(&path, reply.as_bytes())
+        .with_context(|| format!("写入文档交付文件失败：{}", path.display()))?;
+    Ok(path)
+}
+
+fn summarize_droid_delivery(reply: &str, delivery_file: &Path) -> String {
+    let title = reply
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty() && !line.starts_with('#') && !line.starts_with("---"))
+        .unwrap_or("文档已生成");
+    let summary = compact_preview(reply, 180);
+    format!(
+        "saved_files:\n- {}\n\nsummary:\n- 标题：{}\n- 已将完整正文保存到上述文件。\n- `.reply.md` 仅保留交付索引与摘要，便于编排者继续工作。\n\npreview:\n{}\n",
+        delivery_file.display(),
+        title,
+        summary
+    )
 }
 
 fn append_provider_stream_chunk(provider_log: &Path, req_id: &str, chunk: &str) {
@@ -1804,6 +1918,7 @@ fn relay_task_completed(
     status: &str,
     exit_code: i32,
     reply: &str,
+    delivery_file: Option<&str>,
 ) {
     let Some(orchestrator_provider) =
         orchestrator_callback_target(context, orchestrator, caller, provider)
@@ -1830,6 +1945,7 @@ fn relay_task_completed(
         "exit_code": exit_code,
         "reply": reply,
         "reply_file": reply_file.display().to_string(),
+        "delivery_file": delivery_file,
     });
     dispatch_orchestrator_notice_async(
         context,
@@ -2448,14 +2564,19 @@ fn update_heartbeat(context: &DaemonContext) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::path::PathBuf;
+    use std::sync::Arc;
     use std::sync::{Mutex, OnceLock};
     use std::time::Duration;
 
     use super::{
         build_orchestrator_progress_prompt, build_orchestrator_result_prompt,
-        build_orchestrator_started_prompt, orchestrator_result_callback_enabled,
-        relay_progress_lines, sync_response_wait_timeout,
+        build_orchestrator_started_prompt, normalize_executor_reply,
+        orchestrator_result_callback_enabled, relay_progress_lines, sync_response_wait_timeout,
     };
+    use crate::io_utils::now_unix_ms;
+    use crate::types::{AskRequest, DaemonContext, InstanceState};
 
     fn env_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -2554,5 +2675,73 @@ mod tests {
             sync_response_wait_timeout(300.0),
             Duration::from_secs_f64(605.0)
         );
+    }
+
+    #[test]
+    fn normalize_executor_reply_saves_droid_document_to_temp_dir() {
+        let root = std::env::temp_dir().join(format!("rccb-droid-doc-{}", now_unix_ms()));
+        fs::create_dir_all(&root).unwrap();
+        let state_path = root.join(".rccb").join("run").join("default.json");
+        let shared_state = Arc::new(Mutex::new(InstanceState {
+            schema_version: 1,
+            instance_id: "default".to_string(),
+            project_dir: root.display().to_string(),
+            pid: 1,
+            status: "running".to_string(),
+            started_at_unix: 1,
+            last_heartbeat_unix: 1,
+            stopped_at_unix: None,
+            providers: vec!["droid".to_string()],
+            orchestrator: Some("claude".to_string()),
+            executors: vec!["droid".to_string()],
+            session_file: None,
+            last_task_id: None,
+            daemon_host: None,
+            daemon_port: None,
+            daemon_token: None,
+            debug_enabled: false,
+        }));
+        let context = DaemonContext {
+            project_dir: root.clone(),
+            instance_id: "default".to_string(),
+            state_path,
+            shared_state,
+            allowed_providers: vec!["droid".to_string()],
+        };
+        let req = AskRequest {
+            msg_type: "ask.request".to_string(),
+            v: 1,
+            id: "ask-1".to_string(),
+            token: "token".to_string(),
+            provider: "droid".to_string(),
+            work_dir: root.display().to_string(),
+            timeout_s: 300.0,
+            quiet: false,
+            stream: false,
+            async_mode: false,
+            message: "写一份科技公司的通用规则公告".to_string(),
+            caller: "claude".to_string(),
+            req_id: None,
+            instance_id: Some("default".to_string()),
+            request_file: None,
+        };
+
+        let normalized = normalize_executor_reply(
+            &context,
+            &req,
+            "req-1",
+            "completed",
+            "科技公司员工行为规范公告\n\n一、总则\n- 开放透明\n- 相互尊重\n- 持续学习\n- 结果导向\n- 保护机密信息\n",
+        );
+
+        let delivery = normalized.delivery_file.expect("delivery file");
+        assert!(delivery.starts_with(PathBuf::from(&root).join("temp").join("rccb-docs")));
+        assert!(delivery.exists());
+        assert!(normalized.reply.contains("saved_files:"));
+        assert!(normalized
+            .reply
+            .contains("`.reply.md` 仅保留交付索引与摘要"));
+
+        let _ = fs::remove_dir_all(&root);
     }
 }
