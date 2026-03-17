@@ -773,8 +773,18 @@ fn build_gemini_rules_markdown() -> String {
         .to_string()
 }
 
+fn build_skill_frontmatter(name: &str, description: &str) -> String {
+    format!(
+        "---\n\
+name: {name}\n\
+description: {description}\n\
+---\n\n"
+    )
+}
+
 fn build_agents_delegate_skill_markdown() -> String {
-    "# 技能：rccb-delegate\n\n\
+    format!(
+        "{}# 技能：rccb-delegate\n\n\
 ## 用途\n\
 通过 `rccb` 把执行任务委派给合适的执行者，并在静默模式或超时场景下用 `watch`/`reply.md` 获取真实状态与最终结果。\n\n\
 ## 选择执行者\n\
@@ -798,11 +808,17 @@ rccb --project-dir . watch --instance default --req-id <req_id> --follow --with-
 ## 工件约定\n\
 - 请求工件：`.rccb/tasks/<instance>/artifacts/<req_id>.request.md`\n\
 - 结果工件：`.rccb/tasks/<instance>/artifacts/<req_id>.reply.md`\n\
-- 静默消费最终结果时，优先读取 `reply.md`。".to_string()
+- 静默消费最终结果时，优先读取 `reply.md`。",
+        build_skill_frontmatter(
+            "rccb-delegate",
+            "通过 RCCB 委派执行任务，并在静默模式或超时场景下用 watch 与 reply.md 获取真实状态和最终结果。"
+        )
+    )
 }
 
 fn build_agents_audit_skill_markdown() -> String {
-    "# 技能：rccb-audit\n\n\
+    format!(
+        "{}# 技能：rccb-audit\n\n\
 ## 用途\n\
 当你在本项目中承担 `codex` 的默认职责时，优先用这套规则完成代码审计、风险分析、边界条件检查和回归评估。\n\n\
 ## 审计重点\n\
@@ -818,11 +834,17 @@ fn build_agents_audit_skill_markdown() -> String {
 \n\
 ## 和调研链路的关系\n\
 - 如果上游结论来自 `gemini` 调研，请重点复核日期、版本、事实冲突和是否能真正落到当前代码路径。\n\
-- 不要只复述调研结论，要给出采纳/不采纳的判断。".to_string()
+- 不要只复述调研结论，要给出采纳/不采纳的判断。",
+        build_skill_frontmatter(
+            "rccb-audit",
+            "用于代码审计、风险分析、边界条件检查和对调研结论的复核。"
+        )
+    )
 }
 
 fn build_agents_research_verify_skill_markdown() -> String {
-    "# 技能：rccb-research-verify\n\n\
+    format!(
+        "{}# 技能：rccb-research-verify\n\n\
 ## 用途\n\
 专门用于 `codex` 对 `gemini` 调研结果做第二阶段复核。\n\n\
 ## 复核步骤\n\
@@ -838,12 +860,17 @@ fn build_agents_research_verify_skill_markdown() -> String {
 \n\
 ## 原则\n\
 - 复核不是重复总结，而是做筛错和减风险。\n\
-- 如果证据不足，要明确说不足，不要替上游补脑。"
-        .to_string()
+- 如果证据不足，要明确说不足，不要替上游补脑。",
+        build_skill_frontmatter(
+            "rccb-research-verify",
+            "用于对 gemini 的调研结果做第二阶段复核，筛除事实错误、过期信息和落地风险。"
+        )
+    )
 }
 
 fn build_opencode_delegate_skill_markdown() -> String {
-    "# 技能：rccb-delegate\n\n\
+    format!(
+        "{}# 技能：rccb-delegate\n\n\
 通过 `rccb` 在本项目里委派执行任务，并在静默模式下通过 `watch` 和 `reply.md` 获取真实状态与最终结果。\n\n\
 ## 默认职责映射\n\
 - `opencode`：编码实现、修复、测试、联调\n\
@@ -860,16 +887,17 @@ rccb --project-dir . ask --instance default --provider <provider> --caller <call
 ## 超时处理\n\
 ```bash\n\
 rccb --project-dir . watch --instance default --req-id <req_id> --follow --with-provider-log --timeout-s 0 --pane-ui\n\
-```\n"
-        .to_string()
+```\n",
+        build_skill_frontmatter(
+            "rccb-delegate",
+            "通过 RCCB 委派执行任务，并在静默模式下用 watch 与 reply.md 跟踪真实状态和最终结果。"
+        )
+    )
 }
 
 fn build_factory_delegate_skill_markdown() -> String {
-    "---\n\
-name: rccb-delegate\n\
-description: 通过 RCCB 委派执行任务，并在静默模式下用 watch/reply.md 跟踪真实状态与最终结果。\n\
----\n\n\
-# RCCB 委派技能\n\n\
+    format!(
+        "{}# RCCB 委派技能\n\n\
 ## 选择执行者\n\
 - `opencode`：编码与测试\n\
 - `gemini`：调研与事实核验\n\
@@ -889,7 +917,12 @@ rccb --project-dir . watch --instance default --req-id <req_id> --follow --with-
 ```\n\n\
 ## 工件驱动\n\
 - 最终结果优先来自 `.rccb/tasks/<instance>/artifacts/<req_id>.reply.md`\n\
-- 超时后先看 `watch`，不要立刻重复派单。".to_string()
+- 超时后先看 `watch`，不要立刻重复派单。",
+        build_skill_frontmatter(
+            "rccb-delegate",
+            "通过 RCCB 委派执行任务，并在静默模式下用 watch 与 reply.md 跟踪真实状态和最终结果。"
+        )
+    )
 }
 
 fn build_claude_command_markdown(description: &str, body: &str) -> String {
@@ -5222,6 +5255,9 @@ mod tests {
         let gemini_rules = fs::read_to_string(project.join("GEMINI.md")).unwrap();
         assert!(gemini_rules.contains("建议工作流"));
         assert!(gemini_rules.contains("至少执行两轮调研"));
+        let agents_skill =
+            fs::read_to_string(project.join(".agents/skills/rccb-delegate/SKILL.md")).unwrap();
+        assert!(agents_skill.starts_with("---\nname: rccb-delegate\n"));
         let config_template =
             fs::read_to_string(project.join(".rccb/config.example.json")).unwrap();
         assert!(config_template.contains("首个 provider 作为编排者"));
