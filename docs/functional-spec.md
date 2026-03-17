@@ -1,5 +1,11 @@
 # RCCB 功能规格说明
 
+本文档描述当前 `rccb` 的可交付行为基线，覆盖：
+
+1. `v0.1.0` 开发预览版已发布能力
+2. 当前开发分支 `codex/claude-subagent-orchestration` 已落地行为
+3. 已知未完成项和继续开发时的边界
+
 ## 1. 重构目标
 
 `rccb` 以既有桥接方案为依据重构核心链路，优先保证通信可靠性和执行一致性。
@@ -23,6 +29,7 @@
 - `tasks/`: 请求任务生命周期
 - `tasks/<instance>/artifacts/`: 基于 `req_id` 的请求/结果交换文件
 - `tmp/`: provider 临时目录
+- `tmp/<instance>/orchestrator/`: 编排者静默 inbox
 - `logs/`: daemon/provider 日志
 
 保洁策略：
@@ -45,6 +52,18 @@
 4. `tasks/<instance>/artifacts/<req_id>.request.md`
 5. `tasks/<instance>/artifacts/<req_id>.reply.md`
 6. `tmp/<instance>/<provider>/`
+7. 文档任务产物可额外落到项目目录，例如 `./temp/rccb-docs/` 或用户指定的长期目录
+
+## 3.2 文档交付模型
+
+文档类任务采用“通信工件”和“真实交付文件”分离的策略：
+
+1. `.request.md` / `.reply.md` 属于 RCCB 通信工件，用于任务交换、静默消费和排障
+2. 如果任务产出了真实文档，应优先以 `saved_files` 或 `delivery_file` 指向的文件作为最终交付
+3. 若用户未指定长期目录，执行者应先判断是否需要创建项目级目录
+4. 若只是单次零散文档，默认落到当前目录 `./temp/rccb-docs/`
+5. 当 `droid` 直接返回整篇正文而不是结构化结果时，daemon 会自动把正文保存到 `./temp/rccb-docs/droid-doc-<req_id>.md`
+6. 发生上述兜底时，`.reply.md` 会被改写为“交付索引 + 摘要”，避免编排者把 reply 工件误当成实际文档
 
 ## 3.1 Provider 执行模型
 
@@ -149,6 +168,14 @@
 - `reply`
 - `provider`
 - `meta`
+
+补充约定：
+
+1. `reply` 是协议层文本结果，不等于最终交付文件
+2. 当存在文件型交付时，`meta` / 任务状态文件中可包含：
+   - `request_file`
+   - `reply_file`
+   - `delivery_file`
 
 ### 4.5 流式事件字段（ask.event）
 
@@ -289,6 +316,7 @@
    - 查看静默模式下写入编排者后台 inbox 的 notice
    - 省略 `--orchestrator` 时，优先从实例状态里的 orchestrator 推断
    - 适合排查“pane 不刷屏，但后台是否已收到状态/结果”
+   - 当前 `inbox` 输出已稳定展示 `reply_file`；`delivery_file` 已在底层任务工件中落盘，但 CLI 仍待增强展示
 
 ### 5.3.1 Orchestrator Strict Mode
 
@@ -301,6 +329,7 @@
    - 若编排者为 `claude`，guardrail 会优先引导其使用 Claude 子代理做上下文隔离式异步派单
    - 若 `ask.request.caller == orchestrator` 且目标 provider 为执行者，则任务状态与最终结果都会写入 `.rccb/tmp/<instance>/orchestrator/<orchestrator>.jsonl` 作为 inbox 记录
    - 默认不向编排者 pane 注入最终结果；只有显式启用结果回调时才会回注到前台
+   - 运行中的真实状态优先通过 `watch` 的实时总线观察，不依赖 pane 注入
    - 文档类任务若未指定长期目录，先询问是否创建项目级目录；若只是单次零散文档，默认落到当前目录 `./temp/rccb-docs/`
    - 文档执行者回报时至少包含保存文件路径与内容摘要，避免编排者把路径本身误判为最终交付
 4. 开关：
@@ -342,3 +371,16 @@
 4. 请求生命周期可追踪（tasks 文件）
 5. 编排角色与落盘一致
 6. 单二进制可运行
+7. 静默编排模式下，编排者可通过 `watch` / `inbox` / `.reply.md` 获取真实状态和最终结果
+8. 文档任务的真实交付文件与通信 reply 工件可明确区分
+
+## 8. 当前未完成开发项
+
+以下内容已经明确进入后续开发范围，但当前版本尚未完全收口：
+
+1. Claude 子代理派单后的父任务聚合仍不完整，缺少原生 fanout/fan-in 视图和自动汇总
+2. provider 级真并行尚未完成；同一 provider 目前仍采用串行 worker 队列
+3. `inbox` / `tasks` / `watch` 对 `delivery_file` 的 CLI 展示还不够完整
+4. 文档任务“是否创建项目级目录”主要依赖规则和提示词，尚未沉淀为显式交互流程
+5. `gemini` / `opencode` / `droid` / `codex` 的原生适配仍在收口，尤其是长任务、超时、pane UI 差异和工具输出噪音
+6. 跨平台测试矩阵仍不完整，目前主发布范围以 `macOS arm64` 与 `Linux x86_64` 为主

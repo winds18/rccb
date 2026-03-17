@@ -13,13 +13,24 @@
 
 当前已发布版本：`v0.1.0`
 
-- GitHub Release: `v0.1.0`
+- GitHub Release: `v0.1.0`（开发预览版）
 - 发布产物：
   - `rccb-v0.1.0-macos-arm64.tar.gz`
   - `rccb-v0.1.0-linux-x86_64.tar.gz`
   - `SHA256SUMS.txt`
 
 建议配合 `CHANGELOG.md` 一起阅读本版本的能力范围与已知边界。
+
+## 当前开发分支状态
+
+当前文档默认以主线能力为基准，同时覆盖正在开发分支上的最新行为：
+
+- `claude` 编排者已接入项目级 `delegate-*` 子代理模板，用于上下文隔离式异步派单
+- `droid` 文档任务已补充“文档落盘”和“reply 摘要化”约束
+- 若 `droid` 返回整篇正文而不是结构化交付结果，daemon 会兜底把正文落到 `./temp/rccb-docs/`，并把 `.reply.md` 改写为交付索引与摘要
+- 静默后台消费仍以 `.reply.md` 为主通信工件；如果任务产出了真实文档，则应以 `saved_files` / `delivery_file` 指向的文件作为最终交付
+
+当前开发分支：`codex/claude-subagent-orchestration`
 
 ## 项目初始化
 
@@ -170,13 +181,15 @@ delegate-scribe       -> droid
 
 1. 整理任务
 2. 执行 `rccb --project-dir . ask --instance default --provider <执行者> --caller claude --async "..."`
-3. 把 `req_id`、`watch` 命令和 `.reply.md` 路径回报给主编排者
+3. 把 `req_id`、`watch` 命令和通信工件路径回报给主编排者；如果任务有真实文档交付，再额外报告保存文件路径
 
 文档类任务补充约定：
 
 1. 如果文档需要长期保留但用户还没指定目录，先询问是否创建项目级目录，例如 `docs/`、`notes/`、`reports/`
 2. 如果只是单次零散文档，默认保存到当前目录 `./temp/rccb-docs/`
-3. `droid` 回复时至少应同时包含保存文件路径和内容摘要，不要只返回一个路径
+3. `droid` 回复时至少应同时包含保存文件路径、内容摘要，以及哪些文件才是真实交付，不要只返回一个路径
+4. 若 `droid` 未按约定返回结构化结果，daemon 会自动把正文保存到 `./temp/rccb-docs/droid-doc-<req_id>.md`，并让 `.reply.md` 仅保留交付索引与摘要
+5. 编排者在静默模式下继续工作的依据是 `.reply.md` / inbox；用户实际翻阅文档时，应优先打开真实交付文件而不是 reply 工件
 
 默认职责：
 
@@ -212,6 +225,18 @@ rccb --project-dir . start --instance team-a \
   --task "实现登录模块并补测试" \
   claude codex gemini
 ```
+
+## 未完成开发项
+
+下面这些点已经明确，但当前还没有完全做完，后续继续开发时建议优先沿这份列表推进：
+
+- 编排者子代理派单后的父任务聚合仍不完整：主编排者还没有原生的 fanout/fan-in 视图，也不会自动汇总多个子代理返回的 `req_id`
+- provider 级真实并行仍未展开：daemon 目前仍是“同 provider 串行 worker 队列”，所以多个任务打到同一个 provider 时仍会排队
+- `inbox` / `tasks` / `watch` 对 `delivery_file` 的展示还不够完整：现在底层已落盘，但 CLI 输出还没有专门强化“真实交付文件”和“通信 reply 文件”的区别
+- 文档任务的“是否创建项目级目录”目前主要靠执行者规则与提示词约束，还没有做成显式交互式命令或单独配置项
+- `claude` 子代理委派链路已经能用，但是否稳定主动选择 `delegate-*`，仍依赖各 CLI 当下的行为和提示词服从度
+- `gemini` / `opencode` / `droid` / `codex` 的原生适配还在继续收口，尤其是长任务、超时、pane UI 差异和工具输出噪音
+- 跨平台发布目前只覆盖 `macOS arm64` 与 `Linux x86_64`，Windows 与更完整的测试矩阵还没补齐
 
 ## 核心通信机制（Rust）
 

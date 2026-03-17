@@ -2,9 +2,32 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+当前开发分支：`codex/claude-subagent-orchestration`
+
+### Added
+
+- `claude` 编排者项目级 `delegate-coder` / `delegate-researcher` / `delegate-auditor` / `delegate-scribe` 子代理模板
+- `rccb-parallel` 项目级命令模板，约束 Claude 优先通过子代理做异步派单
+- `droid` 文档结果的程序级归一化：当执行者返回整篇正文时，daemon 会自动落盘到 `./temp/rccb-docs/` 并把 `.reply.md` 改写成交付索引与摘要
+- `delivery_file` 工件字段，用于区分“真实交付文件”和“通信 reply 工件”
+
+### Changed
+
+- `README.md`、`docs/functional-spec.md`、`docs/rewrite-roadmap.md` 已对齐为当前开发状态，并补充未完成开发项
+- 文档任务默认策略从“reply 作为主要交付展示”调整为“真实文件交付优先，reply 只保留索引与摘要”
+- `droid` 的底层 prompt 包装新增文档交付约束，默认要求 `saved_files + 摘要`
+
+### Known Gaps
+
+- 子代理派单后的父任务聚合、fanout/fan-in 汇总和同 provider 真并行仍未完成
+- `inbox` / `tasks` / `watch` 还没有完整突出 `delivery_file`
+- 文档任务的“是否创建项目级目录”仍主要依赖规则和提示词，而非显式交互流程
+
 ## v0.1.0 - 2026-03-17
 
-首个正式发布版本，重点完成 RCCB 的项目级运行时、pane 编排、静默结果消费和实时状态观察链路。
+首个开发预览版，重点完成 RCCB 的项目级运行时、pane 编排、静默结果消费和实时状态观察链路。
 
 ### Added
 
