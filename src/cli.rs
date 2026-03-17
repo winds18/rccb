@@ -3,34 +3,37 @@ use std::path::PathBuf;
 use clap::{Parser, Subcommand};
 
 const HELP_EXAMPLES: &str = r#"示例：
-  1) 一键启动（第一个为编排者）：
-     rccb claude gemini opencode
+  1) 一键恢复默认实例（优先恢复上次 provider 布局）：
+     rccb
 
-  2) 一键启动并开启调试：
+  2) 一键启动（第一个为编排者）：
+     rccb claude opencode gemini codex droid
+
+  3) 一键启动并开启调试：
      RCCB_DEBUG=1 rccb claude codex gemini opencode droid
 
-  3) 显式启动实例：
+  4) 显式启动实例：
      rccb --project-dir . start --instance team-a --debug claude codex gemini
 
-  4) 发送请求：
+  5) 发送请求：
      rccb --project-dir . ask --instance team-a --provider codex --caller claude "请检查边界条件"
 
-  5) 流式请求：
+  6) 流式请求：
      rccb --project-dir . ask --instance team-a --provider gemini --caller claude --stream "持续输出进度"
 
-  6) 异步请求 + 追踪：
+  7) 异步请求 + 追踪：
      rccb --project-dir . ask --instance team-a --provider opencode --caller claude --async --req-id req-1 "后台执行"
      rccb --project-dir . watch --instance team-a --req-id req-1 --with-provider-log --with-debug-log
      rccb --project-dir . watch --instance team-a --provider opencode --with-provider-log
      rccb --project-dir . watch --instance team-a --provider opencode --with-provider-log --follow
 
-  7) 查看运行态：
+  8) 查看运行态：
      rccb --project-dir . status --as-json
      rccb --project-dir . mounted --as-json
      rccb --project-dir . tasks --instance team-a --limit 50 --as-json
      rccb --project-dir . inbox --instance team-a --orchestrator claude --limit 20
 
-  8) 兼容旧命令（统一入口）：
+  9) 兼容旧命令（统一入口）：
      rccb cask "..."
      rccb cping
      rccb cpend
@@ -53,7 +56,7 @@ pub struct Cli {
     pub project_dir: PathBuf,
 
     #[command(subcommand)]
-    pub command: Command,
+    pub command: Option<Command>,
 }
 
 #[derive(Subcommand, Debug)]

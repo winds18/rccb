@@ -34,6 +34,7 @@ const RCCB_MANAGED_BEGIN: &str = "<!-- RCCB:BEGIN MANAGED -->";
 const RCCB_MANAGED_END: &str = "<!-- RCCB:END MANAGED -->";
 const RCCB_USER_BEGIN: &str = "<!-- RCCB:BEGIN USER -->";
 const RCCB_USER_END: &str = "<!-- RCCB:END USER -->";
+const SHORTCUT_DEFAULT_PROVIDERS: &[&str] = &["claude", "opencode", "gemini", "codex", "droid"];
 
 pub fn cmd_init(project_dir: &Path, force: bool) -> Result<()> {
     let mode = if force {
@@ -340,19 +341,43 @@ struct RuleFileSpec {
 fn ensure_project_rule_bootstrap(project_dir: &Path, mode: BootstrapMode) -> Result<Vec<PathBuf>> {
     let mut written = Vec::new();
     for spec in build_rule_file_specs(project_dir) {
+        let rendered = render_project_bootstrap_content(project_dir, &spec.contents);
         let changed = match spec.kind {
             RuleFileKind::ManagedMarkdown => {
-                ensure_managed_markdown_file(&spec.path, &spec.contents, mode)?
+                ensure_managed_markdown_file(&spec.path, &rendered, mode)?
             }
-            RuleFileKind::PlainMarkdown => {
-                ensure_plain_markdown_file(&spec.path, &spec.contents, mode)?
-            }
+            RuleFileKind::PlainMarkdown => ensure_plain_markdown_file(&spec.path, &rendered, mode)?,
         };
         if changed {
             written.push(spec.path);
         }
     }
     Ok(written)
+}
+
+fn render_project_bootstrap_content(project_dir: &Path, contents: &str) -> String {
+    contents.replace("rccb --project-dir .", &project_rccb_command(project_dir))
+}
+
+fn current_rccb_binary_hint(project_dir: &Path) -> String {
+    if let Ok(exe) = env::current_exe() {
+        if let Ok(rel) = exe.strip_prefix(project_dir) {
+            let rel_display = rel.display().to_string();
+            if !rel_display.is_empty() {
+                return format!("./{}", rel_display);
+            }
+        }
+        return exe.display().to_string();
+    }
+    "rccb".to_string()
+}
+
+fn project_rccb_command(project_dir: &Path) -> String {
+    format!(
+        "{} --project-dir {}",
+        shell_quote(&current_rccb_binary_hint(project_dir)),
+        shell_quote(&project_dir.display().to_string())
+    )
 }
 
 fn build_rule_file_specs(project_dir: &Path) -> Vec<RuleFileSpec> {
@@ -1065,9 +1090,14 @@ pub fn cmd_start(
     )
 }
 
+pub fn cmd_shortcut_restore(project_dir: &Path) -> Result<()> {
+    let providers = resolve_shortcut_restore_providers(project_dir)?;
+    launch_shortcut_instance(project_dir, &providers)
+}
+
 pub fn cmd_external_provider_launch(project_dir: &Path, raw: Vec<String>) -> Result<()> {
     if raw.is_empty() {
-        bail!("缺少 provider 参数。示例：rccb claude codex gemini opencode droid");
+        return cmd_shortcut_restore(project_dir);
     }
 
     let op = raw[0].trim().to_ascii_lowercase();
@@ -1091,6 +1121,10 @@ pub fn cmd_external_provider_launch(project_dir: &Path, raw: Vec<String>) -> Res
     if normalized.is_empty() {
         bail!("至少需要一个 provider");
     }
+    launch_shortcut_instance(project_dir, &normalized)
+}
+
+fn launch_shortcut_instance(project_dir: &Path, providers: &[String]) -> Result<()> {
     let effective_debug = resolve_start_debug(env_debug_override());
     let _ = ensure_project_bootstrap(
         project_dir,
@@ -1101,30 +1135,96 @@ pub fn cmd_external_provider_launch(project_dir: &Path, raw: Vec<String>) -> Res
         },
     )?;
     restart_default_daemon_for_shortcut(project_dir)?;
-    ensure_default_daemon_running(project_dir, &normalized, effective_debug)?;
+    ensure_default_daemon_running(project_dir, providers, effective_debug)?;
 
-    if launch_provider_clis(project_dir, &normalized, effective_debug)? {
+    if launch_provider_clis(project_dir, providers, effective_debug)? {
         return Ok(());
     }
 
     println!(
         "daemon 已就绪：project={} instance=default providers={}",
         project_dir.display(),
-        normalized.join(",")
+        providers.join(",")
     );
     println!("未检测到终端后端（tmux/wezterm），未自动拉起 provider CLI pane。");
     println!(
-        "你仍可通过以下方式发起请求：rccb --project-dir . ask --instance default --provider {} --caller {} \"...\"",
-        normalized
+        "你仍可通过以下方式发起请求：{} ask --instance default --provider {} --caller {} \"...\"",
+        project_rccb_command(project_dir),
+        providers
             .first()
             .cloned()
             .unwrap_or_else(|| "codex".to_string()),
-        normalized
+        providers
             .first()
             .cloned()
             .unwrap_or_else(|| "manual".to_string())
     );
     Ok(())
+}
+
+fn resolve_shortcut_restore_providers(project_dir: &Path) -> Result<Vec<String>> {
+    if let Some(v) = shortcut_providers_from_launcher_meta(project_dir, SHORTCUT_INSTANCE) {
+        return Ok(v);
+    }
+    if let Some(v) = shortcut_providers_from_state(project_dir, SHORTCUT_INSTANCE) {
+        return Ok(v);
+    }
+    let installed = shortcut_installed_default_providers(project_dir);
+    if installed.is_empty() {
+        bail!("未找到可恢复的 provider，也未检测到可用 CLI；请显式执行 `rccb claude ...` 或配置 provider 启动命令");
+    }
+    Ok(installed)
+}
+
+fn shortcut_providers_from_launcher_meta(
+    project_dir: &Path,
+    instance: &str,
+) -> Option<Vec<String>> {
+    let meta_path = launcher_meta_path(project_dir, instance);
+    let raw = fs::read_to_string(meta_path).ok()?;
+    let meta: LauncherMeta = serde_json::from_str(&raw).ok()?;
+    filter_launchable_providers(
+        project_dir,
+        &meta
+            .providers
+            .into_iter()
+            .map(|entry| entry.provider)
+            .collect::<Vec<_>>(),
+    )
+}
+
+fn shortcut_providers_from_state(project_dir: &Path, instance: &str) -> Option<Vec<String>> {
+    let path = state_path(project_dir, instance);
+    let state = load_state(&path).ok()?;
+    let mut providers = state.providers;
+    if providers.is_empty() {
+        if let Some(orchestrator) = state.orchestrator.filter(|v| !v.trim().is_empty()) {
+            providers.push(orchestrator);
+        }
+        providers.extend(state.executors.into_iter().filter(|v| !v.trim().is_empty()));
+    }
+    filter_launchable_providers(project_dir, &providers)
+}
+
+fn shortcut_installed_default_providers(project_dir: &Path) -> Vec<String> {
+    SHORTCUT_DEFAULT_PROVIDERS
+        .iter()
+        .filter(|provider| provider_cli_is_available(project_dir, provider))
+        .map(|provider| (*provider).to_string())
+        .collect()
+}
+
+fn filter_launchable_providers(project_dir: &Path, providers: &[String]) -> Option<Vec<String>> {
+    let filtered = providers
+        .iter()
+        .filter(|provider| provider_cli_is_available(project_dir, provider))
+        .cloned()
+        .collect::<Vec<_>>();
+    if filtered.is_empty() {
+        None
+    } else {
+        Some(filtered)
+    }
 }
 
 fn legacy_ask_alias_provider(op: &str) -> Option<&'static str> {
@@ -1474,7 +1574,13 @@ fn run_interactive_layout(
                 &backend,
                 &provider_panes,
             )?;
-            maybe_prime_orchestrator_pane(&backend, anchor_pane, &orchestrator, &providers[1..]);
+            maybe_prime_orchestrator_pane(
+                project_dir,
+                &backend,
+                anchor_pane,
+                &orchestrator,
+                &providers[1..],
+            );
             ensure_orchestrator_focus(&backend, anchor_pane);
             run_orchestrator_foreground(project_dir, SHORTCUT_INSTANCE, &orchestrator)
         }
@@ -1508,7 +1614,13 @@ fn run_interactive_layout(
                 &backend,
                 &provider_panes,
             )?;
-            maybe_prime_orchestrator_pane(&backend, anchor_pane, &orchestrator, &providers[1..]);
+            maybe_prime_orchestrator_pane(
+                project_dir,
+                &backend,
+                anchor_pane,
+                &orchestrator,
+                &providers[1..],
+            );
             ensure_orchestrator_focus(&backend, anchor_pane);
             run_orchestrator_foreground(project_dir, SHORTCUT_INSTANCE, &orchestrator)
         }
@@ -1921,6 +2033,7 @@ fn debug_watch_pane_percent() -> u8 {
 }
 
 fn maybe_prime_orchestrator_pane(
+    project_dir: &Path,
     backend: &LaunchBackend,
     pane_id: &str,
     orchestrator: &str,
@@ -1932,7 +2045,7 @@ fn maybe_prime_orchestrator_pane(
     let Some(target) = pane_dispatch_target_from_launch_backend(backend, pane_id) else {
         return;
     };
-    let prompt = orchestrator_guardrail_prompt(orchestrator, executors);
+    let prompt = orchestrator_guardrail_prompt(project_dir, orchestrator, executors);
     let delay_ms = orchestrator_prime_delay_ms();
     thread::spawn(move || {
         if delay_ms > 0 {
@@ -1974,14 +2087,21 @@ fn orchestrator_prime_delay_ms() -> u64 {
     }
 }
 
-fn orchestrator_guardrail_prompt(orchestrator: &str, executors: &[String]) -> String {
+fn orchestrator_guardrail_prompt(
+    project_dir: &Path,
+    orchestrator: &str,
+    executors: &[String],
+) -> String {
     let executor_list = if executors.is_empty() {
         "-".to_string()
     } else {
         executors.join(", ")
     };
-    format!(
+    render_project_bootstrap_content(
+        project_dir,
+        &format!(
         "RCCB 编排模式已启用。\n\n当前编排者：{orchestrator}\n可用执行者：{executor_list}\n\n只做：规划、拆解、委派、验收、汇总。\n不要自己执行 bash、修改文件或运行测试。\n\n默认分工：opencode=编码，gemini=调研，droid=文档，codex=审计。\n调研规则：先 gemini 至少两轮调研，再 codex 复核关键结论。\n\n委派格式：\n`rccb --project-dir . ask --instance default --provider <执行者> --caller {orchestrator} \"<任务>\"`\n\n结果默认走后台 inbox 和 `.reply.md`，不会刷屏。\n若 ask 超时，先用 `watch --req-id` 看真实状态，不要立刻重派。\n详细规则见 `AGENTS.md` 与 `CLAUDE.md`。"
+        ),
     )
 }
 
@@ -2257,6 +2377,48 @@ fn resolve_bridge_launch_cmd() -> Option<String> {
         }
     }
     None
+}
+
+fn provider_cli_is_available(_project_dir: &Path, provider: &str) -> bool {
+    let key = format!("RCCB_{}_START_CMD", provider.trim().to_ascii_uppercase());
+    if env::var(&key)
+        .map(|v| !v.trim().is_empty())
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    if env_bool("RCCB_USE_BRIDGE_PROVIDER_LAUNCH", false) && resolve_bridge_launch_cmd().is_some() {
+        return true;
+    }
+    provider_cli_command(provider)
+        .map(command_exists_on_path)
+        .unwrap_or(false)
+}
+
+fn provider_cli_command(provider: &str) -> Option<&'static str> {
+    match provider.trim().to_ascii_lowercase().as_str() {
+        "claude" => Some("claude"),
+        "codex" => Some("codex"),
+        "gemini" => Some("gemini"),
+        "opencode" => Some("opencode"),
+        "droid" => Some("droid"),
+        _ => None,
+    }
+}
+
+fn command_exists_on_path(cmd: &str) -> bool {
+    let candidate = Path::new(cmd);
+    if candidate.components().count() > 1 {
+        return is_executable_file(candidate);
+    }
+
+    env::var_os("PATH")
+        .map(|paths| {
+            env::split_paths(&paths)
+                .map(|dir| dir.join(cmd))
+                .any(|path| is_executable_file(&path))
+        })
+        .unwrap_or(false)
 }
 
 fn is_executable_file(path: &Path) -> bool {
@@ -4985,13 +5147,16 @@ mod tests {
         debug_watch_pane_percent, ensure_project_bootstrap, ensure_project_rule_bootstrap,
         is_in_flight_status, is_terminal_bus_task_event, is_terminal_task_status,
         load_orchestrator_inbox_entries, load_task_by_req_id, orchestrator_guardrail_prompt,
-        orchestrator_strict_mode_enabled, provider_start_cmd, resolve_debug_watch_provider,
+        orchestrator_strict_mode_enabled, provider_start_cmd, render_project_bootstrap_content,
+        resolve_debug_watch_provider, resolve_shortcut_restore_providers,
         select_watch_req_for_provider, select_watch_req_for_provider_follow, split_layout_groups,
         split_percent_for_equal_stack, task_file_for_req_id, watch_bus_enabled, BootstrapMode,
         RCCB_MANAGED_BEGIN, RCCB_MANAGED_END, RCCB_USER_BEGIN, RCCB_USER_END,
     };
-    use crate::io_utils::{now_unix, now_unix_ms, update_task_status, write_json_pretty};
-    use crate::layout::{ensure_project_layout, tasks_instance_dir, tmp_instance_dir};
+    use crate::io_utils::{
+        now_unix, now_unix_ms, update_task_status, write_json_pretty, write_state,
+    };
+    use crate::layout::{ensure_project_layout, state_path, tasks_instance_dir, tmp_instance_dir};
     use crate::types::{AskBusEvent, InstanceState};
 
     fn env_lock() -> &'static Mutex<()> {
@@ -5596,8 +5761,11 @@ mod tests {
 
     #[test]
     fn orchestrator_guardrail_prompt_mentions_delegate_only_rules() {
-        let prompt =
-            orchestrator_guardrail_prompt("claude", &["codex".to_string(), "gemini".to_string()]);
+        let prompt = orchestrator_guardrail_prompt(
+            Path::new("/tmp/rccb-proj"),
+            "claude",
+            &["codex".to_string(), "gemini".to_string()],
+        );
         assert!(prompt.contains("不要自己执行 bash"));
         assert!(prompt.contains("codex, gemini"));
         assert!(prompt.contains("--caller claude"));
@@ -5657,6 +5825,77 @@ mod tests {
         assert!(cmd.contains("RCCB_PROVIDER_SPECIALTY"));
         assert!(cmd.contains(".rccb/bin/opencode"));
         assert!(!cmd.contains("tail -n0 -F"));
+        let _ = fs::remove_dir_all(&project);
+    }
+
+    #[test]
+    fn render_project_bootstrap_content_injects_project_specific_command() {
+        let project = Path::new("/tmp/rccb-proj");
+        let rendered = render_project_bootstrap_content(
+            project,
+            "执行：rccb --project-dir . ask --instance default --provider codex --caller claude \"hi\"",
+        );
+        assert!(!rendered.contains("rccb --project-dir ."));
+        assert!(rendered.contains("--project-dir"));
+        assert!(rendered.contains("/tmp/rccb-proj"));
+    }
+
+    #[test]
+    fn resolve_shortcut_restore_providers_filters_unavailable_clis() {
+        let _guard = env_lock().lock().unwrap();
+        let old_path = std::env::var("PATH").ok();
+        let old_claude = std::env::var("RCCB_CLAUDE_START_CMD").ok();
+        let old_codex = std::env::var("RCCB_CODEX_START_CMD").ok();
+        unsafe {
+            std::env::set_var("PATH", "");
+            std::env::set_var("RCCB_CLAUDE_START_CMD", "claude");
+            std::env::remove_var("RCCB_CODEX_START_CMD");
+        }
+
+        let project = std::env::temp_dir().join(format!("rccb-restore-{}", now_unix_ms()));
+        ensure_project_layout(&project).unwrap();
+        write_state(
+            &state_path(&project, "default"),
+            &InstanceState {
+                schema_version: 1,
+                instance_id: "default".to_string(),
+                project_dir: project.display().to_string(),
+                pid: 1,
+                status: "stopped".to_string(),
+                started_at_unix: 0,
+                last_heartbeat_unix: 0,
+                stopped_at_unix: Some(0),
+                providers: vec!["claude".to_string(), "codex".to_string()],
+                orchestrator: Some("claude".to_string()),
+                executors: vec!["codex".to_string()],
+                session_file: None,
+                last_task_id: None,
+                daemon_host: None,
+                daemon_port: None,
+                daemon_token: None,
+                debug_enabled: false,
+            },
+        )
+        .unwrap();
+
+        let providers = resolve_shortcut_restore_providers(&project).unwrap();
+        assert_eq!(providers, vec!["claude".to_string()]);
+
+        if let Some(v) = old_path {
+            unsafe { std::env::set_var("PATH", v) };
+        } else {
+            unsafe { std::env::remove_var("PATH") };
+        }
+        if let Some(v) = old_claude {
+            unsafe { std::env::set_var("RCCB_CLAUDE_START_CMD", v) };
+        } else {
+            unsafe { std::env::remove_var("RCCB_CLAUDE_START_CMD") };
+        }
+        if let Some(v) = old_codex {
+            unsafe { std::env::set_var("RCCB_CODEX_START_CMD", v) };
+        } else {
+            unsafe { std::env::remove_var("RCCB_CODEX_START_CMD") };
+        }
         let _ = fs::remove_dir_all(&project);
     }
 

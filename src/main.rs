@@ -17,7 +17,8 @@ use clap::Parser;
 use crate::cli::{Cli, Command};
 use crate::commands::{
     cmd_ask, cmd_cancel, cmd_debug, cmd_external_provider_launch, cmd_inbox, cmd_init, cmd_mounted,
-    cmd_ping, cmd_send, cmd_start, cmd_status, cmd_stop, cmd_tasks, cmd_watch,
+    cmd_ping, cmd_send, cmd_shortcut_restore, cmd_start, cmd_status, cmd_stop, cmd_tasks,
+    cmd_watch,
 };
 use crate::io_utils::{cleanup_project_retention, resolve_project_dir};
 use crate::orchestrator_callback::cmd_orchestrator_notify;
@@ -31,15 +32,16 @@ fn main() -> Result<()> {
     }
 
     match cli.command {
-        Command::Init { force } => cmd_init(&project_dir, force),
-        Command::Start {
+        None => cmd_shortcut_restore(&project_dir),
+        Some(Command::Init { force }) => cmd_init(&project_dir, force),
+        Some(Command::Start {
             instance,
             heartbeat_secs,
             listen,
             task,
             debug,
             providers,
-        } => cmd_start(
+        }) => cmd_start(
             &project_dir,
             &instance,
             heartbeat_secs,
@@ -48,25 +50,25 @@ fn main() -> Result<()> {
             task,
             debug,
         ),
-        Command::Status { instance, as_json } => {
+        Some(Command::Status { instance, as_json }) => {
             cmd_status(&project_dir, instance.as_deref(), as_json)
         }
-        Command::Mounted { instance, as_json } => {
+        Some(Command::Mounted { instance, as_json }) => {
             cmd_mounted(&project_dir, instance.as_deref(), as_json)
         }
-        Command::Tasks {
+        Some(Command::Tasks {
             instance,
             limit,
             as_json,
-        } => cmd_tasks(&project_dir, instance.as_deref(), limit, as_json),
-        Command::Inbox {
+        }) => cmd_tasks(&project_dir, instance.as_deref(), limit, as_json),
+        Some(Command::Inbox {
             instance,
             orchestrator,
             req_id,
             kind,
             limit,
             as_json,
-        } => cmd_inbox(
+        }) => cmd_inbox(
             &project_dir,
             &instance,
             orchestrator.as_deref(),
@@ -75,7 +77,7 @@ fn main() -> Result<()> {
             limit,
             as_json,
         ),
-        Command::Watch {
+        Some(Command::Watch {
             instance,
             req_id,
             provider,
@@ -87,7 +89,7 @@ fn main() -> Result<()> {
             with_debug_log,
             pane_ui,
             as_json,
-        } => cmd_watch(
+        }) => cmd_watch(
             &project_dir,
             &instance,
             req_id.as_deref(),
@@ -101,13 +103,13 @@ fn main() -> Result<()> {
             pane_ui,
             as_json,
         ),
-        Command::Stop { instance } => cmd_stop(&project_dir, &instance),
-        Command::Ping {
+        Some(Command::Stop { instance }) => cmd_stop(&project_dir, &instance),
+        Some(Command::Ping {
             instance,
             timeout_s,
-        } => cmd_ping(&project_dir, &instance, timeout_s),
-        Command::Cancel { instance, req_id } => cmd_cancel(&project_dir, &instance, &req_id),
-        Command::Ask {
+        }) => cmd_ping(&project_dir, &instance, timeout_s),
+        Some(Command::Cancel { instance, req_id }) => cmd_cancel(&project_dir, &instance, &req_id),
+        Some(Command::Ask {
             instance,
             provider,
             caller,
@@ -117,7 +119,7 @@ fn main() -> Result<()> {
             async_submit,
             req_id,
             message,
-        } => cmd_ask(
+        }) => cmd_ask(
             &project_dir,
             &instance,
             &provider,
@@ -129,17 +131,17 @@ fn main() -> Result<()> {
             req_id,
             message,
         ),
-        Command::Send { channel } => cmd_send(channel),
-        Command::Debug { action } => cmd_debug(&project_dir, action),
-        Command::NotifyOrchestrator {
+        Some(Command::Send { channel }) => cmd_send(channel),
+        Some(Command::Debug { action }) => cmd_debug(&project_dir, action),
+        Some(Command::NotifyOrchestrator {
             instance,
             orchestrator,
             req_id,
             kind,
-        } => cmd_orchestrator_notify(&project_dir, &instance, &orchestrator, &req_id, &kind),
-        Command::PaneFeed { instance, provider } => {
+        }) => cmd_orchestrator_notify(&project_dir, &instance, &orchestrator, &req_id, &kind),
+        Some(Command::PaneFeed { instance, provider }) => {
             cmd_pane_feed(&project_dir, &instance, &provider)
         }
-        Command::External(raw) => cmd_external_provider_launch(&project_dir, raw),
+        Some(Command::External(raw)) => cmd_external_provider_launch(&project_dir, raw),
     }
 }
