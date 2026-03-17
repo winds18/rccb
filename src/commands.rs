@@ -285,7 +285,7 @@ if [[ "$role" == "orchestrator" ]]; then
     claude
     --setting-sources user,project,local
     --permission-mode default
-    --allowedTools "Read Grep Glob LS Bash(rccb:*) Bash(./target/debug/rccb:*) Bash($project_root/target/debug/rccb:*)"
+    --allowedTools "Read Grep Glob LS Task Bash(rccb:*) Bash(./target/debug/rccb:*) Bash($project_root/target/debug/rccb:*)"
     --disallowedTools "Edit MultiEdit Write NotebookEdit"
   )
 else
@@ -590,6 +590,8 @@ fn build_rule_file_specs(project_dir: &Path, providers: &[String]) -> Vec<RuleFi
                     "不要自己执行 bash、修改文件或运行测试。",
                     "实现优先派给 opencode，调研优先派给 gemini，文档优先派给 droid，审计优先派给 codex。",
                     "涉及外部事实时，先让 gemini 做至少两轮调研，再让 codex 复核关键结论。",
+                    "当任务可拆分、希望并行推进或不想污染主上下文时，优先调用 Claude 子代理 `delegate-coder` / `delegate-researcher` / `delegate-auditor` / `delegate-scribe`。",
+                    "这些子代理默认通过 `rccb ask --async` 派单，只回报 req_id、watch 命令和 `.reply.md` 路径。",
                 ],
             ),
             kind: RuleFileKind::PlainMarkdown,
@@ -610,6 +612,82 @@ fn build_rule_file_specs(project_dir: &Path, providers: &[String]) -> Vec<RuleFi
             ),
             kind: RuleFileKind::PlainMarkdown,
         });
+        if providers.iter().any(|p| p == "opencode") {
+            specs.push(RuleFileSpec {
+                path: project_dir
+                    .join(".claude")
+                    .join("agents")
+                    .join("delegate-coder.md"),
+                contents: build_claude_delegate_subagent_markdown(
+                    "delegate-coder",
+                    "编码委派子代理",
+                    "把编码、修复、测试和联调任务异步委派给 opencode，并把 req_id 返回给主编排者。",
+                    "opencode",
+                    &[
+                        "如果任务依赖外部事实、版本信息或网页资料，先提醒主编排者改走 `delegate-researcher`。",
+                        "如果用户要求最终验收或风险审计，不要自行判断通过，提醒主编排者再派给 `delegate-auditor`。",
+                    ],
+                ),
+                kind: RuleFileKind::PlainMarkdown,
+            });
+        }
+        if providers.iter().any(|p| p == "gemini") {
+            specs.push(RuleFileSpec {
+                path: project_dir
+                    .join(".claude")
+                    .join("agents")
+                    .join("delegate-researcher.md"),
+                contents: build_claude_delegate_subagent_markdown(
+                    "delegate-researcher",
+                    "调研委派子代理",
+                    "把联网调研、事实核验和资料搜集任务异步委派给 gemini，并把 req_id 返回给主编排者。",
+                    "gemini",
+                    &[
+                        "整理任务时，要明确要求至少两轮调研、优先官方/一手来源，并显式标注日期、来源线索和冲突点。",
+                        "调研结果不能直接视为最终结论；如果项目启用了 codex，要提醒主编排者继续派给 `delegate-auditor` 做复核。",
+                    ],
+                ),
+                kind: RuleFileKind::PlainMarkdown,
+            });
+        }
+        if providers.iter().any(|p| p == "codex") {
+            specs.push(RuleFileSpec {
+                path: project_dir
+                    .join(".claude")
+                    .join("agents")
+                    .join("delegate-auditor.md"),
+                contents: build_claude_delegate_subagent_markdown(
+                    "delegate-auditor",
+                    "审计委派子代理",
+                    "把代码审计、风险分析、边界检查和调研复核任务异步委派给 codex，并把 req_id 返回给主编排者。",
+                    "codex",
+                    &[
+                        "整理任务时要强调：优先识别回归风险、边界条件、缺失测试和事实冲突，不要只做摘要。",
+                        "如果上游输入来自 gemini 调研，要提醒 codex 重点复核日期、版本、适用前提和落地风险。",
+                    ],
+                ),
+                kind: RuleFileKind::PlainMarkdown,
+            });
+        }
+        if providers.iter().any(|p| p == "droid") {
+            specs.push(RuleFileSpec {
+                path: project_dir
+                    .join(".claude")
+                    .join("agents")
+                    .join("delegate-scribe.md"),
+                contents: build_claude_delegate_subagent_markdown(
+                    "delegate-scribe",
+                    "文档委派子代理",
+                    "把文档整理、纪要、变更说明和归档任务异步委派给 droid，并把 req_id 返回给主编排者。",
+                    "droid",
+                    &[
+                        "整理任务时要明确期望的文档结构、输出格式和目标受众。",
+                        "如果文档依赖外部事实，请提醒主编排者先完成调研和复核链路。",
+                    ],
+                ),
+                kind: RuleFileKind::PlainMarkdown,
+            });
+        }
     }
 
     if providers.iter().any(|p| p == "claude") && providers.iter().any(|p| p == "opencode") {
@@ -673,6 +751,25 @@ fn build_rule_file_specs(project_dir: &Path, providers: &[String]) -> Vec<RuleFi
 任务内容：$ARGUMENTS\n\n\
 请直接在当前会话中执行下面的委派命令，不要自己运行 bash：\n\
 `rccb --project-dir . ask --instance default --provider droid --caller claude \"$ARGUMENTS\"`",
+            ),
+            kind: RuleFileKind::PlainMarkdown,
+        });
+    }
+    if providers.iter().any(|p| p == "claude") {
+        specs.push(RuleFileSpec {
+            path: project_dir
+                .join(".claude")
+                .join("commands")
+                .join("rccb-parallel.md"),
+            contents: build_claude_command_markdown(
+                "用 Claude 子代理并行委派多个 RCCB 任务",
+                "当任务可拆成多个相互独立的子任务，或你不想让主编排者上下文被执行细节污染时，优先调用 Claude 子代理做并行派单。\n\
+可用子代理按职责包括：`delegate-coder`、`delegate-researcher`、`delegate-auditor`、`delegate-scribe`。\n\n\
+要求：\n\
+1. 让每个子代理只负责整理任务并执行 `rccb --project-dir . ask --instance default --provider <执行者> --caller claude --async ...`\n\
+2. 让每个子代理只返回 `req_id`、目标执行者、`watch` 命令和 `.reply.md` 路径。\n\
+3. 主编排者自己只负责拆解、追踪、验收和汇总，不要亲自执行 bash。\n\n\
+任务内容：$ARGUMENTS",
             ),
             kind: RuleFileKind::PlainMarkdown,
         });
@@ -887,10 +984,31 @@ fn build_claude_rules_markdown(providers: &[String]) -> String {
         "- 当前未启用专门调研执行者；若任务依赖外部事实，请谨慎处理并优先补充调研 provider。"
             .to_string()
     };
+    let mut subagent_lines = Vec::new();
+    if contains_provider(providers, "opencode") {
+        subagent_lines
+            .push("- 可调用 Claude 子代理 `delegate-coder`，由它异步把编码任务派给 `opencode`。");
+    }
+    if contains_provider(providers, "gemini") {
+        subagent_lines.push(
+            "- 可调用 Claude 子代理 `delegate-researcher`，由它异步把调研任务派给 `gemini`。",
+        );
+    }
+    if contains_provider(providers, "codex") {
+        subagent_lines.push(
+            "- 可调用 Claude 子代理 `delegate-auditor`，由它异步把审计/复核任务派给 `codex`。",
+        );
+    }
+    if contains_provider(providers, "droid") {
+        subagent_lines
+            .push("- 可调用 Claude 子代理 `delegate-scribe`，由它异步把文档任务派给 `droid`。");
+    }
     format!(
         "# Claude 编排规则\n\n\
 你在本项目中的默认角色是编排者。除非用户明确改派，否则不要自己执行 bash、修改文件或运行测试。\n\n\
 ## 默认派单分工\n\
+{}\n\n\
+## 子代理优先策略\n\
 {}\n\n\
 ## 调研强约束\n\
 {}\n\n\
@@ -898,6 +1016,10 @@ fn build_claude_rules_markdown(providers: &[String]) -> String {
 ```bash\n\
 rccb --project-dir . ask --instance default --provider <执行者> --caller claude \"<任务>\"\n\
 ```\n\n\
+## 并行派单建议\n\
+- 当任务可拆分、会明显占用主上下文，或你希望多个执行者并行推进时，优先用 Claude 子代理派单。\n\
+- 子代理默认使用 `--async` 派单，只返回 `req_id`、目标执行者、`watch` 命令和 `.reply.md` 路径。\n\
+- 主编排者只负责追踪、验收和汇总，不要把执行细节重新塞回主上下文。\n\n\
 ## 查看真实状态\n\
 - 若请求超时或你不确定执行者是否仍在运行，优先执行：\n\
 ```bash\n\
@@ -909,6 +1031,11 @@ rccb --project-dir . watch --instance default --req-id <req_id> --follow --with-
 - `debug` 模式会刷新托管区块，便于联调。\n\
 - 自定义规则请写在下方用户区块。",
         dispatch_lines.join("\n"),
+        if subagent_lines.is_empty() {
+            "- 当前 provider 集合不足以启用 Claude 子代理委派链路。".to_string()
+        } else {
+            subagent_lines.join("\n")
+        },
         research_rules
     )
 }
@@ -1193,6 +1320,45 @@ description: {summary}\n\
 {summary}\n\n\
 {details}\n",
         localized_agent_title(name)
+    )
+}
+
+fn build_claude_delegate_subagent_markdown(
+    name: &str,
+    title: &str,
+    summary: &str,
+    provider: &str,
+    extra_rules: &[&str],
+) -> String {
+    let details = extra_rules
+        .iter()
+        .map(|line| format!("- {line}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "---\n\
+name: {name}\n\
+description: {summary}\n\
+---\n\n\
+# {title}\n\n\
+{summary}\n\n\
+## 核心职责\n\
+- 你是 Claude 编排者的专用委派子代理，不是最终执行者。\n\
+- 收到任务后，先把需求整理成适合 `{provider}` 执行的清晰中文任务，再通过 RCCB 异步派单。\n\
+- 你自己不要直接改文件、不要运行测试、不要把执行结果冒充成你亲自完成。\n\
+\n\
+## 标准派单命令\n\
+```bash\n\
+rccb --project-dir . ask --instance default --provider {provider} --caller claude --async \"<任务>\"\n\
+```\n\n\
+## 返回格式\n\
+- 必须返回：`provider={provider}`、`req_id=<req_id>`、`status=submitted`\n\
+- 同时返回建议跟踪命令：`rccb --project-dir . watch --instance default --req-id <req_id> --follow --with-provider-log --timeout-s 0 --pane-ui`\n\
+- 同时提醒主编排者最终结果优先查看：`.rccb/tasks/default/artifacts/<req_id>.reply.md`\n\
+- 如果命令失败，要如实说明失败原因，不要伪造 req_id。\n\
+\n\
+## 附加约束\n\
+{details}\n"
     )
 }
 
@@ -2320,7 +2486,7 @@ fn orchestrator_guardrail_prompt(
     render_project_bootstrap_content(
         project_dir,
         &format!(
-        "RCCB 编排模式已启用。\n\n当前编排者：{orchestrator}\n可用执行者：{executor_list}\n\n只做：规划、拆解、委派、验收、汇总。\n不要自己执行 bash、修改文件或运行测试。\n\n默认分工：opencode=编码，gemini=调研，droid=文档，codex=审计。\n调研规则：先 gemini 至少两轮调研，再 codex 复核关键结论。\n\n委派格式：\n`rccb --project-dir . ask --instance default --provider <执行者> --caller {orchestrator} \"<任务>\"`\n\n结果默认走后台 inbox 和 `.reply.md`，不会刷屏。\n若 ask 超时，先用 `watch --req-id` 看真实状态，不要立刻重派。\n详细规则见 `AGENTS.md` 与 `CLAUDE.md`。"
+        "RCCB 编排模式已启用。\n\n当前编排者：{orchestrator}\n可用执行者：{executor_list}\n\n只做：规划、拆解、委派、验收、汇总。\n不要自己执行 bash、修改文件或运行测试。\n\n默认分工：opencode=编码，gemini=调研，droid=文档，codex=审计。\n调研规则：先 gemini 至少两轮调研，再 codex 复核关键结论。\n\n如果你当前是 Claude，并且任务可拆分、希望并行推进或不想污染主上下文，优先调用 Claude 子代理 `delegate-coder` / `delegate-researcher` / `delegate-auditor` / `delegate-scribe`。\n子代理默认使用异步派单：\n`rccb --project-dir . ask --instance default --provider <执行者> --caller {orchestrator} --async \"<任务>\"`\n主编排者只接收 `req_id`、watch 命令与 `.reply.md` 路径，然后继续编排。\n\n如果不走子代理，标准委派格式仍然是：\n`rccb --project-dir . ask --instance default --provider <执行者> --caller {orchestrator} \"<任务>\"`\n\n结果默认走后台 inbox 和 `.reply.md`，不会刷屏。\n若 ask 超时，先用 `watch --req-id` 看真实状态，不要立刻重派。\n详细规则见 `AGENTS.md` 与 `CLAUDE.md`。"
         ),
     )
 }
@@ -5759,6 +5925,7 @@ mod tests {
         let orchestrator_agent =
             fs::read_to_string(project.join(".claude/agents/orchestrator.md")).unwrap();
         assert!(orchestrator_agent.contains("# 编排者"));
+        assert!(orchestrator_agent.contains("delegate-coder"));
         assert!(project
             .join(".agents/skills/rccb-delegate/SKILL.md")
             .exists());
@@ -5780,6 +5947,13 @@ mod tests {
         assert!(project.join(".factory/droids/researcher.md").exists());
         assert!(project.join(".factory/settings.local.json").exists());
         assert!(project.join(".claude/commands/rccb-research.md").exists());
+        assert!(project.join(".claude/commands/rccb-parallel.md").exists());
+        assert!(project.join(".claude/agents/delegate-coder.md").exists());
+        assert!(project
+            .join(".claude/agents/delegate-researcher.md")
+            .exists());
+        assert!(project.join(".claude/agents/delegate-auditor.md").exists());
+        assert!(project.join(".claude/agents/delegate-scribe.md").exists());
         assert!(project.join(".rccb/providers/codex.example.json").exists());
         assert!(project
             .join(".rccb/providers/gemini.trustedFolders.json")
@@ -5885,7 +6059,7 @@ mod tests {
         let droid = super::build_provider_wrapper_script("droid").expect("droid wrapper");
 
         assert!(claude.contains("role=\"${RCCB_PROVIDER_ROLE:-executor}\""));
-        assert!(claude.contains("--allowedTools \"Read Grep Glob LS Bash(rccb:*)"));
+        assert!(claude.contains("--allowedTools \"Read Grep Glob LS Task Bash(rccb:*)"));
         assert!(claude.contains("--disallowedTools \"Edit MultiEdit Write NotebookEdit\""));
         assert!(claude.contains("--permission-mode bypassPermissions"));
         assert!(claude.contains("--dangerously-skip-permissions"));
@@ -6139,6 +6313,8 @@ mod tests {
         assert!(prompt.contains("opencode=编码"));
         assert!(prompt.contains("先 gemini 至少两轮调研"));
         assert!(prompt.contains("再 codex 复核关键结论"));
+        assert!(prompt.contains("delegate-coder"));
+        assert!(prompt.contains("--async"));
     }
 
     #[test]

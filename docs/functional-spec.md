@@ -247,6 +247,8 @@
    - 非 `tmux/wezterm` 环境仅确保 daemon 在线并提示如何继续
    - 默认职责：`opencode=编码者`、`gemini=调研者`、`droid=文档记录者`、`codex=代码审计者`
    - 默认调研链路：先 `gemini` 至少两轮调研，再 `codex` 复核关键结论
+   - 当编排者是 `claude` 时，默认启用 Claude 子代理委派链路：`delegate-coder` / `delegate-researcher` / `delegate-auditor` / `delegate-scribe`
+   - Claude 子代理默认通过 `rccb ask --async` 派单，只向主编排者回报 `req_id`、`watch` 命令和 `.reply.md` 路径
 
 ### 5.2 通信
 
@@ -296,6 +298,7 @@
    - 实际执行统一由执行者完成
 3. 行为：
    - 编排者 pane 启动后自动收到 strict guardrail 提示
+   - 若编排者为 `claude`，guardrail 会优先引导其使用 Claude 子代理做上下文隔离式异步派单
    - 若 `ask.request.caller == orchestrator` 且目标 provider 为执行者，则任务状态与最终结果都会写入 `.rccb/tmp/<instance>/orchestrator/<orchestrator>.jsonl` 作为 inbox 记录
    - 默认不向编排者 pane 注入最终结果；只有显式启用结果回调时才会回注到前台
 4. 开关：
