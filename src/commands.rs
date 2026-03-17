@@ -3467,6 +3467,9 @@ fn should_suppress_sync_reply_for_orchestrator(
     if env_bool("RCCB_ORCHESTRATOR_SYNC_STDOUT_RESULT", false) {
         return false;
     }
+    if !env_bool("RCCB_ORCHESTRATOR_RESULT_CALLBACK", false) {
+        return false;
+    }
 
     let Some(orchestrator) = state
         .orchestrator
@@ -3781,6 +3784,12 @@ mod tests {
 
     #[test]
     fn suppresses_sync_reply_for_orchestrator_executor_call() {
+        let _guard = env_lock().lock().unwrap();
+        let old = std::env::var("RCCB_ORCHESTRATOR_RESULT_CALLBACK").ok();
+        unsafe {
+            std::env::set_var("RCCB_ORCHESTRATOR_RESULT_CALLBACK", "1");
+        }
+
         let state = InstanceState {
             schema_version: 1,
             instance_id: "default".to_string(),
@@ -3803,6 +3812,54 @@ mod tests {
         assert!(super::should_suppress_sync_reply_for_orchestrator(
             &state, "gemini", "claude"
         ));
+
+        if let Some(v) = old {
+            unsafe {
+                std::env::set_var("RCCB_ORCHESTRATOR_RESULT_CALLBACK", v);
+            }
+        } else {
+            unsafe {
+                std::env::remove_var("RCCB_ORCHESTRATOR_RESULT_CALLBACK");
+            }
+        }
+    }
+
+    #[test]
+    fn keeps_sync_reply_when_result_callback_is_silent() {
+        let _guard = env_lock().lock().unwrap();
+        let old = std::env::var("RCCB_ORCHESTRATOR_RESULT_CALLBACK").ok();
+        unsafe {
+            std::env::remove_var("RCCB_ORCHESTRATOR_RESULT_CALLBACK");
+        }
+
+        let state = InstanceState {
+            schema_version: 1,
+            instance_id: "default".to_string(),
+            project_dir: ".".to_string(),
+            pid: 1,
+            status: "running".to_string(),
+            started_at_unix: 1,
+            last_heartbeat_unix: 1,
+            stopped_at_unix: None,
+            providers: vec!["claude".to_string(), "gemini".to_string()],
+            orchestrator: Some("claude".to_string()),
+            executors: vec!["gemini".to_string()],
+            session_file: None,
+            last_task_id: None,
+            daemon_host: None,
+            daemon_port: None,
+            daemon_token: None,
+            debug_enabled: false,
+        };
+        assert!(!super::should_suppress_sync_reply_for_orchestrator(
+            &state, "gemini", "claude"
+        ));
+
+        if let Some(v) = old {
+            unsafe {
+                std::env::set_var("RCCB_ORCHESTRATOR_RESULT_CALLBACK", v);
+            }
+        }
     }
 
     #[test]
