@@ -1048,7 +1048,7 @@ fn orchestrator_guardrail_prompt(orchestrator: &str, executors: &[String]) -> St
         executors.join(", ")
     };
     format!(
-        "RCCB 编排模式已启用。\n\n你当前是编排者：{orchestrator}。\n可用执行者：{executor_list}。\n\n严格规则：\n- 不要自己执行 bash 命令。\n- 不要自己修改文件或运行测试。\n- 所有执行任务都必须通过 RCCB 委派给执行者。\n- 你的职责只包括：规划、拆解、分派、验收、汇总。\n\n推荐委派格式：\n`rccb --project-dir . ask --instance default --provider <执行者> --caller {orchestrator} \"<任务>\"`\n\n运行期间，执行者状态会先写入后台 inbox；如启用状态回调，系统会间歇性推送有效进展给你。\n最终结果会通过 RCCB callback 回注；如果回注失败，系统会自动重试。\n\n收到 `RCCB_RESULT` 后再继续编排；如果还需要动作，请再次委派，而不是自己执行。"
+        "RCCB 编排模式已启用。\n\n你当前是编排者：{orchestrator}。\n可用执行者：{executor_list}。\n\n严格规则：\n- 不要自己执行 bash 命令。\n- 不要自己修改文件或运行测试。\n- 所有执行任务都必须通过 RCCB 委派给执行者。\n- 你的职责只包括：规划、拆解、分派、验收、汇总。\n\n推荐委派格式：\n`rccb --project-dir . ask --instance default --provider <执行者> --caller {orchestrator} \"<任务>\"`\n\n运行期间，执行者状态与最终结果都会先写入后台 inbox。\n默认不会把结果刷到你的 pane；只有显式启用回调时，系统才会向前台注入状态或结果。\n\n如果还需要动作，请继续通过 RCCB 委派给执行者，而不是自己执行。"
     )
 }
 
@@ -4123,7 +4123,8 @@ mod tests {
         assert!(prompt.contains("不要自己执行 bash 命令"));
         assert!(prompt.contains("codex, gemini"));
         assert!(prompt.contains("--caller claude"));
-        assert!(prompt.contains("RCCB_RESULT"));
+        assert!(prompt.contains("后台 inbox"));
+        assert!(prompt.contains("默认不会把结果刷到你的 pane"));
     }
 
     #[test]

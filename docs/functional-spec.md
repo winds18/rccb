@@ -261,10 +261,11 @@
    - 实际执行统一由执行者完成
 3. 行为：
    - 编排者 pane 启动后自动收到 strict guardrail 提示
-   - 若 `ask.request.caller == orchestrator` 且目标 provider 为执行者，则任务完成后自动将最终结果回注给编排者 pane
-   - 同时将结果写入 `.rccb/tmp/<instance>/orchestrator/<orchestrator>.jsonl` 作为 inbox 记录
+   - 若 `ask.request.caller == orchestrator` 且目标 provider 为执行者，则任务状态与最终结果都会写入 `.rccb/tmp/<instance>/orchestrator/<orchestrator>.jsonl` 作为 inbox 记录
+   - 默认不向编排者 pane 注入最终结果；只有显式启用结果回调时才会回注到前台
 4. 开关：
    - `RCCB_ORCHESTRATOR_STRICT=0` 可关闭
+   - `RCCB_ORCHESTRATOR_RESULT_CALLBACK=1` 可启用最终结果前台回注
    - `RCCB_ORCHESTRATOR_CALLBACK_MAX_CHARS=<400-32000>` 可限制回注结果长度
 6. `status --as-json` 额外返回 `in_flight_count` 与 `in_flight_req_ids`
 

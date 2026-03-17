@@ -1776,7 +1776,13 @@ fn relay_task_completed(
     else {
         return;
     };
-    let prompt = build_orchestrator_result_prompt(req_id, provider, status, exit_code, reply);
+    let prompt = if orchestrator_result_callback_enabled() {
+        Some(build_orchestrator_result_prompt(
+            req_id, provider, status, exit_code, reply,
+        ))
+    } else {
+        None
+    };
     let entry = json!({
         "ts_unix": now_unix(),
         "kind": "result",
@@ -1794,7 +1800,7 @@ fn relay_task_completed(
         &orchestrator_provider,
         entry,
         OrchestratorNoticeKind::Result,
-        Some(prompt),
+        prompt,
     );
 }
 
@@ -2271,6 +2277,10 @@ fn orchestrator_progress_callback_enabled() -> bool {
     env_bool("RCCB_ORCHESTRATOR_PROGRESS_CALLBACK", false)
 }
 
+fn orchestrator_result_callback_enabled() -> bool {
+    env_bool("RCCB_ORCHESTRATOR_RESULT_CALLBACK", false)
+}
+
 fn orchestrator_callback_max_chars() -> usize {
     match std::env::var("RCCB_ORCHESTRATOR_CALLBACK_MAX_CHARS") {
         Ok(raw) => match raw.trim().parse::<usize>() {
@@ -2407,7 +2417,8 @@ mod tests {
 
     use super::{
         build_orchestrator_progress_prompt, build_orchestrator_result_prompt,
-        build_orchestrator_started_prompt, relay_progress_lines, sync_response_wait_timeout,
+        build_orchestrator_started_prompt, orchestrator_result_callback_enabled,
+        relay_progress_lines, sync_response_wait_timeout,
     };
 
     fn env_lock() -> &'static Mutex<()> {
@@ -2478,6 +2489,23 @@ mod tests {
         assert!(prompt.contains("执行者=droid"));
         assert!(prompt.contains("正在搜索 zeroclaw 资料"));
         assert!(prompt.contains("这不是最终结果"));
+    }
+
+    #[test]
+    fn orchestrator_result_callback_defaults_to_silent() {
+        let _guard = env_lock().lock().unwrap();
+        let old = std::env::var("RCCB_ORCHESTRATOR_RESULT_CALLBACK").ok();
+        unsafe {
+            std::env::remove_var("RCCB_ORCHESTRATOR_RESULT_CALLBACK");
+        }
+
+        assert!(!orchestrator_result_callback_enabled());
+
+        if let Some(v) = old {
+            unsafe {
+                std::env::set_var("RCCB_ORCHESTRATOR_RESULT_CALLBACK", v);
+            }
+        }
     }
 
     #[test]
