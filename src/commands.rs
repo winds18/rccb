@@ -51,6 +51,9 @@ pub fn cmd_init(project_dir: &Path, force: bool) -> Result<()> {
     for p in bootstrap.wrapper_scripts {
         println!("provider 包装脚本：{}", p.display());
     }
+    for p in bootstrap.provider_support_files {
+        println!("provider 支持文件：{}", p.display());
+    }
     for p in bootstrap.rule_templates {
         println!("规则模板：{}", p.display());
     }
@@ -98,6 +101,7 @@ struct ProjectBootstrapSummary {
     config_path: PathBuf,
     profile_templates: Vec<PathBuf>,
     wrapper_scripts: Vec<PathBuf>,
+    provider_support_files: Vec<PathBuf>,
     rule_templates: Vec<PathBuf>,
 }
 
@@ -109,13 +113,32 @@ fn ensure_project_bootstrap(
     let config_path = write_config_template(project_dir, mode)?;
     let profile_templates = write_native_profile_templates(project_dir, mode)?;
     let wrapper_scripts = write_provider_launch_wrappers(project_dir, mode)?;
+    let provider_support_files = write_provider_support_files(project_dir, mode)?;
     let rule_templates = ensure_project_rule_bootstrap(project_dir, mode)?;
     Ok(ProjectBootstrapSummary {
         config_path,
         profile_templates,
         wrapper_scripts,
+        provider_support_files,
         rule_templates,
     })
+}
+
+fn write_provider_support_files(project_dir: &Path, mode: BootstrapMode) -> Result<Vec<PathBuf>> {
+    let provider_dir = rccb_dir(project_dir).join("providers");
+    fs::create_dir_all(&provider_dir)?;
+
+    let mut written = Vec::new();
+    let gemini_trusted_folders_path = provider_dir.join("gemini.trustedFolders.json");
+    if !(gemini_trusted_folders_path.exists() && matches!(mode, BootstrapMode::MissingOnly)) {
+        let trusted = json!({
+            project_dir.display().to_string(): "TRUST_FOLDER"
+        });
+        write_json_pretty(&gemini_trusted_folders_path, &trusted)?;
+        written.push(gemini_trusted_folders_path);
+    }
+
+    Ok(written)
 }
 
 fn write_config_template(project_dir: &Path, mode: BootstrapMode) -> Result<PathBuf> {
@@ -193,10 +216,11 @@ set -euo pipefail
 project_root="${RCCB_PROJECT_DIR:-$PWD}"
 cd "$project_root"
 agent="${RCCB_PROVIDER_AGENT:-}"
+cmd=(claude --setting-sources user,project,local --permission-mode bypassPermissions)
 if [[ -n "$agent" ]]; then
-  exec claude --setting-sources user,project,local --agent "$agent" "$@"
+  cmd+=(--agent "$agent")
 fi
-exec claude --setting-sources user,project,local "$@"
+exec "${cmd[@]}" "$@"
 "#
         }
         "opencode" => {
@@ -216,7 +240,7 @@ exec opencode "$project_root" "$@"
 set -euo pipefail
 project_root="${RCCB_PROJECT_DIR:-$PWD}"
 cd "$project_root"
-exec codex --cd "$project_root" "$@"
+exec codex --cd "$project_root" -a never -s workspace-write "$@"
 "#
         }
         "gemini" => {
@@ -224,7 +248,9 @@ exec codex --cd "$project_root" "$@"
 set -euo pipefail
 project_root="${RCCB_PROJECT_DIR:-$PWD}"
 cd "$project_root"
-exec gemini "$@"
+trusted_folders_path="${RCCB_GEMINI_TRUSTED_FOLDERS_PATH:-$project_root/.rccb/providers/gemini.trustedFolders.json}"
+export GEMINI_CLI_TRUSTED_FOLDERS_PATH="$trusted_folders_path"
+exec gemini --approval-mode yolo "$@"
 "#
         }
         "droid" => {
@@ -232,6 +258,10 @@ exec gemini "$@"
 set -euo pipefail
 project_root="${RCCB_PROJECT_DIR:-$PWD}"
 cd "$project_root"
+droid_settings_path="${RCCB_DROID_SETTINGS_PATH:-$project_root/.rccb/providers/droid.settings.json}"
+if [[ -f "$droid_settings_path" ]]; then
+  exec droid --settings "$droid_settings_path" "$@"
+fi
 exec droid "$@"
 "#
         }
@@ -5179,6 +5209,9 @@ mod tests {
         assert!(project.join(".factory/droids/researcher.md").exists());
         assert!(project.join(".claude/commands/rccb-research.md").exists());
         assert!(project.join(".rccb/providers/codex.example.json").exists());
+        assert!(project
+            .join(".rccb/providers/gemini.trustedFolders.json")
+            .exists());
         assert!(project.join(".rccb/bin/codex").exists());
         assert!(project.join(".rccb/bin/claude").exists());
 
@@ -5224,10 +5257,28 @@ mod tests {
 
         let config = fs::read_to_string(&config_path).unwrap();
         let profile = fs::read_to_string(&profile_path).unwrap();
+        let trusted =
+            fs::read_to_string(project.join(".rccb/providers/gemini.trustedFolders.json")).unwrap();
         assert!(config.contains("default_specialties"));
         assert!(profile.contains("\"RCCB_TASK_ID\""));
+        assert!(trusted.contains("\"TRUST_FOLDER\""));
+        assert!(trusted.contains(&project.display().to_string()));
 
         let _ = fs::remove_dir_all(&project);
+    }
+
+    #[test]
+    fn provider_wrappers_include_project_permission_defaults() {
+        let claude = super::build_provider_wrapper_script("claude").expect("claude wrapper");
+        let codex = super::build_provider_wrapper_script("codex").expect("codex wrapper");
+        let gemini = super::build_provider_wrapper_script("gemini").expect("gemini wrapper");
+        let droid = super::build_provider_wrapper_script("droid").expect("droid wrapper");
+
+        assert!(claude.contains("--permission-mode bypassPermissions"));
+        assert!(codex.contains("-a never -s workspace-write"));
+        assert!(gemini.contains("GEMINI_CLI_TRUSTED_FOLDERS_PATH"));
+        assert!(gemini.contains("--approval-mode yolo"));
+        assert!(droid.contains("--settings \"$droid_settings_path\""));
     }
 
     #[test]
