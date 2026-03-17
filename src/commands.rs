@@ -132,7 +132,7 @@ fn write_config_template(project_dir: &Path, mode: BootstrapMode) -> Result<Path
                 "listen": "127.0.0.1:0",
                 "debug": false,
                 "providers": ["claude", "codex", "gemini", "opencode", "droid"],
-                "orchestration_rule": "first provider is orchestrator, remaining providers are executors",
+                "orchestration_rule": "首个 provider 作为编排者，其余 provider 作为执行者",
                 "default_specialties": {
                     "claude": "编排者",
                     "opencode": "编码者",
@@ -140,7 +140,7 @@ fn write_config_template(project_dir: &Path, mode: BootstrapMode) -> Result<Path
                     "droid": "文档记录者",
                     "codex": "代码审计者"
                 },
-                "research_validation_rule": "research goes to gemini first, and codex verifies key conclusions before final adoption"
+                "research_validation_rule": "涉及外部事实时先由 gemini 调研，再由 codex 复核关键结论后再采纳"
             }
         },
         "channels": {
@@ -694,7 +694,7 @@ fn build_gemini_rules_markdown() -> String {
 }
 
 fn build_agents_delegate_skill_markdown() -> String {
-    "# Skill: rccb-delegate\n\n\
+    "# 技能：rccb-delegate\n\n\
 ## 用途\n\
 通过 `rccb` 把执行任务委派给合适的执行者，并在静默模式或超时场景下用 `watch`/`reply.md` 获取真实状态与最终结果。\n\n\
 ## 选择执行者\n\
@@ -722,7 +722,7 @@ rccb --project-dir . watch --instance default --req-id <req_id> --follow --with-
 }
 
 fn build_agents_audit_skill_markdown() -> String {
-    "# Skill: rccb-audit\n\n\
+    "# 技能：rccb-audit\n\n\
 ## 用途\n\
 当你在本项目中承担 `codex` 的默认职责时，优先用这套规则完成代码审计、风险分析、边界条件检查和回归评估。\n\n\
 ## 审计重点\n\
@@ -742,7 +742,7 @@ fn build_agents_audit_skill_markdown() -> String {
 }
 
 fn build_agents_research_verify_skill_markdown() -> String {
-    "# Skill: rccb-research-verify\n\n\
+    "# 技能：rccb-research-verify\n\n\
 ## 用途\n\
 专门用于 `codex` 对 `gemini` 调研结果做第二阶段复核。\n\n\
 ## 复核步骤\n\
@@ -763,7 +763,7 @@ fn build_agents_research_verify_skill_markdown() -> String {
 }
 
 fn build_opencode_delegate_skill_markdown() -> String {
-    "# Skill: rccb-delegate\n\n\
+    "# 技能：rccb-delegate\n\n\
 通过 `rccb` 在本项目里委派执行任务，并在静默模式下通过 `watch` 和 `reply.md` 获取真实状态与最终结果。\n\n\
 ## 默认职责映射\n\
 - `opencode`：编码实现、修复、测试、联调\n\
@@ -789,7 +789,7 @@ fn build_factory_delegate_skill_markdown() -> String {
 name: rccb-delegate\n\
 description: 通过 RCCB 委派执行任务，并在静默模式下用 watch/reply.md 跟踪真实状态与最终结果。\n\
 ---\n\n\
-# Skill: RCCB Delegate\n\n\
+# RCCB 委派技能\n\n\
 ## 选择执行者\n\
 - `opencode`：编码与测试\n\
 - `gemini`：调研与事实核验\n\
@@ -822,6 +822,18 @@ argument-hint: [任务内容]\n\
     )
 }
 
+fn localized_agent_title(name: &str) -> &str {
+    match name {
+        "orchestrator" => "编排者",
+        "reviewer" => "复核者",
+        "coder" => "编码者",
+        "auditor" => "审计者",
+        "researcher" => "调研者",
+        "scribe" => "记录者",
+        _ => name,
+    }
+}
+
 fn build_claude_agent_markdown(name: &str, summary: &str, bullets: &[&str]) -> String {
     let details = bullets
         .iter()
@@ -833,9 +845,10 @@ fn build_claude_agent_markdown(name: &str, summary: &str, bullets: &[&str]) -> S
 name: {name}\n\
 description: {summary}\n\
 ---\n\n\
-# {name}\n\n\
+# {}\n\n\
 {summary}\n\n\
-{details}\n"
+{details}\n",
+        localized_agent_title(name)
     )
 }
 
@@ -859,9 +872,10 @@ fn build_opencode_agent_markdown(name: &str, summary: &str, bullets: &[&str]) ->
 name: {name}\n\
 description: {summary}\n\
 ---\n\n\
-# {name}\n\n\
+# {}\n\n\
 {summary}\n\n\
-{details}\n"
+{details}\n",
+        localized_agent_title(name)
     )
 }
 
@@ -896,9 +910,10 @@ fn build_factory_droid_markdown(name: &str, summary: &str, bullets: &[&str]) -> 
 name: {name}\n\
 description: {summary}\n\
 ---\n\n\
-# {name}\n\n\
+# {}\n\n\
 {summary}\n\n\
-{details}\n"
+{details}\n",
+        localized_agent_title(name)
     )
 }
 
@@ -4962,6 +4977,12 @@ mod tests {
         let gemini_rules = fs::read_to_string(project.join("GEMINI.md")).unwrap();
         assert!(gemini_rules.contains("建议工作流"));
         assert!(gemini_rules.contains("至少执行两轮调研"));
+        let config_template =
+            fs::read_to_string(project.join(".rccb/config.example.json")).unwrap();
+        assert!(config_template.contains("首个 provider 作为编排者"));
+        let orchestrator_agent =
+            fs::read_to_string(project.join(".claude/agents/orchestrator.md")).unwrap();
+        assert!(orchestrator_agent.contains("# 编排者"));
         assert!(project
             .join(".agents/skills/rccb-delegate/SKILL.md")
             .exists());
@@ -4982,7 +5003,6 @@ mod tests {
         assert!(project.join(".factory/rules/rccb-core.md").exists());
         assert!(project.join(".factory/droids/researcher.md").exists());
         assert!(project.join(".claude/commands/rccb-research.md").exists());
-        assert!(project.join(".rccb/config.example.json").exists());
         assert!(project.join(".rccb/providers/codex.example.json").exists());
         assert!(project.join(".rccb/bin/codex").exists());
         assert!(project.join(".rccb/bin/claude").exists());
