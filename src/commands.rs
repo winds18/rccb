@@ -36,70 +36,32 @@ const RCCB_USER_BEGIN: &str = "<!-- RCCB:BEGIN USER -->";
 const RCCB_USER_END: &str = "<!-- RCCB:END USER -->";
 
 pub fn cmd_init(project_dir: &Path, force: bool) -> Result<()> {
-    ensure_project_layout(project_dir)?;
-    let config_path = rccb_dir(project_dir).join("config.example.json");
-    if !config_path.exists() || force {
-        let template = json!({
-            "project": project_dir.display().to_string(),
-            "instances": {
-                "default": {
-                    "heartbeat_secs": 5,
-                    "listen": "127.0.0.1:0",
-                    "debug": false,
-                    "providers": ["claude", "codex", "gemini", "opencode", "droid"],
-                    "orchestration_rule": "first provider is orchestrator, remaining providers are executors",
-                    "default_specialties": {
-                        "claude": "编排者",
-                        "opencode": "编码者",
-                        "gemini": "调研者",
-                        "droid": "文档记录者",
-                        "codex": "代码审计者"
-                    },
-                    "research_validation_rule": "research goes to gemini first, and codex verifies key conclusions before final adoption"
-                }
-            },
-            "channels": {
-                "feishu": {
-                    "webhook_url": "https://open.feishu.cn/open-apis/bot/v2/hook/your-token"
-                },
-                "telegram": {
-                    "bot_token": "123456789:bot-token",
-                    "chat_id": "-1001234567890"
-                }
-            }
-        });
-        write_json_pretty(&config_path, &template)?;
-    }
-
-    let profile_templates = write_native_profile_templates(project_dir, force)?;
-    let rule_templates = ensure_project_rule_bootstrap(
-        project_dir,
-        if force {
-            RuleBootstrapMode::RefreshManaged
-        } else {
-            RuleBootstrapMode::MissingOnly
-        },
-    )?;
+    let mode = if force {
+        BootstrapMode::RefreshGenerated
+    } else {
+        BootstrapMode::MissingOnly
+    };
+    let bootstrap = ensure_project_bootstrap(project_dir, mode)?;
 
     println!("初始化完成：{}", rccb_dir(project_dir).display());
-    println!("配置模板：{}", config_path.display());
-    for p in profile_templates {
+    println!("配置模板：{}", bootstrap.config_path.display());
+    for p in bootstrap.profile_templates {
         println!("native profile 模板：{}", p.display());
     }
-    for p in rule_templates {
+    for p in bootstrap.rule_templates {
         println!("规则模板：{}", p.display());
     }
     Ok(())
 }
 
-fn write_native_profile_templates(project_dir: &Path, force: bool) -> Result<Vec<PathBuf>> {
+fn write_native_profile_templates(project_dir: &Path, mode: BootstrapMode) -> Result<Vec<PathBuf>> {
     let profile_dir = rccb_dir(project_dir).join("providers");
     fs::create_dir_all(&profile_dir)?;
 
     let mut written = Vec::new();
     for provider in SUPPORTED_PROVIDERS {
         let path = profile_dir.join(format!("{}.example.json", provider));
-        if path.exists() && !force {
+        if path.exists() && matches!(mode, BootstrapMode::MissingOnly) {
             continue;
         }
 
@@ -124,9 +86,69 @@ fn write_native_profile_templates(project_dir: &Path, force: bool) -> Result<Vec
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum RuleBootstrapMode {
+enum BootstrapMode {
     MissingOnly,
-    RefreshManaged,
+    RefreshGenerated,
+}
+
+struct ProjectBootstrapSummary {
+    config_path: PathBuf,
+    profile_templates: Vec<PathBuf>,
+    rule_templates: Vec<PathBuf>,
+}
+
+fn ensure_project_bootstrap(
+    project_dir: &Path,
+    mode: BootstrapMode,
+) -> Result<ProjectBootstrapSummary> {
+    ensure_project_layout(project_dir)?;
+    let config_path = write_config_template(project_dir, mode)?;
+    let profile_templates = write_native_profile_templates(project_dir, mode)?;
+    let rule_templates = ensure_project_rule_bootstrap(project_dir, mode)?;
+    Ok(ProjectBootstrapSummary {
+        config_path,
+        profile_templates,
+        rule_templates,
+    })
+}
+
+fn write_config_template(project_dir: &Path, mode: BootstrapMode) -> Result<PathBuf> {
+    let config_path = rccb_dir(project_dir).join("config.example.json");
+    if config_path.exists() && matches!(mode, BootstrapMode::MissingOnly) {
+        return Ok(config_path);
+    }
+
+    let template = json!({
+        "project": project_dir.display().to_string(),
+        "instances": {
+            "default": {
+                "heartbeat_secs": 5,
+                "listen": "127.0.0.1:0",
+                "debug": false,
+                "providers": ["claude", "codex", "gemini", "opencode", "droid"],
+                "orchestration_rule": "first provider is orchestrator, remaining providers are executors",
+                "default_specialties": {
+                    "claude": "编排者",
+                    "opencode": "编码者",
+                    "gemini": "调研者",
+                    "droid": "文档记录者",
+                    "codex": "代码审计者"
+                },
+                "research_validation_rule": "research goes to gemini first, and codex verifies key conclusions before final adoption"
+            }
+        },
+        "channels": {
+            "feishu": {
+                "webhook_url": "https://open.feishu.cn/open-apis/bot/v2/hook/your-token"
+            },
+            "telegram": {
+                "bot_token": "123456789:bot-token",
+                "chat_id": "-1001234567890"
+            }
+        }
+    });
+    write_json_pretty(&config_path, &template)?;
+    Ok(config_path)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -141,10 +163,7 @@ struct RuleFileSpec {
     kind: RuleFileKind,
 }
 
-fn ensure_project_rule_bootstrap(
-    project_dir: &Path,
-    mode: RuleBootstrapMode,
-) -> Result<Vec<PathBuf>> {
+fn ensure_project_rule_bootstrap(project_dir: &Path, mode: BootstrapMode) -> Result<Vec<PathBuf>> {
     let mut written = Vec::new();
     for spec in build_rule_file_specs(project_dir) {
         let changed = match spec.kind {
@@ -186,6 +205,15 @@ fn build_rule_file_specs(project_dir: &Path) -> Vec<RuleFileSpec> {
                 .join("rccb-delegate")
                 .join("SKILL.md"),
             contents: build_agents_delegate_skill_markdown(),
+            kind: RuleFileKind::PlainMarkdown,
+        },
+        RuleFileSpec {
+            path: project_dir
+                .join(".opencode")
+                .join("skills")
+                .join("rccb-delegate")
+                .join("SKILL.md"),
+            contents: build_opencode_delegate_skill_markdown(),
             kind: RuleFileKind::PlainMarkdown,
         },
         RuleFileSpec {
@@ -255,6 +283,38 @@ fn build_rule_file_specs(project_dir: &Path) -> Vec<RuleFileSpec> {
                     "优先检查代码风险、边界条件、回归点和缺失测试。",
                     "对于 gemini 返回的调研结果，重点复核事实冲突、过期信息、落地风险和遗漏约束。",
                     "输出优先给出结论、风险等级和需要补充验证的点。",
+                ],
+            ),
+            kind: RuleFileKind::PlainMarkdown,
+        },
+        RuleFileSpec {
+            path: project_dir
+                .join(".claude")
+                .join("agents")
+                .join("orchestrator.md"),
+            contents: build_claude_agent_markdown(
+                "orchestrator",
+                "默认编排者，只负责思考、拆解、委派、验收与汇总。",
+                &[
+                    "不要自己执行 bash、修改文件或运行测试。",
+                    "实现优先派给 opencode，调研优先派给 gemini，文档优先派给 droid，审计优先派给 codex。",
+                    "涉及外部事实时，先让 gemini 做至少两轮调研，再让 codex 复核关键结论。",
+                ],
+            ),
+            kind: RuleFileKind::PlainMarkdown,
+        },
+        RuleFileSpec {
+            path: project_dir
+                .join(".claude")
+                .join("agents")
+                .join("reviewer.md"),
+            contents: build_claude_agent_markdown(
+                "reviewer",
+                "默认复核者，优先承担代码审计、风险分析和调研结论核验。",
+                &[
+                    "优先识别行为回归、边界条件、风险点与缺失测试。",
+                    "对于 gemini 的调研结论，要明确指出可采纳项、待验证项和冲突项。",
+                    "输出时优先给出结论，再给依据与剩余风险。",
                 ],
             ),
             kind: RuleFileKind::PlainMarkdown,
@@ -391,12 +451,8 @@ fn build_rule_file_specs(project_dir: &Path) -> Vec<RuleFileSpec> {
     ]
 }
 
-fn ensure_managed_markdown_file(
-    path: &Path,
-    managed: &str,
-    mode: RuleBootstrapMode,
-) -> Result<bool> {
-    if path.exists() && matches!(mode, RuleBootstrapMode::MissingOnly) {
+fn ensure_managed_markdown_file(path: &Path, managed: &str, mode: BootstrapMode) -> Result<bool> {
+    if path.exists() && matches!(mode, BootstrapMode::MissingOnly) {
         return Ok(false);
     }
 
@@ -416,12 +472,8 @@ fn ensure_managed_markdown_file(
     Ok(true)
 }
 
-fn ensure_plain_markdown_file(
-    path: &Path,
-    contents: &str,
-    mode: RuleBootstrapMode,
-) -> Result<bool> {
-    if path.exists() && matches!(mode, RuleBootstrapMode::MissingOnly) {
+fn ensure_plain_markdown_file(path: &Path, contents: &str, mode: BootstrapMode) -> Result<bool> {
+    if path.exists() && matches!(mode, BootstrapMode::MissingOnly) {
         return Ok(false);
     }
     write_rule_file(path, contents)?;
@@ -546,6 +598,28 @@ rccb --project-dir . watch --instance default --req-id <req_id> --follow --with-
 - 静默消费最终结果时，优先读取 `reply.md`。".to_string()
 }
 
+fn build_opencode_delegate_skill_markdown() -> String {
+    "# Skill: rccb-delegate\n\n\
+通过 `rccb` 在本项目里委派执行任务，并在静默模式下通过 `watch` 和 `reply.md` 获取真实状态与最终结果。\n\n\
+## 默认职责映射\n\
+- `opencode`：编码实现、修复、测试、联调\n\
+- `gemini`：联网调研、资料搜集、事实核对\n\
+- `droid`：文档、纪要、变更记录、归档\n\
+- `codex`：代码审计、风险分析、调研复核\n\n\
+## 调研约束\n\
+- 涉及外部事实时，先让 `gemini` 做至少两轮调研与交叉验证。\n\
+- `gemini` 返回后，再让 `codex` 复核关键结论、日期、风险和边界条件。\n\n\
+## 委派命令\n\
+```bash\n\
+rccb --project-dir . ask --instance default --provider <provider> --caller <caller> \"<task>\"\n\
+```\n\n\
+## 超时处理\n\
+```bash\n\
+rccb --project-dir . watch --instance default --req-id <req_id> --follow --with-provider-log --timeout-s 0 --pane-ui\n\
+```\n"
+        .to_string()
+}
+
 fn build_factory_delegate_skill_markdown() -> String {
     "---\n\
 name: rccb-delegate\n\
@@ -581,6 +655,23 @@ description: {description}\n\
 argument-hint: [任务内容]\n\
 ---\n\n\
 {body}\n"
+    )
+}
+
+fn build_claude_agent_markdown(name: &str, summary: &str, bullets: &[&str]) -> String {
+    let details = bullets
+        .iter()
+        .map(|line| format!("- {line}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "---\n\
+name: {name}\n\
+description: {summary}\n\
+---\n\n\
+# {name}\n\n\
+{summary}\n\n\
+{details}\n"
     )
 }
 
@@ -662,12 +753,12 @@ pub fn cmd_start(
         normalize_provider_list(&providers)?
     };
     let effective_debug = resolve_start_debug(project_dir, instance, debug.then_some(true));
-    let _ = ensure_project_rule_bootstrap(
+    let _ = ensure_project_bootstrap(
         project_dir,
         if effective_debug {
-            RuleBootstrapMode::RefreshManaged
+            BootstrapMode::RefreshGenerated
         } else {
-            RuleBootstrapMode::MissingOnly
+            BootstrapMode::MissingOnly
         },
     )?;
 
@@ -709,13 +800,12 @@ pub fn cmd_external_provider_launch(project_dir: &Path, raw: Vec<String>) -> Res
         bail!("至少需要一个 provider");
     }
     let effective_debug = resolve_start_debug(project_dir, "default", env_debug_override());
-    ensure_project_layout(project_dir)?;
-    let _ = ensure_project_rule_bootstrap(
+    let _ = ensure_project_bootstrap(
         project_dir,
         if effective_debug {
-            RuleBootstrapMode::RefreshManaged
+            BootstrapMode::RefreshGenerated
         } else {
-            RuleBootstrapMode::MissingOnly
+            BootstrapMode::MissingOnly
         },
     )?;
     restart_default_daemon_for_shortcut(project_dir)?;
@@ -4322,12 +4412,12 @@ mod tests {
 
     use super::{
         build_debug_watch_command, cleanup_inflight_tasks, compact_watch_line,
-        debug_watch_pane_percent, ensure_project_rule_bootstrap, is_in_flight_status,
-        is_terminal_bus_task_event, is_terminal_task_status, load_task_by_req_id,
-        orchestrator_guardrail_prompt, orchestrator_strict_mode_enabled, provider_start_cmd,
-        resolve_debug_watch_provider, select_watch_req_for_provider,
+        debug_watch_pane_percent, ensure_project_bootstrap, ensure_project_rule_bootstrap,
+        is_in_flight_status, is_terminal_bus_task_event, is_terminal_task_status,
+        load_task_by_req_id, orchestrator_guardrail_prompt, orchestrator_strict_mode_enabled,
+        provider_start_cmd, resolve_debug_watch_provider, select_watch_req_for_provider,
         select_watch_req_for_provider_follow, split_layout_groups, split_percent_for_equal_stack,
-        task_file_for_req_id, watch_bus_enabled, RuleBootstrapMode, RCCB_MANAGED_BEGIN,
+        task_file_for_req_id, watch_bus_enabled, BootstrapMode, RCCB_MANAGED_BEGIN,
         RCCB_MANAGED_END, RCCB_USER_BEGIN, RCCB_USER_END,
     };
     use crate::io_utils::{now_unix, now_unix_ms, update_task_status, write_json_pretty};
@@ -4610,10 +4700,13 @@ mod tests {
         let project = std::env::temp_dir().join(format!("rccb-rules-{}", now_unix_ms()));
         ensure_project_layout(&project).unwrap();
 
-        let written =
-            ensure_project_rule_bootstrap(&project, RuleBootstrapMode::MissingOnly).unwrap();
+        let written = ensure_project_bootstrap(&project, BootstrapMode::MissingOnly).unwrap();
 
-        assert!(written.iter().any(|p| p.ends_with("AGENTS.md")));
+        assert!(written
+            .rule_templates
+            .iter()
+            .any(|p| p.ends_with("AGENTS.md")));
+        assert!(written.config_path.ends_with("config.example.json"));
         assert!(project.join("AGENTS.md").exists());
         assert!(project.join("CLAUDE.md").exists());
         assert!(project.join("GEMINI.md").exists());
@@ -4621,14 +4714,20 @@ mod tests {
             .join(".agents/skills/rccb-delegate/SKILL.md")
             .exists());
         assert!(project
+            .join(".opencode/skills/rccb-delegate/SKILL.md")
+            .exists());
+        assert!(project
             .join(".factory/skills/rccb-delegate/SKILL.md")
             .exists());
         assert!(project.join(".opencode/commands/rccb-code.md").exists());
         assert!(project.join(".opencode/agents/coder.md").exists());
+        assert!(project.join(".claude/agents/orchestrator.md").exists());
         assert!(project.join(".factory/commands/rccb-research.md").exists());
         assert!(project.join(".factory/rules/rccb-core.md").exists());
         assert!(project.join(".factory/droids/researcher.md").exists());
         assert!(project.join(".claude/commands/rccb-research.md").exists());
+        assert!(project.join(".rccb/config.example.json").exists());
+        assert!(project.join(".rccb/providers/codex.example.json").exists());
 
         let _ = fs::remove_dir_all(&project);
     }
@@ -4647,11 +4746,33 @@ mod tests {
         )
         .unwrap();
 
-        ensure_project_rule_bootstrap(&project, RuleBootstrapMode::RefreshManaged).unwrap();
+        ensure_project_rule_bootstrap(&project, BootstrapMode::RefreshGenerated).unwrap();
         let updated = fs::read_to_string(&agents_path).unwrap();
         assert!(updated.contains("自定义规则"));
         assert!(updated.contains("gemini"));
         assert!(updated.contains("codex"));
+
+        let _ = fs::remove_dir_all(&project);
+    }
+
+    #[test]
+    fn bootstrap_refresh_overwrites_generated_templates() {
+        let project =
+            std::env::temp_dir().join(format!("rccb-bootstrap-refresh-{}", now_unix_ms()));
+        ensure_project_layout(&project).unwrap();
+
+        let config_path = project.join(".rccb/config.example.json");
+        let profile_path = project.join(".rccb/providers/codex.example.json");
+        fs::create_dir_all(profile_path.parent().unwrap()).unwrap();
+        fs::write(&config_path, "{\"stale\":true}\n").unwrap();
+        fs::write(&profile_path, "{\"provider\":\"codex\",\"stale\":true}\n").unwrap();
+
+        ensure_project_bootstrap(&project, BootstrapMode::RefreshGenerated).unwrap();
+
+        let config = fs::read_to_string(&config_path).unwrap();
+        let profile = fs::read_to_string(&profile_path).unwrap();
+        assert!(config.contains("default_specialties"));
+        assert!(profile.contains("\"RCCB_TASK_ID\""));
 
         let _ = fs::remove_dir_all(&project);
     }

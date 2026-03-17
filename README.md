@@ -23,9 +23,11 @@ rccb --project-dir . init
 - `./CLAUDE.md`
 - `./GEMINI.md`
 - `./.agents/skills/rccb-delegate/SKILL.md`（Codex 技能）
-- `./.claude/commands/rccb-*.md`
+- `./.opencode/skills/rccb-delegate/SKILL.md`
 - `./.opencode/commands/rccb-*.md`
 - `./.opencode/agents/*.md`
+- `./.claude/commands/rccb-*.md`
+- `./.claude/agents/*.md`
 - `./.factory/skills/rccb-delegate/SKILL.md`
 - `./.factory/commands/rccb-*.md`
 - `./.factory/rules/rccb-core.md`
@@ -34,7 +36,7 @@ rccb --project-dir . init
 规则文件策略：
 
 - 普通模式：只补缺失文件，不覆盖已有项目级规则
-- `debug` 模式：刷新 RCCB 托管规则，便于反复联调
+- `debug` 模式：刷新 RCCB 生成模板，包括 `.rccb/config.example.json`、`providers/*.example.json` 与项目级托管规则
 - `AGENTS.md` / `CLAUDE.md` / `GEMINI.md` 会保留用户区块，方便写项目个性化规则
 
 ## 编排启动
