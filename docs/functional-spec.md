@@ -209,22 +209,13 @@
 
 1. `rccb init [--force]`
 2. 初始化输出：
+   - provider 集合优先取“当前机器真实可检测到的 CLI 子集”
+   - 若一个 provider CLI 都检测不到，则回退到默认集合：`claude opencode gemini codex droid`
    - `.rccb/config.example.json`
    - `.rccb/providers/*.example.json`（native profile 模板）
    - `.rccb/bin/*`（provider 启动包装脚本）
    - `AGENTS.md`、`CLAUDE.md`、`GEMINI.md`
-   - `.agents/skills/rccb-delegate/SKILL.md`
-   - `.agents/skills/rccb-audit/SKILL.md`
-   - `.agents/skills/rccb-research-verify/SKILL.md`
-   - `.opencode/skills/rccb-delegate/SKILL.md`
-   - `.claude/commands/rccb-*.md`
-   - `.claude/agents/*.md`
-   - `.opencode/commands/rccb-*.md`
-   - `.opencode/agents/*.md`
-   - `.factory/skills/rccb-delegate/SKILL.md`
-   - `.factory/commands/rccb-*.md`
-   - `.factory/rules/rccb-core.md`
-   - `.factory/droids/*.md`
+   - 以及和当前 provider 集合匹配的 skills / commands / agents / rules
 3. 覆盖策略：
    - 普通模式仅补缺失文件
    - `--force` 会刷新所有 RCCB 生成模板
@@ -234,10 +225,16 @@
 
 ### 5.1 启动
 
-1. 快捷启动: `rccb claude codex gemini opencode droid`
-2. 显式启动: `rccb start [--instance] [--listen] [--task] [--debug] <providers...>`
+1. 无参恢复：`rccb`
+2. 快捷启动: `rccb claude codex gemini opencode droid`
+3. 显式启动: `rccb start [--instance] [--listen] [--task] [--debug] <providers...>`
 3. 快捷启动行为：
+   - 无参恢复顺序：
+     1. launcher meta 中上次快捷启动记录的 provider 顺序
+     2. `default` 实例 state 中的 provider 顺序
+     3. 当前机器真实可用 CLI 的默认顺序子集
    - 自动确保 `default` 实例 daemon 在线（后台启动）
+   - 按本次实际 provider 集合裁剪生成项目级 wrapper / rules / skills / provider 支持文件
    - 在 `tmux/wezterm` 环境自动拉起 provider CLI pane
    - 启动前自动补齐项目级规则文件；若 `debug` 开启则刷新托管规则
    - 默认不向 provider pane 注入旁路 feed；pane 保持真实 CLI 执行视图，实时状态优先放在 debug 日志 pane
@@ -246,6 +243,7 @@
    - opencode 在存在 pane 元数据时默认走 pane 执行（自动回车），无 pane 时回退后台 native 执行
    - pane 规则：`<=4` 左侧仅 orchestrator；`=5` 左侧分上下，其余在右侧且右侧等分
    - orchestrator 退出即结束本次 `rccb` 进程，并执行清理（停止 daemon + 回收派生 pane）
+   - 退出或 `stop` 时，强清理 `run/`、`sessions/<instance>/`、`tmp/<instance>/`；保留 `tasks/` 与 `logs/`
    - 非 `tmux/wezterm` 环境仅确保 daemon 在线并提示如何继续
    - 默认职责：`opencode=编码者`、`gemini=调研者`、`droid=文档记录者`、`codex=代码审计者`
    - 默认调研链路：先 `gemini` 至少两轮调研，再 `codex` 复核关键结论

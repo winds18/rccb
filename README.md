@@ -9,11 +9,29 @@
 - 调试开关（可动态 on/off）与完整调试日志
 - IM 通道（飞书、Telegram）
 
+## 当前发布
+
+当前已发布版本：`v0.1.0`
+
+- GitHub Release: `v0.1.0`
+- 发布产物：
+  - `rccb-v0.1.0-macos-arm64.tar.gz`
+  - `rccb-v0.1.0-linux-x86_64.tar.gz`
+  - `SHA256SUMS.txt`
+
+建议配合 `CHANGELOG.md` 一起阅读本版本的能力范围与已知边界。
+
 ## 项目初始化
 
 ```bash
 rccb --project-dir . init
 ```
+
+初始化时的 provider 选择规则：
+
+- 优先为当前机器可检测到的 provider CLI 生成模板
+- 如果当前环境一个 provider CLI 都检测不到，则回退到默认集合：`claude opencode gemini codex droid`
+- 如果你直接用 `rccb claude gemini` 这类快捷启动，则会按本次实际拉起的 provider 子集生成对应规则和包装脚本，不会一股脑生成全部 provider 资产
 
 会生成：
 
@@ -50,6 +68,20 @@ Codex / Gemini 强化点：
 
 ## 编排启动
 
+### 0) 无参恢复默认实例
+
+```bash
+rccb
+```
+
+恢复顺序：
+
+1. 优先恢复上次快捷启动记录的 provider 顺序
+2. 其次读取 `default` 实例 state 中的 provider 顺序
+3. 若都不存在，则回退为当前机器真实可用 CLI 的默认顺序子集
+
+如果当前没有可恢复 provider，也没有检测到可用 CLI，会提示你显式执行 `rccb claude ...`。
+
 ### 1) 快捷风格
 
 ```bash
@@ -65,7 +97,13 @@ rccb claude codex gemini opencode droid
 5. pane 布局规则：
    - `<=4` 个 provider：左侧保留 orchestrator，右侧放其余（右侧等分）
    - `=5` 个 provider：左侧上下两块（orchestrator + 1），右侧放其余（右侧等分）
-6. orchestrator 退出后：`rccb` 自动退出，并停止 default 实例 daemon，清理本次派生 pane
+6. orchestrator 退出后：`rccb` 自动退出，并停止 default 实例 daemon，强清理本次运行态
+   - 会清理 `.rccb/run/<instance>.json`
+   - 会清理 `.rccb/run/<instance>.lock`
+   - 会清理 `.rccb/sessions/<instance>/`
+   - 会清理 `.rccb/tmp/<instance>/`
+   - 会回收本次派生 pane
+   - 会保留 `tasks/` 与 `logs/`，方便排障与审计
 7. 所有 provider pane 保持真实 CLI 执行视图，不显示旁路日志，不注入任务状态镜像
 8. 默认采用静默后台通信：任务下发/回传不打扰 CLI 输入区；可通过命令查看状态和输出
 9. `debug` 开启时会自动创建一个日志 pane（位于编排者 pane 上方），默认跟踪首个执行者并持续 `watch --follow`，所有旁路日志仅在这个 debug pane 显示
@@ -384,6 +422,7 @@ export RCCB_EXEC_MODE=stub
 清理规则：
 
 - 运行时临时目录会在对应流程结束后优先清理
+- `stop` / 快捷编排退出会强清理 `run/`、`sessions/<instance>/`、`tmp/<instance>/`
 - `./.rccb/` 下超过 30 天未更新的旧文件会在后续命令启动时自动清理
 
 ## IM 通道
@@ -459,6 +498,23 @@ cargo build --release
 ./scripts/smoke-clean.sh
 ```
 
+## 发布产物说明
+
+`v0.1.0` 当前提供两类正式二进制包：
+
+- macOS Apple Silicon：`rccb-v0.1.0-macos-arm64.tar.gz`
+- Linux x86_64（musl 静态链接）：`rccb-v0.1.0-linux-x86_64.tar.gz`
+
+校验文件：
+
+- `SHA256SUMS.txt`
+
+如果你在项目里直接调试开发版本，也可以继续使用：
+
+```bash
+./target/debug/rccb
+```
+
 ## 目前状态
 
 已完成：
@@ -470,11 +526,15 @@ cargo build --release
 5. 调试开关与完整调试日志
 6. IM 通道
 7. 任务实时观察（watch）
+8. 按实际启动的 provider 子集裁剪项目级 wrapper / rules / skills
+9. 静默结果优先读取 `.reply.md` 工件
+10. 快捷退出后的运行态强清理
 
 下一阶段：
 
-1. provider-specific native adapter 深化（逐 provider 能力对齐）
-2. completion hook 与回调兼容增强
-3. 管理面（mail/web）迁移
+1. 编排者前台结果消费进一步去重，减少重复派单
+2. provider-specific native adapter 深化（逐 provider 能力对齐）
+3. completion hook 与回调兼容增强
+4. 退出清理时的 pane 提示进一步静默化/优雅化
 
-详见 `docs/functional-spec.md`、`docs/rewrite-roadmap.md`。
+详见 `docs/functional-spec.md`、`docs/rewrite-roadmap.md`、`CHANGELOG.md`。
