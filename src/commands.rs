@@ -224,8 +224,24 @@ fn build_provider_wrapper_script(provider: &str) -> Result<String> {
 set -euo pipefail
 project_root="${RCCB_PROJECT_DIR:-$PWD}"
 cd "$project_root"
+role="${RCCB_PROVIDER_ROLE:-executor}"
 agent="${RCCB_PROVIDER_AGENT:-}"
-cmd=(claude --setting-sources user,project,local --permission-mode bypassPermissions --dangerously-skip-permissions)
+if [[ "$role" == "orchestrator" ]]; then
+  cmd=(
+    claude
+    --setting-sources user,project,local
+    --permission-mode default
+    --allowedTools "Read Grep Glob LS Bash(rccb:*) Bash(./target/debug/rccb:*) Bash($project_root/target/debug/rccb:*)"
+    --disallowedTools "Edit MultiEdit Write NotebookEdit"
+  )
+else
+  cmd=(
+    claude
+    --setting-sources user,project,local
+    --permission-mode bypassPermissions
+    --dangerously-skip-permissions
+  )
+fi
 if [[ -n "$agent" ]]; then
   cmd+=(--agent "$agent")
 fi
@@ -249,6 +265,10 @@ exec opencode "$project_root" "$@"
 set -euo pipefail
 project_root="${RCCB_PROJECT_DIR:-$PWD}"
 cd "$project_root"
+role="${RCCB_PROVIDER_ROLE:-executor}"
+if [[ "$role" == "orchestrator" ]]; then
+  exec codex --cd "$project_root" -a on-request -s workspace-write "$@"
+fi
 exec codex --cd "$project_root" -a never -s workspace-write "$@"
 "#
         }
@@ -257,8 +277,12 @@ exec codex --cd "$project_root" -a never -s workspace-write "$@"
 set -euo pipefail
 project_root="${RCCB_PROJECT_DIR:-$PWD}"
 cd "$project_root"
+role="${RCCB_PROVIDER_ROLE:-executor}"
 trusted_folders_path="${RCCB_GEMINI_TRUSTED_FOLDERS_PATH:-$project_root/.rccb/providers/gemini.trustedFolders.json}"
 export GEMINI_CLI_TRUSTED_FOLDERS_PATH="$trusted_folders_path"
+if [[ "$role" == "orchestrator" ]]; then
+  exec gemini --approval-mode default "$@"
+fi
 exec gemini --approval-mode yolo "$@"
 "#
         }
@@ -267,7 +291,14 @@ exec gemini --approval-mode yolo "$@"
 set -euo pipefail
 project_root="${RCCB_PROJECT_DIR:-$PWD}"
 cd "$project_root"
+role="${RCCB_PROVIDER_ROLE:-executor}"
 droid_settings_path="${RCCB_DROID_SETTINGS_PATH:-$project_root/.factory/settings.local.json}"
+if [[ "$role" == "orchestrator" ]]; then
+  if [[ -f "$droid_settings_path" ]]; then
+    exec droid --settings "$droid_settings_path" "$@"
+  fi
+  exec droid "$@"
+fi
 if [[ -f "$droid_settings_path" ]]; then
   exec droid --skip-permissions-unsafe --settings "$droid_settings_path" "$@"
 fi
@@ -5287,12 +5318,18 @@ mod tests {
         let gemini = super::build_provider_wrapper_script("gemini").expect("gemini wrapper");
         let droid = super::build_provider_wrapper_script("droid").expect("droid wrapper");
 
+        assert!(claude.contains("role=\"${RCCB_PROVIDER_ROLE:-executor}\""));
+        assert!(claude.contains("--allowedTools \"Read Grep Glob LS Bash(rccb:*)"));
+        assert!(claude.contains("--disallowedTools \"Edit MultiEdit Write NotebookEdit\""));
         assert!(claude.contains("--permission-mode bypassPermissions"));
         assert!(claude.contains("--dangerously-skip-permissions"));
+        assert!(codex.contains("-a on-request -s workspace-write"));
         assert!(codex.contains("-a never -s workspace-write"));
         assert!(gemini.contains("GEMINI_CLI_TRUSTED_FOLDERS_PATH"));
+        assert!(gemini.contains("--approval-mode default"));
         assert!(gemini.contains("--approval-mode yolo"));
         assert!(droid.contains("--skip-permissions-unsafe"));
+        assert!(droid.contains("if [[ \"$role\" == \"orchestrator\" ]]"));
         assert!(droid.contains(".factory/settings.local.json"));
     }
 
