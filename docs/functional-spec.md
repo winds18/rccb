@@ -281,6 +281,7 @@
    - `RCCB_EVENT_BUFFER_SIZE=<64-20000>` 可调整 daemon 事件缓冲（默认 2048）
    - debug 自动日志 pane 可通过以下环境变量控制：
      `RCCB_DEBUG_WATCH_PANE`、`RCCB_DEBUG_WATCH_PROVIDER`、`RCCB_DEBUG_WATCH_PANE_PERCENT`
+   - debug 仅对本次启动生效；若未显式传入 `--debug` 或 `RCCB_DEBUG=1`，不会继承上一次实例的 debug 状态
    - provider/orchestrator pane 不显示旁路日志；旁路状态与流式信息只在 debug 日志 pane 展示
    - 当开启 orchestrator strict mode 时，执行者完成后的最终结果会后台回注给编排者 pane（仅最终结果，不回注过程日志）
 

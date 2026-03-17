@@ -70,7 +70,8 @@ rccb claude codex gemini opencode droid
 8. 默认采用静默后台通信：任务下发/回传不打扰 CLI 输入区；可通过命令查看状态和输出
 9. `debug` 开启时会自动创建一个日志 pane（位于编排者 pane 上方），默认跟踪首个执行者并持续 `watch --follow`，所有旁路日志仅在这个 debug pane 显示
 10. 默认启用 `orchestrator strict mode`：当存在执行者时，编排者 pane 会自动收到“只做思考/委派”的 guardrail；执行者完成后，若 `caller` 指向编排者，会自动把最终结果后台回注给编排者 pane
-11. 可选开关：
+11. `debug` 不是粘滞状态：上一次即使开过 debug，这一次若未显式指定 `--debug` 或 `RCCB_DEBUG=1`，也不会自动拉起 debug pane
+12. 可选开关：
    - `RCCB_WATCH_MAX_LOG_LINES=<N>`：`watch` 每次刷新最多展示 N 行日志（默认 10，避免刷屏）
    - `RCCB_CODEX_PANE_EXEC=0`：关闭 codex 的 pane 执行（默认开启；无 pane 时自动回退后台 native）
    - `RCCB_GEMINI_PANE_EXEC=0`：关闭 gemini 的 pane 执行（默认开启；无 pane 时自动回退后台 native）

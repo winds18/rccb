@@ -931,7 +931,7 @@ pub fn cmd_start(
     } else {
         normalize_provider_list(&providers)?
     };
-    let effective_debug = resolve_start_debug(project_dir, instance, debug.then_some(true));
+    let effective_debug = resolve_start_debug(debug.then_some(true).or_else(env_debug_override));
     let _ = ensure_project_bootstrap(
         project_dir,
         if effective_debug {
@@ -978,7 +978,7 @@ pub fn cmd_external_provider_launch(project_dir: &Path, raw: Vec<String>) -> Res
     if normalized.is_empty() {
         bail!("至少需要一个 provider");
     }
-    let effective_debug = resolve_start_debug(project_dir, "default", env_debug_override());
+    let effective_debug = resolve_start_debug(env_debug_override());
     let _ = ensure_project_bootstrap(
         project_dir,
         if effective_debug {
@@ -1056,7 +1056,7 @@ fn cmd_legacy_ask_alias(
     ensure_default_daemon_running(
         project_dir,
         &provider_vec,
-        resolve_start_debug(project_dir, "default", None),
+        resolve_start_debug(env_debug_override()),
     )?;
 
     cmd_ask(
@@ -1078,7 +1078,7 @@ fn cmd_legacy_ping_alias(project_dir: &Path, provider: &str) -> Result<()> {
     ensure_default_daemon_running(
         project_dir,
         &provider_vec,
-        resolve_start_debug(project_dir, "default", None),
+        resolve_start_debug(env_debug_override()),
     )?;
     cmd_ping(project_dir, "default", 1.0)?;
     println!("provider={} 已就绪", provider);
@@ -1527,10 +1527,6 @@ fn spawn_tmux_pane(
         &provider_cmd,
         &format!("RCCB-{}", provider),
     )?;
-    println!(
-        "已拉起 provider CLI：provider={} backend=tmux pane={}",
-        provider, pane_id
-    );
     Ok(pane_id)
 }
 
@@ -1609,10 +1605,6 @@ fn spawn_wezterm_pane(
     let provider_cmd = provider_start_cmd(project_dir, instance, provider);
     let pane_id =
         spawn_wezterm_custom_pane(wezterm_bin, parent, direction_flag, percent, &provider_cmd)?;
-    println!(
-        "已拉起 provider CLI：provider={} backend=wezterm pane={}",
-        provider, pane_id
-    );
     Ok(pane_id)
 }
 
@@ -1744,11 +1736,6 @@ fn maybe_spawn_debug_watch_pane(
             spawn_wezterm_custom_pane(bin, orchestrator_pane, "--top", pane_percent, &watch_cmd)?
         }
     };
-    println!(
-        "已拉起 debug 日志 pane：scope={} pane={}",
-        watch_provider.unwrap_or_else(|| "all".to_string()),
-        pane
-    );
     Ok(Some(pane))
 }
 
@@ -1887,7 +1874,6 @@ fn orchestrator_guardrail_prompt(orchestrator: &str, executors: &[String]) -> St
 
 fn run_orchestrator_foreground(project_dir: &Path, instance: &str, provider: &str) -> Result<i32> {
     let cmd = provider_start_cmd(project_dir, instance, provider);
-    println!("编排者进入前台：provider={}", provider);
     let status = ProcessCommand::new(resolve_shell_path())
         .arg("-lc")
         .arg(&cmd)
@@ -1913,11 +1899,7 @@ fn cleanup_after_orchestrator(
     }
 
     let _ = cmd_stop(project_dir, SHORTCUT_INSTANCE);
-    if let Ok(cleaned) = cleanup_inflight_tasks(project_dir, SHORTCUT_INSTANCE) {
-        if cleaned > 0 {
-            println!("编排者退出清理：已终止 {} 个未完成任务", cleaned);
-        }
-    }
+    let _ = cleanup_inflight_tasks(project_dir, SHORTCUT_INSTANCE);
     let _ = fs::remove_dir_all(tmp_instance_dir(project_dir, SHORTCUT_INSTANCE).join("launcher"));
     Ok(())
 }
@@ -4643,17 +4625,8 @@ fn send_shutdown(host: &str, port: u16, token: &str, timeout_s: f64) -> Result<(
     Ok(())
 }
 
-fn resolve_start_debug(project_dir: &Path, instance: &str, override_debug: Option<bool>) -> bool {
-    if let Some(v) = override_debug {
-        return v;
-    }
-    let existing_state = state_path(project_dir, instance);
-    if !existing_state.exists() {
-        return false;
-    }
-    load_state(&existing_state)
-        .map(|s| s.debug_enabled)
-        .unwrap_or(false)
+fn resolve_start_debug(override_debug: Option<bool>) -> bool {
+    override_debug.unwrap_or(false)
 }
 
 fn env_debug_override() -> Option<bool> {
@@ -4685,7 +4658,7 @@ mod tests {
         RCCB_MANAGED_END, RCCB_USER_BEGIN, RCCB_USER_END,
     };
     use crate::io_utils::{now_unix, now_unix_ms, update_task_status, write_json_pretty};
-    use crate::layout::{ensure_project_layout, state_path, tasks_instance_dir};
+    use crate::layout::{ensure_project_layout, tasks_instance_dir};
     use crate::types::{AskBusEvent, InstanceState};
 
     fn env_lock() -> &'static Mutex<()> {
@@ -4736,38 +4709,10 @@ mod tests {
     }
 
     #[test]
-    fn resolve_start_debug_prefers_explicit_override_over_state() {
-        let project = std::env::temp_dir().join(format!("rccb-debug-{}", now_unix_ms()));
-        ensure_project_layout(&project).expect("layout");
-        let state = InstanceState {
-            schema_version: 1,
-            instance_id: "default".to_string(),
-            project_dir: project.display().to_string(),
-            pid: 1,
-            status: "running".to_string(),
-            started_at_unix: 1,
-            last_heartbeat_unix: 1,
-            stopped_at_unix: None,
-            providers: vec!["claude".to_string()],
-            orchestrator: Some("claude".to_string()),
-            executors: Vec::new(),
-            session_file: None,
-            last_task_id: None,
-            daemon_host: None,
-            daemon_port: None,
-            daemon_token: None,
-            debug_enabled: true,
-        };
-        write_json_pretty(&state_path(&project, "default"), &state).expect("write state");
-
-        assert!(!super::resolve_start_debug(
-            &project,
-            "default",
-            Some(false)
-        ));
-        assert!(super::resolve_start_debug(&project, "default", None));
-
-        let _ = fs::remove_dir_all(project);
+    fn resolve_start_debug_defaults_off_without_explicit_override() {
+        assert!(!super::resolve_start_debug(None));
+        assert!(super::resolve_start_debug(Some(true)));
+        assert!(!super::resolve_start_debug(Some(false)));
     }
 
     #[test]
