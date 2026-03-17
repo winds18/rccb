@@ -1569,6 +1569,10 @@ struct TaskView {
     exit_code: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     reply: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    request_file: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reply_file: Option<String>,
 }
 
 pub fn cmd_tasks(
@@ -1686,6 +1690,9 @@ fn load_tasks_from_dir(dir: &Path, instance: &str) -> Result<Vec<TaskView>> {
                     .unwrap_or("unknown")
                     .to_string()
             });
+        let request_file = artifact_path_from_value(&v, "request_file");
+        let reply_file = artifact_path_from_value(&v, "reply_file");
+        let reply = resolve_task_reply(&v, reply_file.as_deref());
 
         out.push(TaskView {
             instance: instance.to_string(),
@@ -1710,10 +1717,9 @@ fn load_tasks_from_dir(dir: &Path, instance: &str) -> Result<Vec<TaskView>> {
                 .get("exit_code")
                 .and_then(|x| x.as_i64())
                 .map(|x| x as i32),
-            reply: v
-                .get("reply")
-                .and_then(|x| x.as_str())
-                .map(|s| s.to_string()),
+            reply,
+            request_file,
+            reply_file,
         });
     }
     Ok(out)
@@ -2718,6 +2724,8 @@ fn load_task_by_req_id(
                     .unwrap_or("unknown")
                     .to_string()
             });
+        let request_file = artifact_path_from_value(&v, "request_file");
+        let reply_file = artifact_path_from_value(&v, "reply_file");
         return Ok(Some(TaskView {
             instance: instance.to_string(),
             task_id,
@@ -2741,10 +2749,9 @@ fn load_task_by_req_id(
                 .get("exit_code")
                 .and_then(|x| x.as_i64())
                 .map(|x| x as i32),
-            reply: v
-                .get("reply")
-                .and_then(|x| x.as_str())
-                .map(|s| s.to_string()),
+            reply: resolve_task_reply(&v, reply_file.as_deref()),
+            request_file,
+            reply_file,
         }));
     }
 
@@ -2755,6 +2762,24 @@ fn load_task_by_req_id(
     }
 
     Ok(None)
+}
+
+fn artifact_path_from_value(v: &Value, key: &str) -> Option<String> {
+    v.get("artifacts")
+        .and_then(|x| x.get(key))
+        .and_then(|x| x.as_str())
+        .map(|s| s.to_string())
+}
+
+fn resolve_task_reply(v: &Value, reply_file: Option<&str>) -> Option<String> {
+    if let Some(path) = reply_file.map(str::trim).filter(|p| !p.is_empty()) {
+        if let Ok(reply) = fs::read_to_string(path) {
+            return Some(reply);
+        }
+    }
+    v.get("reply")
+        .and_then(|x| x.as_str())
+        .map(|s| s.to_string())
 }
 
 fn select_watch_req_for_provider(
@@ -3418,12 +3443,26 @@ pub fn cmd_ask(
     });
 
     if stream {
-        return cmd_ask_stream(&host, port, req, timeout_s.max(1.0) + 10.0);
+        return cmd_ask_stream(
+            project_dir,
+            instance,
+            &host,
+            port,
+            req,
+            timeout_s.max(1.0) + 10.0,
+        );
     }
 
     let resp = send_wire_message(&host, port, req, timeout_s.max(1.0) + 5.0)?;
     let parsed: AskResponse =
         serde_json::from_value(resp).context("invalid ask.response payload")?;
+    let parsed_reply = resolve_response_reply(
+        project_dir,
+        instance,
+        parsed.req_id.as_deref(),
+        parsed.meta.as_ref(),
+        &parsed.reply,
+    )?;
 
     if parsed.exit_code == 0 {
         if async_submit {
@@ -3446,8 +3485,8 @@ pub fn cmd_ask(
         if should_suppress_sync_reply_for_orchestrator(&state, &provider, caller) {
             return Ok(());
         }
-        if !parsed.reply.is_empty() {
-            println!("{}", parsed.reply);
+        if !parsed_reply.is_empty() {
+            println!("{}", parsed_reply);
         }
         return Ok(());
     }
@@ -3455,7 +3494,7 @@ pub fn cmd_ask(
     bail!(
         "ask failed: exit_code={} reply={} req_id={}",
         parsed.exit_code,
-        parsed.reply,
+        parsed_reply,
         parsed.req_id.unwrap_or_else(|| "-".to_string())
     )
 }
@@ -3493,7 +3532,43 @@ fn should_suppress_sync_reply_for_orchestrator(
         .any(|executor| executor.trim().eq_ignore_ascii_case(&provider))
 }
 
-fn cmd_ask_stream(host: &str, port: u16, req: Value, timeout_s: f64) -> Result<()> {
+fn resolve_response_reply(
+    project_dir: &Path,
+    instance: &str,
+    req_id: Option<&str>,
+    meta: Option<&Value>,
+    inline_reply: &str,
+) -> Result<String> {
+    if let Some(path) = meta
+        .and_then(|v| v.get("reply_file"))
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+    {
+        if let Ok(reply) = fs::read_to_string(path) {
+            return Ok(reply);
+        }
+    }
+
+    if let Some(req_id) = req_id.filter(|v| !v.trim().is_empty()) {
+        if let Some(task) = load_task_by_req_id(project_dir, instance, req_id)? {
+            if let Some(reply) = task.reply {
+                return Ok(reply);
+            }
+        }
+    }
+
+    Ok(inline_reply.to_string())
+}
+
+fn cmd_ask_stream(
+    project_dir: &Path,
+    instance: &str,
+    host: &str,
+    port: u16,
+    req: Value,
+    timeout_s: f64,
+) -> Result<()> {
     let mut reader = connect_and_send(host, port, req, timeout_s)?;
     let mut line = String::new();
     let mut saw_done = false;
@@ -3531,7 +3606,14 @@ fn cmd_ask_stream(host: &str, port: u16, req: Value, timeout_s: f64) -> Result<(
                 }
                 "done" => {
                     let exit_code = event.exit_code.unwrap_or(0);
-                    let done_reply = event.reply.clone().unwrap_or_default();
+                    let done_reply = resolve_response_reply(
+                        project_dir,
+                        instance,
+                        event.req_id.as_deref(),
+                        event.meta.as_ref(),
+                        event.reply.as_deref().unwrap_or_default(),
+                    )
+                    .unwrap_or_else(|_| event.reply.clone().unwrap_or_default());
                     if !saw_delta {
                         if !done_reply.is_empty() {
                             print!("{}", done_reply);
@@ -3571,16 +3653,24 @@ fn cmd_ask_stream(host: &str, port: u16, req: Value, timeout_s: f64) -> Result<(
         if msg_type == format!("{}.response", PROTOCOL_PREFIX) {
             let parsed: AskResponse =
                 serde_json::from_value(value).context("invalid fallback ask.response")?;
+            let parsed_reply = resolve_response_reply(
+                project_dir,
+                instance,
+                parsed.req_id.as_deref(),
+                parsed.meta.as_ref(),
+                &parsed.reply,
+            )
+            .unwrap_or_else(|_| parsed.reply.clone());
             if parsed.exit_code == 0 {
-                if !parsed.reply.is_empty() {
-                    println!("{}", parsed.reply);
+                if !parsed_reply.is_empty() {
+                    println!("{}", parsed_reply);
                 }
                 return Ok(());
             }
             bail!(
                 "ask failed: exit_code={} reply={} req_id={}",
                 parsed.exit_code,
-                parsed.reply,
+                parsed_reply,
                 parsed.req_id.unwrap_or_else(|| "-".to_string())
             );
         }

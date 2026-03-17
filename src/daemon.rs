@@ -1447,6 +1447,8 @@ fn worker_loop(
                 "effective_timeout_s": exec.effective_timeout_s,
                 "effective_quiet": exec.effective_quiet,
                 "log_path": provider_log.display().to_string(),
+                "request_file": request_artifact.display().to_string(),
+                "reply_file": reply_artifact_str,
                 "stderr": exec.stderr,
             })),
         };
@@ -1815,6 +1817,7 @@ fn relay_task_completed(
     } else {
         None
     };
+    let reply_file = task_reply_artifact_path(&context.project_dir, &context.instance_id, req_id);
     let entry = json!({
         "ts_unix": now_unix(),
         "kind": "result",
@@ -1826,6 +1829,7 @@ fn relay_task_completed(
         "status": status,
         "exit_code": exit_code,
         "reply": reply,
+        "reply_file": reply_file.display().to_string(),
     });
     dispatch_orchestrator_notice_async(
         context,
