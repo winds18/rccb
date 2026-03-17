@@ -20,8 +20,8 @@ use crate::io_utils::{
     normalize_provider_list, now_unix, read_stdin_all, update_task_status, write_json_pretty,
 };
 use crate::layout::{
-    ensure_project_layout, launcher_feed_dir, launcher_feed_path, launcher_meta_path,
-    lock_path, logs_instance_dir, rccb_dir, sanitize_filename, session_instance_dir, state_path,
+    ensure_project_layout, launcher_feed_dir, launcher_feed_path, launcher_meta_path, lock_path,
+    logs_instance_dir, rccb_dir, sanitize_filename, session_instance_dir, state_path,
     tasks_instance_dir, tasks_root_dir, tmp_instance_dir,
 };
 use crate::protocol::{connect_and_send, send_wire_message};
@@ -1876,7 +1876,9 @@ fn ensure_orchestrator_focus(backend: &LaunchBackend, pane_id: &str) {
     };
 
     if let Err(err) = result {
-        eprintln!("警告：无法聚焦编排者 pane={} err={}", pane, err);
+        if !is_ignorable_pane_command_error(&err) {
+            eprintln!("警告：无法聚焦编排者 pane={} err={}", pane, err);
+        }
     }
 }
 
@@ -2341,10 +2343,11 @@ fn cleanup_after_orchestrator(
     for pane in spawned_panes.iter().rev() {
         match backend {
             LaunchBackend::Tmux { .. } => {
-                let _ = run_simple("tmux", &["kill-pane", "-t", pane]);
+                let _ = run_simple_quiet_if_missing_pane("tmux", &["kill-pane", "-t", pane]);
             }
             LaunchBackend::Wezterm { bin, .. } => {
-                let _ = run_simple(bin, &["cli", "kill-pane", "--pane-id", pane]);
+                let _ =
+                    run_simple_quiet_if_missing_pane(bin, &["cli", "kill-pane", "--pane-id", pane]);
             }
         }
     }
@@ -2729,11 +2732,46 @@ fn run_capture(bin: &str, args: &[&str], err_ctx: &str) -> Result<String> {
 }
 
 fn run_simple(bin: &str, args: &[&str]) -> Result<()> {
-    let status = ProcessCommand::new(bin).args(args).status()?;
-    if status.success() {
+    let out = ProcessCommand::new(bin)
+        .args(args)
+        .output()
+        .with_context(|| format!("run command failed: {} {:?}", bin, args))?;
+    if out.status.success() {
         return Ok(());
     }
-    bail!("command failed: {} {:?} status={}", bin, args, status);
+    let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+    let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    bail!(
+        "command failed: {} {:?} status={} stdout=`{}` stderr=`{}`",
+        bin,
+        args,
+        out.status,
+        stdout,
+        stderr
+    );
+}
+
+fn run_simple_quiet_if_missing_pane(bin: &str, args: &[&str]) -> Result<()> {
+    match run_simple(bin, args) {
+        Ok(()) => Ok(()),
+        Err(err) if is_ignorable_pane_command_error(&err) => Ok(()),
+        Err(err) => Err(err),
+    }
+}
+
+fn is_ignorable_pane_command_error(err: &anyhow::Error) -> bool {
+    let text = err.to_string().to_ascii_lowercase();
+    [
+        "can't find pane",
+        "pane not found",
+        "no such pane",
+        "unknown pane",
+        "target window not found",
+        "can't find window",
+        "no such window",
+    ]
+    .iter()
+    .any(|needle| text.contains(needle))
 }
 
 pub fn cmd_status(project_dir: &Path, instance: Option<&str>, as_json: bool) -> Result<()> {
@@ -4845,8 +4883,8 @@ fn cleanup_launcher_bindings(project_dir: &Path, instance: &str) {
         else {
             continue;
         };
-        let _ = run_simple("tmux", &["pipe-pane", "-t", pane_id]);
-        let _ = run_simple("tmux", &["select-pane", "-t", pane_id, "-T", ""]);
+        let _ = run_simple_quiet_if_missing_pane("tmux", &["pipe-pane", "-t", pane_id]);
+        let _ = run_simple_quiet_if_missing_pane("tmux", &["select-pane", "-t", pane_id, "-T", ""]);
     }
 }
 
@@ -5423,15 +5461,15 @@ mod tests {
 
     use super::{
         build_debug_watch_command, cleanup_inflight_tasks, cleanup_instance_runtime,
-        compact_watch_line,
-        debug_watch_pane_percent, ensure_project_bootstrap, ensure_project_rule_bootstrap,
-        is_in_flight_status, is_terminal_bus_task_event, is_terminal_task_status,
-        load_orchestrator_inbox_entries, load_task_by_req_id, orchestrator_guardrail_prompt,
-        orchestrator_strict_mode_enabled, provider_start_cmd, render_project_bootstrap_content,
-        resolve_debug_watch_provider, resolve_shortcut_restore_providers,
-        select_watch_req_for_provider, select_watch_req_for_provider_follow, split_layout_groups,
-        split_percent_for_equal_stack, task_file_for_req_id, watch_bus_enabled, BootstrapMode,
-        RCCB_MANAGED_BEGIN, RCCB_MANAGED_END, RCCB_USER_BEGIN, RCCB_USER_END,
+        compact_watch_line, debug_watch_pane_percent, ensure_project_bootstrap,
+        ensure_project_rule_bootstrap, is_ignorable_pane_command_error, is_in_flight_status,
+        is_terminal_bus_task_event, is_terminal_task_status, load_orchestrator_inbox_entries,
+        load_task_by_req_id, orchestrator_guardrail_prompt, orchestrator_strict_mode_enabled,
+        provider_start_cmd, render_project_bootstrap_content, resolve_debug_watch_provider,
+        resolve_shortcut_restore_providers, run_simple, select_watch_req_for_provider,
+        select_watch_req_for_provider_follow, split_layout_groups, split_percent_for_equal_stack,
+        task_file_for_req_id, watch_bus_enabled, BootstrapMode, RCCB_MANAGED_BEGIN,
+        RCCB_MANAGED_END, RCCB_USER_BEGIN, RCCB_USER_END,
     };
     use crate::io_utils::{
         now_unix, now_unix_ms, update_task_status, write_json_pretty, write_state,
@@ -6127,6 +6165,29 @@ mod tests {
     fn compact_watch_line_strips_common_prefixes() {
         let line = compact_watch_line("[STREAM] req_id=req-1 hello world");
         assert_eq!(line, "req_id=req-1 hello world");
+    }
+
+    #[test]
+    fn run_simple_captures_command_output_in_error() {
+        let err = run_simple(
+            "/bin/sh",
+            &["-c", "echo pane-missing >&2; echo noisy-out; exit 7"],
+        )
+        .unwrap_err();
+        let text = err.to_string();
+        assert!(text.contains("status=exit status: 7"));
+        assert!(text.contains("stdout=`noisy-out`"));
+        assert!(text.contains("stderr=`pane-missing`"));
+    }
+
+    #[test]
+    fn pane_missing_errors_are_ignorable_during_cleanup() {
+        let err =
+            run_simple("/bin/sh", &["-c", "echo can't find pane: %47 >&2; exit 1"]).unwrap_err();
+        assert!(is_ignorable_pane_command_error(&err));
+
+        let err = run_simple("/bin/sh", &["-c", "echo fatal boom >&2; exit 1"]).unwrap_err();
+        assert!(!is_ignorable_pane_command_error(&err));
     }
 
     #[test]
