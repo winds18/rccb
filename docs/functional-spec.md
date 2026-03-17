@@ -25,6 +25,11 @@
 - `tmp/`: provider 临时目录
 - `logs/`: daemon/provider 日志
 
+保洁策略：
+
+1. 流程型临时目录在流程结束后优先清理
+2. `.rccb/` 下超过 30 天未更新的旧文件会在后续命令启动时自动清理
+
 ## 3. 编排模型
 
 输入 providers（如 `claude codex gemini opencode droid`）：

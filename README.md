@@ -331,6 +331,11 @@ export RCCB_EXEC_MODE=stub
 - `./.rccb/tmp/`：provider 临时目录
 - `./.rccb/logs/`：daemon/provider 日志
 
+清理规则：
+
+- 运行时临时目录会在对应流程结束后优先清理
+- `./.rccb/` 下超过 30 天未更新的旧文件会在后续命令启动时自动清理
+
 ## IM 通道
 
 ```bash

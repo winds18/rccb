@@ -11,7 +11,7 @@ use serde_json::Value;
 use sysinfo::{Pid, System};
 
 use crate::constants::SUPPORTED_PROVIDERS;
-use crate::layout::run_dir;
+use crate::layout::{rccb_dir, run_dir};
 use crate::types::InstanceState;
 
 static REQ_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -121,6 +121,78 @@ pub fn now_unix_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_else(|_| Duration::from_secs(0))
         .as_millis() as u64
+}
+
+pub fn cleanup_project_retention(project_dir: &Path) -> Result<usize> {
+    let root = rccb_dir(project_dir);
+    if !root.exists() {
+        return Ok(0);
+    }
+
+    let retention = retention_duration();
+    cleanup_old_entries(&root, retention, true)
+}
+
+fn retention_duration() -> Duration {
+    let days = std::env::var("RCCB_RETENTION_DAYS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(30)
+        .clamp(1, 365);
+    Duration::from_secs(days * 24 * 3600)
+}
+
+fn cleanup_old_entries(path: &Path, retention: Duration, is_root: bool) -> Result<usize> {
+    if !path.exists() {
+        return Ok(0);
+    }
+
+    let mut removed = 0usize;
+    for entry in fs::read_dir(path)? {
+        let entry = entry?;
+        let child = entry.path();
+        let file_type = match entry.file_type() {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        if file_type.is_dir() {
+            removed += cleanup_old_entries(&child, retention, false)?;
+            if !is_root && dir_is_empty(&child)? && is_path_expired(&child, retention) {
+                fs::remove_dir(&child)?;
+                removed += 1;
+            }
+            continue;
+        }
+
+        if !file_type.is_file() {
+            continue;
+        }
+
+        if is_path_expired(&child, retention) {
+            fs::remove_file(&child)?;
+            removed += 1;
+        }
+    }
+
+    Ok(removed)
+}
+
+fn dir_is_empty(path: &Path) -> Result<bool> {
+    Ok(fs::read_dir(path)?.next().is_none())
+}
+
+fn is_path_expired(path: &Path, retention: Duration) -> bool {
+    let Ok(meta) = fs::metadata(path) else {
+        return false;
+    };
+    let Ok(modified) = meta.modified() else {
+        return false;
+    };
+    let Ok(age) = SystemTime::now().duration_since(modified) else {
+        return false;
+    };
+    age >= retention
 }
 
 pub fn is_process_alive(pid: u32) -> bool {

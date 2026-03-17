@@ -19,13 +19,16 @@ use crate::commands::{
     cmd_ask, cmd_cancel, cmd_debug, cmd_external_provider_launch, cmd_init, cmd_mounted, cmd_ping,
     cmd_send, cmd_start, cmd_status, cmd_stop, cmd_tasks, cmd_watch,
 };
-use crate::io_utils::resolve_project_dir;
+use crate::io_utils::{cleanup_project_retention, resolve_project_dir};
 use crate::orchestrator_callback::cmd_orchestrator_notify;
 use crate::provider::cmd_pane_feed;
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let project_dir = resolve_project_dir(&cli.project_dir)?;
+    if let Err(err) = cleanup_project_retention(&project_dir) {
+        eprintln!("warn: skip .rccb retention cleanup: {}", err);
+    }
 
     match cli.command {
         Command::Init { force } => cmd_init(&project_dir, force),
