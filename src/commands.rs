@@ -190,38 +190,48 @@ fn build_provider_wrapper_script(provider: &str) -> Result<String> {
         "claude" => {
             r#"#!/usr/bin/env zsh
 set -euo pipefail
+project_root="${RCCB_PROJECT_DIR:-$PWD}"
+cd "$project_root"
 agent="${RCCB_PROVIDER_AGENT:-}"
 if [[ -n "$agent" ]]; then
-  exec claude --agent "$agent" "$@"
+  exec claude --setting-sources user,project,local --agent "$agent" "$@"
 fi
-exec claude "$@"
+exec claude --setting-sources user,project,local "$@"
 "#
         }
         "opencode" => {
             r#"#!/usr/bin/env zsh
 set -euo pipefail
+project_root="${RCCB_PROJECT_DIR:-$PWD}"
+cd "$project_root"
 agent="${RCCB_PROVIDER_AGENT:-}"
 if [[ -n "$agent" ]]; then
-  exec opencode --agent "$agent" "$@"
+  exec opencode "$project_root" --agent "$agent" "$@"
 fi
-exec opencode "$@"
+exec opencode "$project_root" "$@"
 "#
         }
         "codex" => {
             r#"#!/usr/bin/env zsh
 set -euo pipefail
-exec codex "$@"
+project_root="${RCCB_PROJECT_DIR:-$PWD}"
+cd "$project_root"
+exec codex --cd "$project_root" "$@"
 "#
         }
         "gemini" => {
             r#"#!/usr/bin/env zsh
 set -euo pipefail
+project_root="${RCCB_PROJECT_DIR:-$PWD}"
+cd "$project_root"
 exec gemini "$@"
 "#
         }
         "droid" => {
             r#"#!/usr/bin/env zsh
 set -euo pipefail
+project_root="${RCCB_PROJECT_DIR:-$PWD}"
+cd "$project_root"
 exec droid "$@"
 "#
         }
@@ -2031,7 +2041,10 @@ fn provider_start_cmd(project_dir: &Path, instance: &str, provider: &str) -> Str
     let specialty = default_provider_specialty(provider, role.as_deref());
     let agent = default_provider_agent(provider, role.as_deref());
 
-    let mut prefixes = Vec::new();
+    let mut prefixes = vec![format!(
+        "RCCB_PROJECT_DIR={}",
+        shell_quote(&project_dir.display().to_string())
+    )];
     if let Some(role) = role.as_deref().filter(|v| !v.trim().is_empty()) {
         prefixes.push(format!("RCCB_PROVIDER_ROLE={}", shell_quote(role)));
     }
@@ -2045,11 +2058,12 @@ fn provider_start_cmd(project_dir: &Path, instance: &str, provider: &str) -> Str
         prefixes.push(format!("RCCB_PROVIDER_AGENT={}", shell_quote(agent)));
     }
 
-    if prefixes.is_empty() {
+    format!(
+        "cd {} && {} {}",
+        shell_quote(&project_dir.display().to_string()),
+        prefixes.join(" "),
         raw
-    } else {
-        format!("{} {}", prefixes.join(" "), raw)
-    }
+    )
 }
 
 fn provider_raw_start_cmd(project_dir: &Path, provider: &str) -> String {
