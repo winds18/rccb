@@ -591,7 +591,8 @@ fn build_rule_file_specs(project_dir: &Path, providers: &[String]) -> Vec<RuleFi
                     "实现优先派给 opencode，调研优先派给 gemini，文档优先派给 droid，审计优先派给 codex。",
                     "涉及外部事实时，先让 gemini 做至少两轮调研，再让 codex 复核关键结论。",
                     "当任务可拆分、希望并行推进或不想污染主上下文时，优先调用 Claude 子代理 `delegate-coder` / `delegate-researcher` / `delegate-auditor` / `delegate-scribe`。",
-                    "这些子代理默认通过 `rccb ask --async` 派单，只回报 req_id、watch 命令和 `.reply.md` 路径。",
+                    "这些子代理默认通过 `RCCB_ASK_ASYNC_STDOUT=minimal rccb ask --async` 安静派单，只做最小确认。",
+                    "长任务前台最多确认一次“已委派，等待后台结果”，不要循环播报等待、检查或重复贴 watch 命令。",
                 ],
             ),
             kind: RuleFileKind::PlainMarkdown,
@@ -772,9 +773,10 @@ fn build_rule_file_specs(project_dir: &Path, providers: &[String]) -> Vec<RuleFi
                 "当任务可拆成多个相互独立的子任务，或你不想让主编排者上下文被执行细节污染时，优先调用 Claude 子代理做并行派单。\n\
 可用子代理按职责包括：`delegate-coder`、`delegate-researcher`、`delegate-auditor`、`delegate-scribe`。\n\n\
 要求：\n\
-1. 让每个子代理只负责整理任务并执行 `rccb --project-dir . ask --instance default --provider <执行者> --caller claude --async ...`\n\
-2. 让每个子代理只返回 `req_id`、目标执行者、`watch` 命令和 `.reply.md` 路径。\n\
-3. 主编排者自己只负责拆解、追踪、验收和汇总，不要亲自执行 bash。\n\n\
+1. 让每个子代理只负责整理任务并执行 `RCCB_ASK_ASYNC_STDOUT=minimal rccb --project-dir . ask --instance default --provider <执行者> --caller claude --async ...`\n\
+2. 让每个子代理只返回 `req_id`、目标执行者和最小提交确认；除非用户要求，不要主动回贴 `watch` 命令。\n\
+3. 主编排者自己只负责拆解、追踪、验收和汇总，不要亲自执行 bash。\n\
+4. 长任务期间，主编排者前台最多确认一次“已委派，等待后台结果”，后续状态走后台 inbox / `watch`。\n\n\
 任务内容：$ARGUMENTS",
             ),
             kind: RuleFileKind::PlainMarkdown,
@@ -1039,7 +1041,8 @@ rccb --project-dir . ask --instance default --provider <执行者> --caller clau
 ```\n\n\
 ## 并行派单建议\n\
 - 当任务可拆分、会明显占用主上下文，或你希望多个执行者并行推进时，优先用 Claude 子代理派单。\n\
-- 子代理默认使用 `--async` 派单，只返回 `req_id`、目标执行者、`watch` 命令和 `.reply.md` 路径。\n\
+- 子代理默认使用 `RCCB_ASK_ASYNC_STDOUT=minimal` + `--async` 派单，只做最小提交确认。\n\
+- 长任务前台最多确认一次“已委派，等待后台结果”，不要循环播报等待、检查或重复贴 `watch` 命令。\n\
 - 主编排者只负责追踪、验收和汇总，不要把执行细节重新塞回主上下文。\n\n\
 ## 查看真实状态\n\
 - 若请求超时或你不确定执行者是否仍在运行，优先执行：\n\
@@ -1333,6 +1336,13 @@ fn build_claude_agent_markdown(name: &str, summary: &str, bullets: &[&str]) -> S
         .map(|line| format!("- {line}"))
         .collect::<Vec<_>>()
         .join("\n");
+    let quiet_panel_rules = if name == "orchestrator" {
+        "\n- 长任务前台最多确认一次“已委派，等待后台结果”。\n- 后续状态默认走后台 inbox / `.reply.md` / `watch`，不要循环播报等待、检查或重复贴命令。\
+\n- 如果只是提交成功，不要把一长段 watch 建议刷回主 pane。\
+\n"
+    } else {
+        ""
+    };
     format!(
         "---\n\
 name: {name}\n\
@@ -1340,7 +1350,7 @@ description: {summary}\n\
 ---\n\n\
 # {}\n\n\
 {summary}\n\n\
-{details}\n",
+{details}{quiet_panel_rules}\n",
         localized_agent_title(name)
     )
 }
@@ -1371,12 +1381,13 @@ description: {summary}\n\
 \n\
 ## 标准派单命令\n\
 ```bash\n\
-rccb --project-dir . ask --instance default --provider {provider} --caller claude --async \"<任务>\"\n\
+RCCB_ASK_ASYNC_STDOUT=minimal rccb --project-dir . ask --instance default --provider {provider} --caller claude --async \"<任务>\"\n\
 ```\n\n\
 ## 返回格式\n\
 - 必须返回：`provider={provider}`、`req_id=<req_id>`、`status=submitted`\n\
-- 同时返回建议跟踪命令：`rccb --project-dir . watch --instance default --req-id <req_id> --follow --with-provider-log --timeout-s 0 --pane-ui`\n\
-- 同时提醒主编排者最终结果优先查看：`.rccb/tasks/default/artifacts/<req_id>.reply.md`\n\
+- 默认不要主动回贴 `watch` 命令；只有用户明确要求查看状态，或任务超时/异常时再给出。\n\
+- 默认不要反复播报“仍在等待”或“我再检查一下”；提交成功后就安静退出，让主编排者继续编排。\n\
+- 如有真实文件交付，可额外返回实际交付路径；最终结果通信工件仍优先看 `.rccb/tasks/default/artifacts/<req_id>.reply.md`\n\
 - 如果命令失败，要如实说明失败原因，不要伪造 req_id。\n\
 \n\
 ## 附加约束\n\
@@ -2519,7 +2530,7 @@ fn orchestrator_guardrail_prompt(
     render_project_bootstrap_content(
         project_dir,
         &format!(
-        "RCCB 编排模式已启用。\n\n当前编排者：{orchestrator}\n可用执行者：{executor_list}\n\n只做：规划、拆解、委派、验收、汇总。\n不要自己执行 bash、修改文件或运行测试。\n\n默认分工：opencode=编码，gemini=调研，droid=文档，codex=审计。\n调研规则：先 gemini 至少两轮调研，再 codex 复核关键结论。\n\n如果你当前是 Claude，并且任务可拆分、希望并行推进或不想污染主上下文，优先调用 Claude 子代理 `delegate-coder` / `delegate-researcher` / `delegate-auditor` / `delegate-scribe`。\n子代理默认使用异步派单：\n`rccb --project-dir . ask --instance default --provider <执行者> --caller {orchestrator} --async \"<任务>\"`\n主编排者只接收 `req_id`、watch 命令与 `.reply.md` 路径，然后继续编排。\n\n如果不走子代理，标准委派格式仍然是：\n`rccb --project-dir . ask --instance default --provider <执行者> --caller {orchestrator} \"<任务>\"`\n\n结果默认走后台 inbox 和 `.reply.md`，不会刷屏。\n若 ask 超时，先用 `watch --req-id` 看真实状态，不要立刻重派。\n详细规则见 `AGENTS.md` 与 `CLAUDE.md`。"
+        "RCCB 编排模式已启用。\n\n当前编排者：{orchestrator}\n可用执行者：{executor_list}\n\n只做：规划、拆解、委派、验收、汇总。\n不要自己执行 bash、修改文件或运行测试。\n\n默认分工：opencode=编码，gemini=调研，droid=文档，codex=审计。\n调研规则：先 gemini 至少两轮调研，再 codex 复核关键结论。\n\n如果你当前是 Claude，并且任务可拆分、希望并行推进或不想污染主上下文，优先调用 Claude 子代理 `delegate-coder` / `delegate-researcher` / `delegate-auditor` / `delegate-scribe`。\n子代理默认使用安静异步派单：\n`RCCB_ASK_ASYNC_STDOUT=minimal rccb --project-dir . ask --instance default --provider <执行者> --caller {orchestrator} --async \"<任务>\"`\n主编排者只接收最少的提交确认，然后改为后台等待 inbox / `.reply.md` / `watch`。\n\n长任务前台规则：\n- 最多只确认一次“已委派，等待后台结果”。\n- 不要循环播报“继续等待”“我再检查一下”“任务仍在执行”。\n- 除非用户明确要求或任务真的超时，否则不要反复把 `watch` 命令贴回 pane。\n\n如果不走子代理，标准委派格式仍然是：\n`rccb --project-dir . ask --instance default --provider <执行者> --caller {orchestrator} \"<任务>\"`\n\n结果默认走后台 inbox 和 `.reply.md`，不会刷屏。\n若 ask 超时，先用 `watch --req-id` 看真实状态，不要立刻重派。\n详细规则见 `AGENTS.md` 与 `CLAUDE.md`。"
         ),
     )
 }
@@ -3207,6 +3218,8 @@ struct TaskView {
     request_file: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     reply_file: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    delivery_file: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -3226,6 +3239,8 @@ struct InboxEntryView {
     reply: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     reply_file: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    delivery_file: Option<String>,
 }
 
 pub fn cmd_inbox(
@@ -3311,6 +3326,13 @@ pub fn cmd_inbox(
         if let Some(path) = item.reply_file.as_deref().filter(|v| !v.trim().is_empty()) {
             println!("  reply_file={}", path);
         }
+        if let Some(path) = item
+            .delivery_file
+            .as_deref()
+            .filter(|v| !v.trim().is_empty())
+        {
+            println!("  delivery_file={}", path);
+        }
     }
     Ok(())
 }
@@ -3369,6 +3391,12 @@ pub fn cmd_tasks(
                 .map(|v| v.to_string())
                 .unwrap_or_else(|| "-".to_string()),
         );
+        if let Some(path) = t.reply_file.as_deref().filter(|v| !v.trim().is_empty()) {
+            println!("  reply_file={}", path);
+        }
+        if let Some(path) = t.delivery_file.as_deref().filter(|v| !v.trim().is_empty()) {
+            println!("  delivery_file={}", path);
+        }
     }
 
     Ok(())
@@ -3488,6 +3516,10 @@ fn load_orchestrator_inbox_entries(
                 .get("reply_file")
                 .and_then(|x| x.as_str())
                 .map(|s| s.to_string()),
+            delivery_file: v
+                .get("delivery_file")
+                .and_then(|x| x.as_str())
+                .map(|s| s.to_string()),
         });
     }
     Ok(out)
@@ -3542,6 +3574,7 @@ fn load_tasks_from_dir(dir: &Path, instance: &str) -> Result<Vec<TaskView>> {
             });
         let request_file = artifact_path_from_value(&v, "request_file");
         let reply_file = artifact_path_from_value(&v, "reply_file");
+        let delivery_file = artifact_path_from_value(&v, "delivery_file");
         let reply = resolve_task_reply(&v, reply_file.as_deref());
 
         out.push(TaskView {
@@ -3570,6 +3603,7 @@ fn load_tasks_from_dir(dir: &Path, instance: &str) -> Result<Vec<TaskView>> {
             reply,
             request_file,
             reply_file,
+            delivery_file,
         });
     }
     Ok(out)
@@ -4576,6 +4610,7 @@ fn load_task_by_req_id(
             });
         let request_file = artifact_path_from_value(&v, "request_file");
         let reply_file = artifact_path_from_value(&v, "reply_file");
+        let delivery_file = artifact_path_from_value(&v, "delivery_file");
         return Ok(Some(TaskView {
             instance: instance.to_string(),
             task_id,
@@ -4602,6 +4637,7 @@ fn load_task_by_req_id(
             reply: resolve_task_reply(&v, reply_file.as_deref()),
             request_file,
             reply_file,
+            delivery_file,
         }));
     }
 
@@ -4764,6 +4800,17 @@ fn emit_watch_task(task: &TaskView, as_json: bool, pane_ui: bool) -> Result<()> 
         );
     }
     if is_terminal_task_status(&task.status) {
+        if let Some(path) = task
+            .delivery_file
+            .as_deref()
+            .filter(|v| !v.trim().is_empty())
+        {
+            if pane_ui {
+                println!("[delivery] {}", path);
+            } else {
+                println!("delivery_file: {}", path);
+            }
+        }
         if let Some(reply) = task.reply.as_deref() {
             if !reply.trim().is_empty() {
                 if pane_ui {
@@ -5379,17 +5426,28 @@ pub fn cmd_ask(
         if async_submit {
             let req_id_print = parsed.req_id.unwrap_or_else(|| "-".to_string());
             let provider_print = parsed.provider.unwrap_or_else(|| provider.to_string());
-            println!(
-                "已提交：req_id={} provider={} instance={}",
-                req_id_print, provider_print, instance
-            );
-            if req_id_print != "-" {
-                println!(
-                    "watch: rccb --project-dir {} watch --instance {} --req-id {} --with-provider-log",
-                    project_dir.display(),
-                    instance,
-                    req_id_print
-                );
+            match async_submit_stdout_mode() {
+                AsyncSubmitStdoutMode::Silent => {}
+                AsyncSubmitStdoutMode::Minimal => {
+                    println!(
+                        "status=submitted req_id={} provider={} instance={}",
+                        req_id_print, provider_print, instance
+                    );
+                }
+                AsyncSubmitStdoutMode::Full => {
+                    println!(
+                        "已提交：req_id={} provider={} instance={}",
+                        req_id_print, provider_print, instance
+                    );
+                    if req_id_print != "-" {
+                        println!(
+                            "watch: rccb --project-dir {} watch --instance {} --req-id {} --with-provider-log",
+                            project_dir.display(),
+                            instance,
+                            req_id_print
+                        );
+                    }
+                }
             }
             return Ok(());
         }
@@ -5408,6 +5466,22 @@ pub fn cmd_ask(
         parsed_reply,
         parsed.req_id.unwrap_or_else(|| "-".to_string())
     )
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AsyncSubmitStdoutMode {
+    Full,
+    Minimal,
+    Silent,
+}
+
+fn async_submit_stdout_mode() -> AsyncSubmitStdoutMode {
+    let raw = std::env::var("RCCB_ASK_ASYNC_STDOUT").unwrap_or_default();
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "minimal" | "brief" | "min" => AsyncSubmitStdoutMode::Minimal,
+        "silent" | "quiet" | "none" | "off" | "0" => AsyncSubmitStdoutMode::Silent,
+        _ => AsyncSubmitStdoutMode::Full,
+    }
 }
 
 fn should_suppress_sync_reply_for_orchestrator(
@@ -5659,16 +5733,17 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        build_debug_watch_command, cleanup_inflight_tasks, cleanup_instance_runtime,
-        compact_watch_line, debug_watch_pane_percent, ensure_project_bootstrap,
-        ensure_project_rule_bootstrap, is_ignorable_pane_command_error, is_in_flight_status,
-        is_terminal_bus_task_event, is_terminal_task_status, load_orchestrator_inbox_entries,
-        load_task_by_req_id, orchestrator_guardrail_prompt, orchestrator_strict_mode_enabled,
-        provider_start_cmd, render_project_bootstrap_content, resolve_debug_watch_provider,
-        resolve_shortcut_restore_providers, run_simple, select_watch_req_for_provider,
-        select_watch_req_for_provider_follow, split_layout_groups, split_percent_for_equal_stack,
-        task_file_for_req_id, watch_bus_enabled, BootstrapMode, RCCB_MANAGED_BEGIN,
-        RCCB_MANAGED_END, RCCB_USER_BEGIN, RCCB_USER_END,
+        async_submit_stdout_mode, build_debug_watch_command, cleanup_inflight_tasks,
+        cleanup_instance_runtime, compact_watch_line, debug_watch_pane_percent,
+        ensure_project_bootstrap, ensure_project_rule_bootstrap, is_ignorable_pane_command_error,
+        is_in_flight_status, is_terminal_bus_task_event, is_terminal_task_status,
+        load_orchestrator_inbox_entries, load_task_by_req_id, orchestrator_guardrail_prompt,
+        orchestrator_strict_mode_enabled, provider_start_cmd, render_project_bootstrap_content,
+        resolve_debug_watch_provider, resolve_shortcut_restore_providers, run_simple,
+        select_watch_req_for_provider, select_watch_req_for_provider_follow, split_layout_groups,
+        split_percent_for_equal_stack, task_file_for_req_id, watch_bus_enabled,
+        AsyncSubmitStdoutMode, BootstrapMode, RCCB_MANAGED_BEGIN, RCCB_MANAGED_END,
+        RCCB_USER_BEGIN, RCCB_USER_END,
     };
     use crate::io_utils::{
         now_unix, now_unix_ms, update_task_status, write_json_pretty, write_state,
@@ -5706,19 +5781,54 @@ mod tests {
     #[test]
     fn watch_bus_enabled_respects_env() {
         let _guard = env_lock().lock().expect("lock env");
-        std::env::remove_var("RCCB_WATCH_BUS");
+        unsafe {
+            std::env::remove_var("RCCB_WATCH_BUS");
+        }
         assert!(watch_bus_enabled());
 
-        std::env::set_var("RCCB_WATCH_BUS", "0");
+        unsafe {
+            std::env::set_var("RCCB_WATCH_BUS", "0");
+        }
         assert!(!watch_bus_enabled());
 
-        std::env::set_var("RCCB_WATCH_BUS", "false");
+        unsafe {
+            std::env::set_var("RCCB_WATCH_BUS", "false");
+        }
         assert!(!watch_bus_enabled());
 
-        std::env::set_var("RCCB_WATCH_BUS", "1");
+        unsafe {
+            std::env::set_var("RCCB_WATCH_BUS", "1");
+        }
         assert!(watch_bus_enabled());
 
-        std::env::remove_var("RCCB_WATCH_BUS");
+        unsafe {
+            std::env::remove_var("RCCB_WATCH_BUS");
+        }
+    }
+
+    #[test]
+    fn async_submit_stdout_mode_defaults_full() {
+        let _guard = env_lock().lock().expect("lock env");
+        unsafe {
+            std::env::remove_var("RCCB_ASK_ASYNC_STDOUT");
+        }
+        assert_eq!(async_submit_stdout_mode(), AsyncSubmitStdoutMode::Full);
+    }
+
+    #[test]
+    fn async_submit_stdout_mode_accepts_minimal_and_silent() {
+        let _guard = env_lock().lock().expect("lock env");
+        unsafe {
+            std::env::set_var("RCCB_ASK_ASYNC_STDOUT", "minimal");
+        }
+        assert_eq!(async_submit_stdout_mode(), AsyncSubmitStdoutMode::Minimal);
+        unsafe {
+            std::env::set_var("RCCB_ASK_ASYNC_STDOUT", "quiet");
+        }
+        assert_eq!(async_submit_stdout_mode(), AsyncSubmitStdoutMode::Silent);
+        unsafe {
+            std::env::remove_var("RCCB_ASK_ASYNC_STDOUT");
+        }
     }
 
     #[test]
@@ -6355,6 +6465,8 @@ mod tests {
         assert!(prompt.contains("再 codex 复核关键结论"));
         assert!(prompt.contains("delegate-coder"));
         assert!(prompt.contains("--async"));
+        assert!(prompt.contains("RCCB_ASK_ASYNC_STDOUT=minimal"));
+        assert!(prompt.contains("最多只确认一次"));
     }
 
     #[test]
@@ -6667,7 +6779,7 @@ mod tests {
             &inbox,
             concat!(
                 "{\"kind\":\"status\",\"req_id\":\"req-1\",\"executor\":\"gemini\",\"status\":\"running\",\"message\":\"still working\",\"ts_unix\":1}\n",
-                "{\"kind\":\"result\",\"req_id\":\"req-1\",\"executor\":\"gemini\",\"status\":\"completed\",\"exit_code\":0,\"reply\":\"done\",\"reply_file\":\"/tmp/reply.md\",\"ts_unix\":2}\n"
+                "{\"kind\":\"result\",\"req_id\":\"req-1\",\"executor\":\"gemini\",\"status\":\"completed\",\"exit_code\":0,\"reply\":\"done\",\"reply_file\":\"/tmp/reply.md\",\"delivery_file\":\"/tmp/final.md\",\"ts_unix\":2}\n"
             ),
         )
         .unwrap();
@@ -6678,6 +6790,7 @@ mod tests {
         assert_eq!(items[1].kind, "result");
         assert_eq!(items[1].reply.as_deref(), Some("done"));
         assert_eq!(items[1].reply_file.as_deref(), Some("/tmp/reply.md"));
+        assert_eq!(items[1].delivery_file.as_deref(), Some("/tmp/final.md"));
 
         let _ = fs::remove_dir_all(&project);
     }
