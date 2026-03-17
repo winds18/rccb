@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 
-use crate::layout::{launcher_feed_path, provider_request_file};
+use crate::layout::{launcher_feed_path, provider_request_file, task_request_artifact_path};
 use crate::types::AskRequest;
 
 const REQ_ID_PREFIX: &str = "RCCB_REQ_ID:";
@@ -300,7 +300,13 @@ fn materialize_task_message(req: &AskRequest, req_id: &str) -> Result<String> {
         PathBuf::from(existing)
     } else {
         let work_dir = resolve_cmd_path(req.work_dir.trim(), Path::new("."));
-        let request_file = provider_request_file(&work_dir, &req.provider, req_id);
+        let request_file = req
+            .instance_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(|instance| task_request_artifact_path(&work_dir, instance, req_id))
+            .unwrap_or_else(|| provider_request_file(&work_dir, &req.provider, req_id));
         let request_dir = request_file
             .parent()
             .map(Path::to_path_buf)
@@ -308,7 +314,7 @@ fn materialize_task_message(req: &AskRequest, req_id: &str) -> Result<String> {
         fs::create_dir_all(&request_dir)
             .with_context(|| format!("创建长任务临时目录失败：{}", request_dir.display()))?;
         fs::write(&request_file, req.message.as_bytes())
-            .with_context(|| format!("写入长任务临时文件失败：{}", request_file.display()))?;
+            .with_context(|| format!("写入长任务工件文件失败：{}", request_file.display()))?;
         request_file
     };
 
@@ -2337,6 +2343,7 @@ mod tests {
     use super::*;
     use crate::constants::{PROTOCOL_PREFIX, PROTOCOL_VERSION};
     use crate::io_utils::now_unix_ms;
+    use crate::layout::{provider_request_file, task_request_artifact_path};
     use crate::types::AskRequest;
 
     fn sample_request() -> AskRequest {
@@ -2383,6 +2390,48 @@ mod tests {
         assert!(RCCB_AUTOSTART_ENV_KEYS.contains(&"RCCB_OASKD_AUTOSTART"));
         assert!(RCCB_AUTOSTART_ENV_KEYS.contains(&"RCCB_LASKD_AUTOSTART"));
         assert!(RCCB_AUTOSTART_ENV_KEYS.contains(&"RCCB_DASKD_AUTOSTART"));
+    }
+
+    #[test]
+    fn materialize_task_message_prefers_task_artifact_path_when_instance_present() {
+        let project =
+            std::env::temp_dir().join(format!("rccb-provider-artifact-{}", now_unix_ms()));
+        let mut req = sample_request();
+        req.work_dir = project.display().to_string();
+        req.message = (1..=12)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        req.instance_id = Some("default".to_string());
+
+        let prompt = materialize_task_message(&req, "req-123").expect("materialize");
+        let expected = task_request_artifact_path(&project, "default", "req-123");
+        assert!(expected.exists());
+        assert_eq!(fs::read_to_string(&expected).unwrap(), req.message);
+        assert!(prompt.contains("任务要求较长"));
+        assert!(prompt.contains("req-123.request.md"));
+
+        let _ = fs::remove_dir_all(project);
+    }
+
+    #[test]
+    fn materialize_task_message_falls_back_to_provider_request_path_without_instance() {
+        let project =
+            std::env::temp_dir().join(format!("rccb-provider-fallback-{}", now_unix_ms()));
+        let mut req = sample_request();
+        req.work_dir = project.display().to_string();
+        req.message = (1..=12)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        req.instance_id = None;
+
+        let _ = materialize_task_message(&req, "req-456").expect("materialize");
+        let expected = provider_request_file(&project, "codex", "req-456");
+        assert!(expected.exists());
+        assert_eq!(fs::read_to_string(&expected).unwrap(), req.message);
+
+        let _ = fs::remove_dir_all(project);
     }
 
     #[test]
