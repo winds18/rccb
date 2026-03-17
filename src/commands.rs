@@ -1044,6 +1044,11 @@ rccb --project-dir . ask --instance default --provider <执行者> --caller clau
 - 子代理默认使用 `RCCB_ASK_ASYNC_STDOUT=minimal` + `--async` 派单，只做最小提交确认。\n\
 - 长任务前台最多确认一次“已委派，等待后台结果”，不要循环播报等待、检查或重复贴 `watch` 命令。\n\
 - 主编排者只负责追踪、验收和汇总，不要把执行细节重新塞回主上下文。\n\n\
+## 异步派单后的禁止行为\n\
+- 异步派单成功后，默认立即停止主动轮询，不要自己再执行 `Read`、`Bash`、`cat`、`sleep`、`watch --follow` 去追任务。\n\
+- 不要在主编排者会话里反复说“让我获取结果”“我再检查一下”“继续等待并监控”。\n\
+- 正常流程依赖 RCCB 后台结果回注；只有用户明确要求查状态，或任务真的超时/异常时，才允许手动查看 `watch`。\n\
+\n\
 ## 查看真实状态\n\
 - 若请求超时或你不确定执行者是否仍在运行，优先执行：\n\
 ```bash\n\
@@ -1387,6 +1392,7 @@ RCCB_ASK_ASYNC_STDOUT=minimal rccb --project-dir . ask --instance default --prov
 - 必须返回：`provider={provider}`、`req_id=<req_id>`、`status=submitted`\n\
 - 默认不要主动回贴 `watch` 命令；只有用户明确要求查看状态，或任务超时/异常时再给出。\n\
 - 默认不要反复播报“仍在等待”或“我再检查一下”；提交成功后就安静退出，让主编排者继续编排。\n\
+- 提交成功后，禁止自己再执行 `Read file`、`Bash sleep`、`cat .reply.md`、`watch --follow` 等主动轮询动作。\n\
 - 如有真实文件交付，可额外返回实际交付路径；最终结果通信工件仍优先看 `.rccb/tasks/default/artifacts/<req_id>.reply.md`\n\
 - 如果命令失败，要如实说明失败原因，不要伪造 req_id。\n\
 \n\
@@ -2530,7 +2536,7 @@ fn orchestrator_guardrail_prompt(
     render_project_bootstrap_content(
         project_dir,
         &format!(
-        "RCCB 编排模式已启用。\n\n当前编排者：{orchestrator}\n可用执行者：{executor_list}\n\n只做：规划、拆解、委派、验收、汇总。\n不要自己执行 bash、修改文件或运行测试。\n\n默认分工：opencode=编码，gemini=调研，droid=文档，codex=审计。\n调研规则：先 gemini 至少两轮调研，再 codex 复核关键结论。\n\n如果你当前是 Claude，并且任务可拆分、希望并行推进或不想污染主上下文，优先调用 Claude 子代理 `delegate-coder` / `delegate-researcher` / `delegate-auditor` / `delegate-scribe`。\n子代理默认使用安静异步派单：\n`RCCB_ASK_ASYNC_STDOUT=minimal rccb --project-dir . ask --instance default --provider <执行者> --caller {orchestrator} --async \"<任务>\"`\n主编排者只接收最少的提交确认，然后改为后台等待 inbox / `.reply.md` / `watch`。\n\n长任务前台规则：\n- 最多只确认一次“已委派，等待后台结果”。\n- 不要循环播报“继续等待”“我再检查一下”“任务仍在执行”。\n- 除非用户明确要求或任务真的超时，否则不要反复把 `watch` 命令贴回 pane。\n\n如果不走子代理，标准委派格式仍然是：\n`rccb --project-dir . ask --instance default --provider <执行者> --caller {orchestrator} \"<任务>\"`\n\n结果默认走后台 inbox 和 `.reply.md`，不会刷屏。\n若 ask 超时，先用 `watch --req-id` 看真实状态，不要立刻重派。\n详细规则见 `AGENTS.md` 与 `CLAUDE.md`。"
+        "RCCB 编排模式已启用。\n\n当前编排者：{orchestrator}\n可用执行者：{executor_list}\n\n只做：规划、拆解、委派、验收、汇总。\n不要自己执行 bash、修改文件或运行测试。\n\n默认分工：opencode=编码，gemini=调研，droid=文档，codex=审计。\n调研规则：先 gemini 至少两轮调研，再 codex 复核关键结论。\n\n如果你当前是 Claude，并且任务可拆分、希望并行推进或不想污染主上下文，优先调用 Claude 子代理 `delegate-coder` / `delegate-researcher` / `delegate-auditor` / `delegate-scribe`。\n子代理默认使用安静异步派单：\n`RCCB_ASK_ASYNC_STDOUT=minimal rccb --project-dir . ask --instance default --provider <执行者> --caller {orchestrator} --async \"<任务>\"`\n主编排者只接收最少的提交确认，然后改为后台等待 inbox / `.reply.md` / `watch`。\n\n长任务前台规则：\n- 最多只确认一次“已委派，等待后台结果”。\n- 不要循环播报“继续等待”“我再检查一下”“任务仍在执行”。\n- 禁止在异步派单成功后主动执行 `Read file`、`Bash sleep`、`cat .reply.md`、`watch --follow` 去轮询结果。\n- 正常流程依赖 RCCB_RESULT 后台回注；只有用户明确要求，或任务真的超时/异常时，才允许手动查看状态。\n\n如果不走子代理，标准委派格式仍然是：\n`rccb --project-dir . ask --instance default --provider <执行者> --caller {orchestrator} \"<任务>\"`\n\n结果默认走后台 inbox 和 `.reply.md`，不会刷屏。\n若 ask 超时，先用 `watch --req-id` 看真实状态，不要立刻重派。\n详细规则见 `AGENTS.md` 与 `CLAUDE.md`。"
         ),
     )
 }
@@ -6467,6 +6473,7 @@ mod tests {
         assert!(prompt.contains("--async"));
         assert!(prompt.contains("RCCB_ASK_ASYNC_STDOUT=minimal"));
         assert!(prompt.contains("最多只确认一次"));
+        assert!(prompt.contains("禁止在异步派单成功后主动执行"));
     }
 
     #[test]
