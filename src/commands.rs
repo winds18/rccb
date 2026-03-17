@@ -42,7 +42,8 @@ pub fn cmd_init(project_dir: &Path, force: bool) -> Result<()> {
     } else {
         BootstrapMode::MissingOnly
     };
-    let bootstrap = ensure_project_bootstrap(project_dir, mode)?;
+    let providers = bootstrap_providers_for_init(project_dir);
+    let bootstrap = ensure_project_bootstrap(project_dir, mode, &providers)?;
 
     println!("初始化完成：{}", rccb_dir(project_dir).display());
     println!("配置模板：{}", bootstrap.config_path.display());
@@ -61,12 +62,28 @@ pub fn cmd_init(project_dir: &Path, force: bool) -> Result<()> {
     Ok(())
 }
 
-fn write_native_profile_templates(project_dir: &Path, mode: BootstrapMode) -> Result<Vec<PathBuf>> {
+fn bootstrap_providers_for_init(project_dir: &Path) -> Vec<String> {
+    let installed = shortcut_installed_default_providers(project_dir);
+    if installed.is_empty() {
+        SHORTCUT_DEFAULT_PROVIDERS
+            .iter()
+            .map(|x| x.to_string())
+            .collect()
+    } else {
+        installed
+    }
+}
+
+fn write_native_profile_templates(
+    project_dir: &Path,
+    mode: BootstrapMode,
+    providers: &[String],
+) -> Result<Vec<PathBuf>> {
     let profile_dir = rccb_dir(project_dir).join("providers");
     fs::create_dir_all(&profile_dir)?;
 
     let mut written = Vec::new();
-    for provider in SUPPORTED_PROVIDERS {
+    for provider in providers {
         let path = profile_dir.join(format!("{}.example.json", provider));
         if path.exists() && matches!(mode, BootstrapMode::MissingOnly) {
             continue;
@@ -109,13 +126,14 @@ struct ProjectBootstrapSummary {
 fn ensure_project_bootstrap(
     project_dir: &Path,
     mode: BootstrapMode,
+    providers: &[String],
 ) -> Result<ProjectBootstrapSummary> {
     ensure_project_layout(project_dir)?;
-    let config_path = write_config_template(project_dir, mode)?;
-    let profile_templates = write_native_profile_templates(project_dir, mode)?;
-    let wrapper_scripts = write_provider_launch_wrappers(project_dir, mode)?;
-    let provider_support_files = write_provider_support_files(project_dir, mode)?;
-    let rule_templates = ensure_project_rule_bootstrap(project_dir, mode)?;
+    let config_path = write_config_template(project_dir, mode, providers)?;
+    let profile_templates = write_native_profile_templates(project_dir, mode, providers)?;
+    let wrapper_scripts = write_provider_launch_wrappers(project_dir, mode, providers)?;
+    let provider_support_files = write_provider_support_files(project_dir, mode, providers)?;
+    let rule_templates = ensure_project_rule_bootstrap(project_dir, mode, providers)?;
     Ok(ProjectBootstrapSummary {
         config_path,
         profile_templates,
@@ -125,37 +143,74 @@ fn ensure_project_bootstrap(
     })
 }
 
-fn write_provider_support_files(project_dir: &Path, mode: BootstrapMode) -> Result<Vec<PathBuf>> {
+fn write_provider_support_files(
+    project_dir: &Path,
+    mode: BootstrapMode,
+    providers: &[String],
+) -> Result<Vec<PathBuf>> {
     let provider_dir = rccb_dir(project_dir).join("providers");
     fs::create_dir_all(&provider_dir)?;
 
     let mut written = Vec::new();
-    let gemini_trusted_folders_path = provider_dir.join("gemini.trustedFolders.json");
-    if !(gemini_trusted_folders_path.exists() && matches!(mode, BootstrapMode::MissingOnly)) {
-        let trusted = json!({
-            project_dir.display().to_string(): "TRUST_FOLDER"
-        });
-        write_json_pretty(&gemini_trusted_folders_path, &trusted)?;
-        written.push(gemini_trusted_folders_path);
+    if providers.iter().any(|p| p == "gemini") {
+        let gemini_trusted_folders_path = provider_dir.join("gemini.trustedFolders.json");
+        if !(gemini_trusted_folders_path.exists() && matches!(mode, BootstrapMode::MissingOnly)) {
+            let trusted = json!({
+                project_dir.display().to_string(): "TRUST_FOLDER"
+            });
+            write_json_pretty(&gemini_trusted_folders_path, &trusted)?;
+            written.push(gemini_trusted_folders_path);
+        }
     }
 
-    let droid_settings_path = project_dir.join(".factory").join("settings.local.json");
-    if !(droid_settings_path.exists() && matches!(mode, BootstrapMode::MissingOnly)) {
-        let settings = json!({
-            "autonomyMode": "auto-high"
-        });
-        write_json_pretty(&droid_settings_path, &settings)?;
-        written.push(droid_settings_path);
+    if providers.iter().any(|p| p == "droid") {
+        let droid_settings_path = project_dir.join(".factory").join("settings.local.json");
+        if !(droid_settings_path.exists() && matches!(mode, BootstrapMode::MissingOnly)) {
+            let settings = json!({
+                "autonomyMode": "auto-high"
+            });
+            write_json_pretty(&droid_settings_path, &settings)?;
+            written.push(droid_settings_path);
+        }
     }
 
     Ok(written)
 }
 
-fn write_config_template(project_dir: &Path, mode: BootstrapMode) -> Result<PathBuf> {
+fn write_config_template(
+    project_dir: &Path,
+    mode: BootstrapMode,
+    providers: &[String],
+) -> Result<PathBuf> {
     let config_path = rccb_dir(project_dir).join("config.example.json");
     if config_path.exists() && matches!(mode, BootstrapMode::MissingOnly) {
         return Ok(config_path);
     }
+
+    let mut specialties = serde_json::Map::new();
+    if providers.iter().any(|p| p == "claude") {
+        specialties.insert("claude".to_string(), json!("编排者"));
+    }
+    if providers.iter().any(|p| p == "opencode") {
+        specialties.insert("opencode".to_string(), json!("编码者"));
+    }
+    if providers.iter().any(|p| p == "gemini") {
+        specialties.insert("gemini".to_string(), json!("调研者"));
+    }
+    if providers.iter().any(|p| p == "droid") {
+        specialties.insert("droid".to_string(), json!("文档记录者"));
+    }
+    if providers.iter().any(|p| p == "codex") {
+        specialties.insert("codex".to_string(), json!("代码审计者"));
+    }
+    let research_validation_rule =
+        if providers.iter().any(|p| p == "gemini") && providers.iter().any(|p| p == "codex") {
+            "涉及外部事实时先由 gemini 调研，再由 codex 复核关键结论后再采纳"
+        } else if providers.iter().any(|p| p == "gemini") {
+            "涉及外部事实时先由 gemini 做至少两轮调研；若未启用 codex，请在采纳前人工复核关键事实"
+        } else {
+            "当前 provider 集合未启用专门调研链路，请按需补充调研与复核执行者"
+        };
 
     let template = json!({
         "project": project_dir.display().to_string(),
@@ -164,16 +219,10 @@ fn write_config_template(project_dir: &Path, mode: BootstrapMode) -> Result<Path
                 "heartbeat_secs": 5,
                 "listen": "127.0.0.1:0",
                 "debug": false,
-                "providers": ["claude", "codex", "gemini", "opencode", "droid"],
+                "providers": providers,
                 "orchestration_rule": "首个 provider 作为编排者，其余 provider 作为执行者",
-                "default_specialties": {
-                    "claude": "编排者",
-                    "opencode": "编码者",
-                    "gemini": "调研者",
-                    "droid": "文档记录者",
-                    "codex": "代码审计者"
-                },
-                "research_validation_rule": "涉及外部事实时先由 gemini 调研，再由 codex 复核关键结论后再采纳"
+                "default_specialties": specialties,
+                "research_validation_rule": research_validation_rule
             }
         },
         "channels": {
@@ -190,12 +239,16 @@ fn write_config_template(project_dir: &Path, mode: BootstrapMode) -> Result<Path
     Ok(config_path)
 }
 
-fn write_provider_launch_wrappers(project_dir: &Path, mode: BootstrapMode) -> Result<Vec<PathBuf>> {
+fn write_provider_launch_wrappers(
+    project_dir: &Path,
+    mode: BootstrapMode,
+    providers: &[String],
+) -> Result<Vec<PathBuf>> {
     let bin_dir = rccb_dir(project_dir).join("bin");
     fs::create_dir_all(&bin_dir)?;
 
     let mut written = Vec::new();
-    for provider in SUPPORTED_PROVIDERS {
+    for provider in providers {
         let path = bin_dir.join(provider);
         if path.exists() && matches!(mode, BootstrapMode::MissingOnly) {
             continue;
@@ -338,9 +391,13 @@ struct RuleFileSpec {
     kind: RuleFileKind,
 }
 
-fn ensure_project_rule_bootstrap(project_dir: &Path, mode: BootstrapMode) -> Result<Vec<PathBuf>> {
+fn ensure_project_rule_bootstrap(
+    project_dir: &Path,
+    mode: BootstrapMode,
+    providers: &[String],
+) -> Result<Vec<PathBuf>> {
     let mut written = Vec::new();
-    for spec in build_rule_file_specs(project_dir) {
+    for spec in build_rule_file_specs(project_dir, providers) {
         let rendered = render_project_bootstrap_content(project_dir, &spec.contents);
         let changed = match spec.kind {
             RuleFileKind::ManagedMarkdown => {
@@ -380,33 +437,38 @@ fn project_rccb_command(project_dir: &Path) -> String {
     )
 }
 
-fn build_rule_file_specs(project_dir: &Path) -> Vec<RuleFileSpec> {
-    vec![
-        RuleFileSpec {
-            path: project_dir.join("AGENTS.md"),
-            contents: build_agents_rules_markdown(),
-            kind: RuleFileKind::ManagedMarkdown,
-        },
-        RuleFileSpec {
+fn build_rule_file_specs(project_dir: &Path, providers: &[String]) -> Vec<RuleFileSpec> {
+    let mut specs = vec![RuleFileSpec {
+        path: project_dir.join("AGENTS.md"),
+        contents: build_agents_rules_markdown(providers),
+        kind: RuleFileKind::ManagedMarkdown,
+    }];
+
+    if providers.iter().any(|p| p == "claude") {
+        specs.push(RuleFileSpec {
             path: project_dir.join("CLAUDE.md"),
-            contents: build_claude_rules_markdown(),
+            contents: build_claude_rules_markdown(providers),
             kind: RuleFileKind::ManagedMarkdown,
-        },
-        RuleFileSpec {
+        });
+    }
+    if providers.iter().any(|p| p == "gemini") {
+        specs.push(RuleFileSpec {
             path: project_dir.join("GEMINI.md"),
-            contents: build_gemini_rules_markdown(),
+            contents: build_gemini_rules_markdown(providers),
             kind: RuleFileKind::ManagedMarkdown,
-        },
-        RuleFileSpec {
+        });
+    }
+    if providers.iter().any(|p| p == "codex") {
+        specs.push(RuleFileSpec {
             path: project_dir
                 .join(".agents")
                 .join("skills")
                 .join("rccb-delegate")
                 .join("SKILL.md"),
-            contents: build_agents_delegate_skill_markdown(),
+            contents: build_agents_delegate_skill_markdown(providers),
             kind: RuleFileKind::PlainMarkdown,
-        },
-        RuleFileSpec {
+        });
+        specs.push(RuleFileSpec {
             path: project_dir
                 .join(".agents")
                 .join("skills")
@@ -414,35 +476,44 @@ fn build_rule_file_specs(project_dir: &Path) -> Vec<RuleFileSpec> {
                 .join("SKILL.md"),
             contents: build_agents_audit_skill_markdown(),
             kind: RuleFileKind::PlainMarkdown,
-        },
-        RuleFileSpec {
-            path: project_dir
-                .join(".agents")
-                .join("skills")
-                .join("rccb-research-verify")
-                .join("SKILL.md"),
-            contents: build_agents_research_verify_skill_markdown(),
-            kind: RuleFileKind::PlainMarkdown,
-        },
-        RuleFileSpec {
+        });
+        if providers.iter().any(|p| p == "gemini") {
+            specs.push(RuleFileSpec {
+                path: project_dir
+                    .join(".agents")
+                    .join("skills")
+                    .join("rccb-research-verify")
+                    .join("SKILL.md"),
+                contents: build_agents_research_verify_skill_markdown(),
+                kind: RuleFileKind::PlainMarkdown,
+            });
+        }
+    }
+    if providers.iter().any(|p| p == "opencode") {
+        specs.push(RuleFileSpec {
             path: project_dir
                 .join(".opencode")
                 .join("skills")
                 .join("rccb-delegate")
                 .join("SKILL.md"),
-            contents: build_opencode_delegate_skill_markdown(),
+            contents: build_opencode_delegate_skill_markdown(providers),
             kind: RuleFileKind::PlainMarkdown,
-        },
-        RuleFileSpec {
+        });
+    }
+    if providers.iter().any(|p| p == "droid") {
+        specs.push(RuleFileSpec {
             path: project_dir
                 .join(".factory")
                 .join("skills")
                 .join("rccb-delegate")
                 .join("SKILL.md"),
-            contents: build_factory_delegate_skill_markdown(),
+            contents: build_factory_delegate_skill_markdown(providers),
             kind: RuleFileKind::PlainMarkdown,
-        },
-        RuleFileSpec {
+        });
+    }
+
+    if providers.iter().any(|p| p == "opencode") {
+        specs.push(RuleFileSpec {
             path: project_dir
                 .join(".opencode")
                 .join("commands")
@@ -456,8 +527,8 @@ fn build_rule_file_specs(project_dir: &Path) -> Vec<RuleFileSpec> {
 如果任务依赖外部事实，请先改用 `rccb-research`。",
             ),
             kind: RuleFileKind::PlainMarkdown,
-        },
-        RuleFileSpec {
+        });
+        specs.push(RuleFileSpec {
             path: project_dir
                 .join(".opencode")
                 .join("commands")
@@ -471,8 +542,8 @@ fn build_rule_file_specs(project_dir: &Path) -> Vec<RuleFileSpec> {
 任务内容：$ARGUMENTS",
             ),
             kind: RuleFileKind::PlainMarkdown,
-        },
-        RuleFileSpec {
+        });
+        specs.push(RuleFileSpec {
             path: project_dir
                 .join(".opencode")
                 .join("agents")
@@ -487,8 +558,8 @@ fn build_rule_file_specs(project_dir: &Path) -> Vec<RuleFileSpec> {
                 ],
             ),
             kind: RuleFileKind::PlainMarkdown,
-        },
-        RuleFileSpec {
+        });
+        specs.push(RuleFileSpec {
             path: project_dir
                 .join(".opencode")
                 .join("agents")
@@ -503,8 +574,11 @@ fn build_rule_file_specs(project_dir: &Path) -> Vec<RuleFileSpec> {
                 ],
             ),
             kind: RuleFileKind::PlainMarkdown,
-        },
-        RuleFileSpec {
+        });
+    }
+
+    if providers.iter().any(|p| p == "claude") {
+        specs.push(RuleFileSpec {
             path: project_dir
                 .join(".claude")
                 .join("agents")
@@ -519,8 +593,8 @@ fn build_rule_file_specs(project_dir: &Path) -> Vec<RuleFileSpec> {
                 ],
             ),
             kind: RuleFileKind::PlainMarkdown,
-        },
-        RuleFileSpec {
+        });
+        specs.push(RuleFileSpec {
             path: project_dir
                 .join(".claude")
                 .join("agents")
@@ -535,8 +609,11 @@ fn build_rule_file_specs(project_dir: &Path) -> Vec<RuleFileSpec> {
                 ],
             ),
             kind: RuleFileKind::PlainMarkdown,
-        },
-        RuleFileSpec {
+        });
+    }
+
+    if providers.iter().any(|p| p == "claude") && providers.iter().any(|p| p == "opencode") {
+        specs.push(RuleFileSpec {
             path: project_dir
                 .join(".claude")
                 .join("commands")
@@ -550,8 +627,10 @@ fn build_rule_file_specs(project_dir: &Path) -> Vec<RuleFileSpec> {
 如果任务依赖外部事实或资料，请改用 `/rccb-research`。",
             ),
             kind: RuleFileKind::PlainMarkdown,
-        },
-        RuleFileSpec {
+        });
+    }
+    if providers.iter().any(|p| p == "claude") && providers.iter().any(|p| p == "gemini") {
+        specs.push(RuleFileSpec {
             path: project_dir
                 .join(".claude")
                 .join("commands")
@@ -564,8 +643,10 @@ fn build_rule_file_specs(project_dir: &Path) -> Vec<RuleFileSpec> {
 整个过程中不要自己执行 bash。",
             ),
             kind: RuleFileKind::PlainMarkdown,
-        },
-        RuleFileSpec {
+        });
+    }
+    if providers.iter().any(|p| p == "claude") && providers.iter().any(|p| p == "codex") {
+        specs.push(RuleFileSpec {
             path: project_dir
                 .join(".claude")
                 .join("commands")
@@ -578,8 +659,10 @@ fn build_rule_file_specs(project_dir: &Path) -> Vec<RuleFileSpec> {
 `rccb --project-dir . ask --instance default --provider codex --caller claude \"$ARGUMENTS\"`",
             ),
             kind: RuleFileKind::PlainMarkdown,
-        },
-        RuleFileSpec {
+        });
+    }
+    if providers.iter().any(|p| p == "claude") && providers.iter().any(|p| p == "droid") {
+        specs.push(RuleFileSpec {
             path: project_dir
                 .join(".claude")
                 .join("commands")
@@ -592,8 +675,11 @@ fn build_rule_file_specs(project_dir: &Path) -> Vec<RuleFileSpec> {
 `rccb --project-dir . ask --instance default --provider droid --caller claude \"$ARGUMENTS\"`",
             ),
             kind: RuleFileKind::PlainMarkdown,
-        },
-        RuleFileSpec {
+        });
+    }
+
+    if providers.iter().any(|p| p == "droid") {
+        specs.push(RuleFileSpec {
             path: project_dir
                 .join(".factory")
                 .join("commands")
@@ -604,8 +690,8 @@ fn build_rule_file_specs(project_dir: &Path) -> Vec<RuleFileSpec> {
 任务内容：$ARGUMENTS",
             ),
             kind: RuleFileKind::PlainMarkdown,
-        },
-        RuleFileSpec {
+        });
+        specs.push(RuleFileSpec {
             path: project_dir
                 .join(".factory")
                 .join("commands")
@@ -616,8 +702,8 @@ fn build_rule_file_specs(project_dir: &Path) -> Vec<RuleFileSpec> {
 任务内容：$ARGUMENTS",
             ),
             kind: RuleFileKind::PlainMarkdown,
-        },
-        RuleFileSpec {
+        });
+        specs.push(RuleFileSpec {
             path: project_dir
                 .join(".factory")
                 .join("rules")
@@ -632,8 +718,8 @@ fn build_rule_file_specs(project_dir: &Path) -> Vec<RuleFileSpec> {
                 ],
             ),
             kind: RuleFileKind::PlainMarkdown,
-        },
-        RuleFileSpec {
+        });
+        specs.push(RuleFileSpec {
             path: project_dir
                 .join(".factory")
                 .join("droids")
@@ -648,8 +734,8 @@ fn build_rule_file_specs(project_dir: &Path) -> Vec<RuleFileSpec> {
                 ],
             ),
             kind: RuleFileKind::PlainMarkdown,
-        },
-        RuleFileSpec {
+        });
+        specs.push(RuleFileSpec {
             path: project_dir
                 .join(".factory")
                 .join("droids")
@@ -664,8 +750,10 @@ fn build_rule_file_specs(project_dir: &Path) -> Vec<RuleFileSpec> {
                 ],
             ),
             kind: RuleFileKind::PlainMarkdown,
-        },
-    ]
+        });
+    }
+
+    specs
 }
 
 fn ensure_managed_markdown_file(path: &Path, managed: &str, mode: BootstrapMode) -> Result<bool> {
@@ -712,25 +800,52 @@ fn extract_between_markers(text: &str, start: &str, end: &str) -> Option<String>
     Some(tail[..end_idx].trim_matches('\n').to_string())
 }
 
-fn build_agents_rules_markdown() -> String {
-    "# RCCB 项目协作规则\n\n\
+fn contains_provider(providers: &[String], provider: &str) -> bool {
+    providers.iter().any(|p| p == provider)
+}
+
+fn build_agents_rules_markdown(providers: &[String]) -> String {
+    let mut role_lines = Vec::new();
+    if contains_provider(providers, "claude") {
+        role_lines.push("- `claude`：默认编排者，只负责思考、拆解、分派、验收、汇总。");
+    }
+    if contains_provider(providers, "opencode") {
+        role_lines.push("- `opencode`：默认编码者，优先承担实现、修复、重构、运行测试、联调。");
+    }
+    if contains_provider(providers, "gemini") {
+        role_lines.push("- `gemini`：默认调研者，优先承担联网调研、资料搜集、事实核对、版本确认。");
+    }
+    if contains_provider(providers, "droid") {
+        role_lines.push(
+            "- `droid`：默认文档记录者，优先承担文档整理、纪要、变更说明、操作手册、复盘归档。",
+        );
+    }
+    if contains_provider(providers, "codex") {
+        role_lines.push("- `codex`：默认代码审计者，优先承担代码审查、风险识别、边界条件检查，以及对调研结论的核验。");
+    }
+    let mut research_lines = Vec::new();
+    if contains_provider(providers, "gemini") {
+        research_lines.push("- 只要任务涉及外部事实、时间敏感信息、网页资料、版本差异或供应商能力判断，优先先派给 `gemini`。");
+        research_lines.push("- `gemini` 的调研至少做两轮：第一轮收集官方/一手来源，第二轮交叉验证关键结论、日期和风险点。");
+    }
+    if contains_provider(providers, "codex") && contains_provider(providers, "gemini") {
+        research_lines
+            .push("- 任何会影响实现、设计决策或最终结论的调研结果，都必须再派给 `codex` 做复核。");
+        research_lines
+            .push("- `codex` 复核时重点关注：事实冲突、过期信息、落地风险、边界条件、遗漏约束。");
+    }
+    format!(
+        "# RCCB 项目协作规则\n\n\
 本仓库以 `rccb` 为统一委派入口。优先使用项目级规则文件和技能，不依赖临时 pane 注入。\n\n\
-## 默认职责\n\
-- `claude`：默认编排者，只负责思考、拆解、分派、验收、汇总。\n\
-- `opencode`：默认编码者，优先承担实现、修复、重构、运行测试、联调。\n\
-- `gemini`：默认调研者，优先承担联网调研、资料搜集、事实核对、版本确认。\n\
-- `droid`：默认文档记录者，优先承担文档整理、纪要、变更说明、操作手册、复盘归档。\n\
-- `codex`：默认代码审计者，优先承担代码审查、风险识别、边界条件检查，以及对调研结论的核验。\n\n\
+## 当前 provider 集合\n\
+{}\n\n\
 ## 编排原则\n\
 - 默认把第一个 provider 当作编排者，其余 provider 当作执行者。\n\
 - 编排者不要自己执行 bash、不要自己改文件、不要自己跑测试。\n\
 - 所有执行任务统一通过 `rccb --project-dir . ask --instance default --provider <执行者> --caller <编排者> \"<任务>\"` 下发。\n\
 - 选择执行者时优先匹配其默认职责；只有确有必要时才跨职责派单。\n\n\
 ## 调研核验链路\n\
-- 只要任务涉及外部事实、时间敏感信息、网页资料、版本差异或供应商能力判断，优先先派给 `gemini`。\n\
-- `gemini` 的调研至少做两轮：第一轮收集官方/一手来源，第二轮交叉验证关键结论、日期和风险点。\n\
-- 任何会影响实现、设计决策或最终结论的调研结果，都必须再派给 `codex` 做复核。\n\
-- `codex` 复核时重点关注：事实冲突、过期信息、落地风险、边界条件、遗漏约束。\n\n\
+{}\n\n\
 ## 实时状态与结果\n\
 - 静默模式下，最终结果以 `.rccb/tasks/<instance>/artifacts/<req_id>.reply.md` 为准。\n\
 - 如果同步 `ask` 超时，不要立刻重派；先用 `rccb watch --instance default --req-id <req_id> --follow --with-provider-log --timeout-s 0 --pane-ui` 查看真实状态。\n\
@@ -738,21 +853,47 @@ fn build_agents_rules_markdown() -> String {
 ## 托管与自定义\n\
 - 本文件由 RCCB 托管生成，普通启动只补缺失文件，不覆盖现有内容。\n\
 - `debug` 模式启动时，RCCB 会刷新托管区块，方便联调规则。\n\
-- 请把项目级个性化规则写在下方用户区块中；RCCB 刷新托管区块时会保留用户区块。".to_string()
+- 请把项目级个性化规则写在下方用户区块中；RCCB 刷新托管区块时会保留用户区块。",
+        role_lines.join("\n"),
+        if research_lines.is_empty() {
+            "- 当前 provider 集合未启用专门调研链路，请按实际启用的执行者调整。".to_string()
+        } else {
+            research_lines.join("\n")
+        }
+    )
 }
 
-fn build_claude_rules_markdown() -> String {
-    "# Claude 编排规则\n\n\
+fn build_claude_rules_markdown(providers: &[String]) -> String {
+    let mut dispatch_lines = Vec::new();
+    if contains_provider(providers, "opencode") {
+        dispatch_lines.push("- 实现、改代码、运行测试、修复问题：优先派给 `opencode`");
+    }
+    if contains_provider(providers, "gemini") {
+        dispatch_lines.push("- 调研、搜集资料、核对外部事实：优先派给 `gemini`");
+    }
+    if contains_provider(providers, "droid") {
+        dispatch_lines.push("- 文档、纪要、归档、说明整理：优先派给 `droid`");
+    }
+    if contains_provider(providers, "codex") {
+        dispatch_lines.push("- 代码审计、风险核验、调研复核：优先派给 `codex`");
+    }
+    let research_rules = if contains_provider(providers, "gemini")
+        && contains_provider(providers, "codex")
+    {
+        "- 涉及外部事实时，先委派 `gemini` 做至少两轮调研与交叉验证。\n- `gemini` 返回后，不要直接采纳；继续委派 `codex` 复核关键结论、日期、风险和边界条件。\n- 没有 `codex` 复核时，不要把调研结果当成最终依据。".to_string()
+    } else if contains_provider(providers, "gemini") {
+        "- 涉及外部事实时，先委派 `gemini` 做至少两轮调研与交叉验证。\n- 当前未启用 `codex`，采纳调研结论前请额外人工复核关键事实。".to_string()
+    } else {
+        "- 当前未启用专门调研执行者；若任务依赖外部事实，请谨慎处理并优先补充调研 provider。"
+            .to_string()
+    };
+    format!(
+        "# Claude 编排规则\n\n\
 你在本项目中的默认角色是编排者。除非用户明确改派，否则不要自己执行 bash、修改文件或运行测试。\n\n\
 ## 默认派单分工\n\
-- 实现、改代码、运行测试、修复问题：优先派给 `opencode`\n\
-- 调研、搜集资料、核对外部事实：优先派给 `gemini`\n\
-- 文档、纪要、归档、说明整理：优先派给 `droid`\n\
-- 代码审计、风险核验、调研复核：优先派给 `codex`\n\n\
+{}\n\n\
 ## 调研强约束\n\
-- 涉及外部事实时，先委派 `gemini` 做至少两轮调研与交叉验证。\n\
-- `gemini` 返回后，不要直接采纳；继续委派 `codex` 复核关键结论、日期、风险和边界条件。\n\
-- 没有 `codex` 复核时，不要把调研结果当成最终依据。\n\n\
+{}\n\n\
 ## 标准命令\n\
 ```bash\n\
 rccb --project-dir . ask --instance default --provider <执行者> --caller claude \"<任务>\"\n\
@@ -766,11 +907,20 @@ rccb --project-dir . watch --instance default --req-id <req_id> --follow --with-
 ## 托管与自定义\n\
 - 本文件由 RCCB 托管生成；普通模式不覆盖已有文件。\n\
 - `debug` 模式会刷新托管区块，便于联调。\n\
-- 自定义规则请写在下方用户区块。".to_string()
+- 自定义规则请写在下方用户区块。",
+        dispatch_lines.join("\n"),
+        research_rules
+    )
 }
 
-fn build_gemini_rules_markdown() -> String {
-    "# Gemini 调研规则\n\n\
+fn build_gemini_rules_markdown(providers: &[String]) -> String {
+    let verify_tip = if contains_provider(providers, "codex") {
+        "- 如果用户要基于调研结果做实现或结论，请明确提醒：还需要由 `codex` 做复核。"
+    } else {
+        "- 当前未启用 `codex` 复核者；输出时请更明确地区分“已确认 / 待确认 / 风险项”。"
+    };
+    format!(
+        "# Gemini 调研规则\n\n\
 你在本项目中的默认角色是调研者。优先承担联网调研、事实核对、版本信息确认、资料汇总。\n\n\
 ## 调研要求\n\
 - 对外部事实、版本、发布时间、网页资料、供应商能力判断，至少执行两轮调研。\n\
@@ -791,11 +941,12 @@ fn build_gemini_rules_markdown() -> String {
 ## 边界\n\
 - 除非任务明确要求，否则不要把自己当成最终代码审计者。\n\
 - 除非任务明确要求，否则不要承担文档归档者职责。\n\
-- 如果用户要基于调研结果做实现或结论，请明确提醒：还需要由 `codex` 做复核。\n\n\
+{}\n\n\
 ## RCCB 交互\n\
 - 你通常通过 RCCB 收到任务，回复内容应尽量结构化，便于编排者继续派单。\n\
-- 如需长内容，保持正文清晰，不要重复协议占位文本。"
-        .to_string()
+- 如需长内容，保持正文清晰，不要重复协议占位文本。",
+        verify_tip
+    )
 }
 
 fn build_skill_frontmatter(name: &str, description: &str) -> String {
@@ -807,19 +958,37 @@ description: {description}\n\
     )
 }
 
-fn build_agents_delegate_skill_markdown() -> String {
+fn build_agents_delegate_skill_markdown(providers: &[String]) -> String {
+    let mut choices = Vec::new();
+    if contains_provider(providers, "opencode") {
+        choices.push("- `opencode`：编码、改文件、运行测试、修复实现问题");
+    }
+    if contains_provider(providers, "gemini") {
+        choices.push("- `gemini`：联网调研、资料搜集、事实核对");
+    }
+    if contains_provider(providers, "droid") {
+        choices.push("- `droid`：文档、纪要、复盘、整理记录");
+    }
+    if contains_provider(providers, "codex") {
+        choices.push("- `codex`：代码审计、风险核验、边界检查，以及对调研结果的复核");
+    }
+    let research_chain = if contains_provider(providers, "gemini")
+        && contains_provider(providers, "codex")
+    {
+        "- 如果任务涉及外部事实或网页资料，先委派 `gemini` 做至少两轮调研。\n- `gemini` 返回后，再委派 `codex` 复核关键结论、日期、风险和遗漏项。".to_string()
+    } else if contains_provider(providers, "gemini") {
+        "- 如果任务涉及外部事实或网页资料，先委派 `gemini` 做至少两轮调研。".to_string()
+    } else {
+        "- 当前 provider 集合未启用专门调研链路。".to_string()
+    };
     format!(
         "{}# 技能：rccb-delegate\n\n\
 ## 用途\n\
 通过 `rccb` 把执行任务委派给合适的执行者，并在静默模式或超时场景下用 `watch`/`reply.md` 获取真实状态与最终结果。\n\n\
 ## 选择执行者\n\
-- `opencode`：编码、改文件、运行测试、修复实现问题\n\
-- `gemini`：联网调研、资料搜集、事实核对\n\
-- `droid`：文档、纪要、复盘、整理记录\n\
-- `codex`：代码审计、风险核验、边界检查，以及对调研结果的复核\n\n\
+{}\n\n\
 ## 调研链路\n\
-- 如果任务涉及外部事实或网页资料，先委派 `gemini` 做至少两轮调研。\n\
-- `gemini` 返回后，再委派 `codex` 复核关键结论、日期、风险和遗漏项。\n\n\
+{}\n\n\
 ## 标准命令\n\
 ```bash\n\
 rccb --project-dir . ask --instance default --provider <provider> --caller <caller> \"<task>\"\n\
@@ -837,7 +1006,9 @@ rccb --project-dir . watch --instance default --req-id <req_id> --follow --with-
         build_skill_frontmatter(
             "rccb-delegate",
             "通过 RCCB 委派执行任务，并在静默模式或超时场景下用 watch 与 reply.md 获取真实状态和最终结果。"
-        )
+        ),
+        choices.join("\n"),
+        research_chain
     )
 }
 
@@ -893,18 +1064,33 @@ fn build_agents_research_verify_skill_markdown() -> String {
     )
 }
 
-fn build_opencode_delegate_skill_markdown() -> String {
+fn build_opencode_delegate_skill_markdown(providers: &[String]) -> String {
+    let mut mappings = vec!["- `opencode`：编码实现、修复、测试、联调".to_string()];
+    if contains_provider(providers, "gemini") {
+        mappings.push("- `gemini`：联网调研、资料搜集、事实核对".to_string());
+    }
+    if contains_provider(providers, "droid") {
+        mappings.push("- `droid`：文档、纪要、变更记录、归档".to_string());
+    }
+    if contains_provider(providers, "codex") {
+        mappings.push("- `codex`：代码审计、风险分析、调研复核".to_string());
+    }
+    let research_rules = if contains_provider(providers, "gemini")
+        && contains_provider(providers, "codex")
+    {
+        "- 涉及外部事实时，先让 `gemini` 做至少两轮调研与交叉验证。\n- `gemini` 返回后，再让 `codex` 复核关键结论、日期、风险和边界条件。".to_string()
+    } else if contains_provider(providers, "gemini") {
+        "- 涉及外部事实时，先让 `gemini` 做至少两轮调研与交叉验证。".to_string()
+    } else {
+        "- 当前 provider 集合未启用专门调研执行者。".to_string()
+    };
     format!(
         "{}# 技能：rccb-delegate\n\n\
 通过 `rccb` 在本项目里委派执行任务，并在静默模式下通过 `watch` 和 `reply.md` 获取真实状态与最终结果。\n\n\
 ## 默认职责映射\n\
-- `opencode`：编码实现、修复、测试、联调\n\
-- `gemini`：联网调研、资料搜集、事实核对\n\
-- `droid`：文档、纪要、变更记录、归档\n\
-- `codex`：代码审计、风险分析、调研复核\n\n\
+{}\n\n\
 ## 调研约束\n\
-- 涉及外部事实时，先让 `gemini` 做至少两轮调研与交叉验证。\n\
-- `gemini` 返回后，再让 `codex` 复核关键结论、日期、风险和边界条件。\n\n\
+{}\n\n\
 ## 委派命令\n\
 ```bash\n\
 rccb --project-dir . ask --instance default --provider <provider> --caller <caller> \"<task>\"\n\
@@ -916,22 +1102,40 @@ rccb --project-dir . watch --instance default --req-id <req_id> --follow --with-
         build_skill_frontmatter(
             "rccb-delegate",
             "通过 RCCB 委派执行任务，并在静默模式下用 watch 与 reply.md 跟踪真实状态和最终结果。"
-        )
+        ),
+        mappings.join("\n"),
+        research_rules
     )
 }
 
-fn build_factory_delegate_skill_markdown() -> String {
+fn build_factory_delegate_skill_markdown(providers: &[String]) -> String {
+    let mut choices = Vec::new();
+    if contains_provider(providers, "opencode") {
+        choices.push("- `opencode`：编码与测试");
+    }
+    if contains_provider(providers, "gemini") {
+        choices.push("- `gemini`：调研与事实核验");
+    }
+    choices.push("- `droid`：文档与记录");
+    if contains_provider(providers, "codex") {
+        choices.push("- `codex`：代码审计与调研复核");
+    }
+    let research_chain = if contains_provider(providers, "gemini")
+        && contains_provider(providers, "codex")
+    {
+        "1. 先派 `gemini` 做至少两轮调研。\n2. 再派 `codex` 复核关键结论、日期、风险和边界条件。\n3. 没有经过 `codex` 复核时，不要把调研结论当最终依据。".to_string()
+    } else if contains_provider(providers, "gemini") {
+        "1. 先派 `gemini` 做至少两轮调研。\n2. 当前未启用 `codex`，采纳前请人工复核关键事实。"
+            .to_string()
+    } else {
+        "1. 当前 provider 集合未启用专门调研链路，请按需补充。".to_string()
+    };
     format!(
         "{}# RCCB 委派技能\n\n\
 ## 选择执行者\n\
-- `opencode`：编码与测试\n\
-- `gemini`：调研与事实核验\n\
-- `droid`：文档与记录\n\
-- `codex`：代码审计与调研复核\n\n\
+{}\n\n\
 ## 调研链路\n\
-1. 先派 `gemini` 做至少两轮调研。\n\
-2. 再派 `codex` 复核关键结论、日期、风险和边界条件。\n\
-3. 没有经过 `codex` 复核时，不要把调研结论当最终依据。\n\n\
+{}\n\n\
 ## 标准命令\n\
 ```bash\n\
 rccb --project-dir . ask --instance default --provider <provider> --caller <caller> \"<task>\"\n\
@@ -946,7 +1150,9 @@ rccb --project-dir . watch --instance default --req-id <req_id> --follow --with-
         build_skill_frontmatter(
             "rccb-delegate",
             "通过 RCCB 委派执行任务，并在静默模式下用 watch 与 reply.md 跟踪真实状态和最终结果。"
-        )
+        ),
+        choices.join("\n"),
+        research_chain
     )
 }
 
@@ -1077,6 +1283,7 @@ pub fn cmd_start(
         } else {
             BootstrapMode::MissingOnly
         },
+        &normalized,
     )?;
 
     start_instance(
@@ -1133,6 +1340,7 @@ fn launch_shortcut_instance(project_dir: &Path, providers: &[String]) -> Result<
         } else {
             BootstrapMode::MissingOnly
         },
+        providers,
     )?;
     restart_default_daemon_for_shortcut(project_dir)?;
     ensure_default_daemon_running(project_dir, providers, effective_debug)?;
@@ -5164,6 +5372,13 @@ mod tests {
         LOCK.get_or_init(|| Mutex::new(()))
     }
 
+    fn all_test_providers() -> Vec<String> {
+        super::SHORTCUT_DEFAULT_PROVIDERS
+            .iter()
+            .map(|x| x.to_string())
+            .collect()
+    }
+
     #[test]
     fn status_helpers_match_expected_states() {
         assert!(is_in_flight_status("queued"));
@@ -5407,7 +5622,9 @@ mod tests {
         let project = std::env::temp_dir().join(format!("rccb-rules-{}", now_unix_ms()));
         ensure_project_layout(&project).unwrap();
 
-        let written = ensure_project_bootstrap(&project, BootstrapMode::MissingOnly).unwrap();
+        let written =
+            ensure_project_bootstrap(&project, BootstrapMode::MissingOnly, &all_test_providers())
+                .unwrap();
 
         assert!(written
             .rule_templates
@@ -5474,7 +5691,12 @@ mod tests {
         )
         .unwrap();
 
-        ensure_project_rule_bootstrap(&project, BootstrapMode::RefreshGenerated).unwrap();
+        ensure_project_rule_bootstrap(
+            &project,
+            BootstrapMode::RefreshGenerated,
+            &all_test_providers(),
+        )
+        .unwrap();
         let updated = fs::read_to_string(&agents_path).unwrap();
         assert!(updated.contains("自定义规则"));
         assert!(updated.contains("gemini"));
@@ -5495,7 +5717,12 @@ mod tests {
         fs::write(&config_path, "{\"stale\":true}\n").unwrap();
         fs::write(&profile_path, "{\"provider\":\"codex\",\"stale\":true}\n").unwrap();
 
-        ensure_project_bootstrap(&project, BootstrapMode::RefreshGenerated).unwrap();
+        ensure_project_bootstrap(
+            &project,
+            BootstrapMode::RefreshGenerated,
+            &all_test_providers(),
+        )
+        .unwrap();
 
         let config = fs::read_to_string(&config_path).unwrap();
         let profile = fs::read_to_string(&profile_path).unwrap();
@@ -5508,6 +5735,31 @@ mod tests {
         assert!(trusted.contains("\"TRUST_FOLDER\""));
         assert!(trusted.contains(&project.display().to_string()));
         assert!(droid_settings.contains("\"autonomyMode\": \"auto-high\""));
+
+        let _ = fs::remove_dir_all(&project);
+    }
+
+    #[test]
+    fn bootstrap_only_generates_selected_provider_rules() {
+        let project = std::env::temp_dir().join(format!("rccb-bootstrap-subset-{}", now_unix_ms()));
+        ensure_project_layout(&project).unwrap();
+        let providers = vec!["claude".to_string(), "gemini".to_string()];
+
+        ensure_project_bootstrap(&project, BootstrapMode::RefreshGenerated, &providers).unwrap();
+
+        assert!(project.join("AGENTS.md").exists());
+        assert!(project.join("CLAUDE.md").exists());
+        assert!(project.join("GEMINI.md").exists());
+        assert!(!project.join(".opencode").exists());
+        assert!(!project.join(".factory").exists());
+        assert!(!project.join(".agents").exists());
+        assert!(project.join(".rccb/bin/claude").exists());
+        assert!(project.join(".rccb/bin/gemini").exists());
+        assert!(!project.join(".rccb/bin/opencode").exists());
+        let config = fs::read_to_string(project.join(".rccb/config.example.json")).unwrap();
+        assert!(config.contains("\"claude\""));
+        assert!(config.contains("\"gemini\""));
+        assert!(!config.contains("\"opencode\""));
 
         let _ = fs::remove_dir_all(&project);
     }
@@ -5810,7 +6062,12 @@ mod tests {
             std::env::remove_var("RCCB_USE_BRIDGE_PROVIDER_LAUNCH");
         }
         let project = std::env::temp_dir().join(format!("rccb-start-wrapper-{}", now_unix_ms()));
-        ensure_project_bootstrap(&project, BootstrapMode::RefreshGenerated).expect("bootstrap");
+        ensure_project_bootstrap(
+            &project,
+            BootstrapMode::RefreshGenerated,
+            &all_test_providers(),
+        )
+        .expect("bootstrap");
         let cmd = provider_start_cmd(&project, "default", "opencode");
         if let Some(v) = old_ccb {
             unsafe {
