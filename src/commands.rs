@@ -21,7 +21,7 @@ use crate::io_utils::{
 };
 use crate::layout::{
     ensure_project_layout, launcher_feed_dir, launcher_feed_path, launcher_meta_path,
-    logs_instance_dir, rccb_dir, sanitize_filename, session_instance_dir, state_path,
+    lock_path, logs_instance_dir, rccb_dir, sanitize_filename, session_instance_dir, state_path,
     tasks_instance_dir, tasks_root_dir, tmp_instance_dir,
 };
 use crate::protocol::{connect_and_send, send_wire_message};
@@ -1388,9 +1388,7 @@ fn shortcut_providers_from_launcher_meta(
     project_dir: &Path,
     instance: &str,
 ) -> Option<Vec<String>> {
-    let meta_path = launcher_meta_path(project_dir, instance);
-    let raw = fs::read_to_string(meta_path).ok()?;
-    let meta: LauncherMeta = serde_json::from_str(&raw).ok()?;
+    let meta = load_launcher_meta(project_dir, instance)?;
     filter_launchable_providers(
         project_dir,
         &meta
@@ -1601,14 +1599,20 @@ fn ensure_default_daemon_running(
 fn restart_default_daemon_for_shortcut(project_dir: &Path) -> Result<()> {
     let instance = SHORTCUT_INSTANCE;
     let path = state_path(project_dir, instance);
+    let has_residual_runtime = path.exists()
+        || launcher_meta_path(project_dir, instance).exists()
+        || session_instance_dir(project_dir, instance).exists()
+        || tmp_instance_dir(project_dir, instance).exists();
     if path.exists() {
         let was_running = is_daemon_ready(project_dir, instance);
         if was_running {
             println!("检测到旧的 default 实例仍在运行，正在重启以应用最新规则...");
-            let _ = cmd_stop(project_dir, instance);
+            cmd_stop(project_dir, instance)?;
         }
+    }
+    if has_residual_runtime {
         let _ = cleanup_inflight_tasks(project_dir, instance);
-        let _ = fs::remove_dir_all(tmp_instance_dir(project_dir, instance).join("launcher"));
+        cleanup_instance_runtime(project_dir, instance)?;
     }
     Ok(())
 }
@@ -1690,6 +1694,12 @@ struct LauncherMeta {
     backend_bin: Option<String>,
     orchestrator: String,
     providers: Vec<LauncherProviderMeta>,
+}
+
+fn load_launcher_meta(project_dir: &Path, instance: &str) -> Option<LauncherMeta> {
+    let meta_path = launcher_meta_path(project_dir, instance);
+    let raw = fs::read_to_string(meta_path).ok()?;
+    serde_json::from_str(&raw).ok()
 }
 
 fn launch_provider_clis(
@@ -2341,7 +2351,7 @@ fn cleanup_after_orchestrator(
 
     let _ = cmd_stop(project_dir, SHORTCUT_INSTANCE);
     let _ = cleanup_inflight_tasks(project_dir, SHORTCUT_INSTANCE);
-    let _ = fs::remove_dir_all(tmp_instance_dir(project_dir, SHORTCUT_INSTANCE).join("launcher"));
+    let _ = cleanup_instance_runtime(project_dir, SHORTCUT_INSTANCE);
     Ok(())
 }
 
@@ -4743,12 +4753,12 @@ fn is_terminal_task_status(status: &str) -> bool {
 pub fn cmd_stop(project_dir: &Path, instance: &str) -> Result<()> {
     let path = state_path(project_dir, instance);
     if !path.exists() {
-        bail!(
-            "instance state not found. project={} instance={} path={}",
-            project_dir.display(),
-            instance,
-            path.display()
+        cleanup_instance_runtime(project_dir, instance)?;
+        println!(
+            "instance={} 未发现运行中状态，已清理残留运行态文件",
+            instance
         );
+        return Ok(());
     }
 
     let mut state = load_state(&path)?;
@@ -4789,6 +4799,67 @@ pub fn cmd_stop(project_dir: &Path, instance: &str) -> Result<()> {
         stop_mode,
         state.status
     );
+    if stopped {
+        cleanup_instance_runtime(project_dir, instance)?;
+    }
+    Ok(())
+}
+
+fn cleanup_instance_runtime(project_dir: &Path, instance: &str) -> Result<()> {
+    cleanup_launcher_bindings(project_dir, instance);
+
+    let state_file = state_path(project_dir, instance);
+    if state_file.exists() {
+        let state = load_state(&state_file)?;
+        if is_process_alive(state.pid) && state.status != "stopped" {
+            bail!(
+                "实例仍在运行，暂不清理运行态文件：instance={} pid={}",
+                instance,
+                state.pid
+            );
+        }
+    }
+
+    remove_path_if_exists(&state_file)?;
+    remove_path_if_exists(&lock_path(project_dir, instance))?;
+    remove_path_if_exists(&session_instance_dir(project_dir, instance))?;
+    remove_path_if_exists(&tmp_instance_dir(project_dir, instance))?;
+    Ok(())
+}
+
+fn cleanup_launcher_bindings(project_dir: &Path, instance: &str) {
+    let Some(meta) = load_launcher_meta(project_dir, instance) else {
+        return;
+    };
+
+    if meta.backend != "tmux" {
+        return;
+    }
+
+    for provider in meta.providers {
+        let Some(pane_id) = provider
+            .pane_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+        else {
+            continue;
+        };
+        let _ = run_simple("tmux", &["pipe-pane", "-t", pane_id]);
+        let _ = run_simple("tmux", &["select-pane", "-t", pane_id, "-T", ""]);
+    }
+}
+
+fn remove_path_if_exists(path: &Path) -> Result<()> {
+    if !path.exists() {
+        return Ok(());
+    }
+    let meta = fs::metadata(path)?;
+    if meta.is_dir() {
+        fs::remove_dir_all(path)?;
+    } else {
+        fs::remove_file(path)?;
+    }
     Ok(())
 }
 
@@ -5351,7 +5422,8 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        build_debug_watch_command, cleanup_inflight_tasks, compact_watch_line,
+        build_debug_watch_command, cleanup_inflight_tasks, cleanup_instance_runtime,
+        compact_watch_line,
         debug_watch_pane_percent, ensure_project_bootstrap, ensure_project_rule_bootstrap,
         is_in_flight_status, is_terminal_bus_task_event, is_terminal_task_status,
         load_orchestrator_inbox_entries, load_task_by_req_id, orchestrator_guardrail_prompt,
@@ -5364,7 +5436,10 @@ mod tests {
     use crate::io_utils::{
         now_unix, now_unix_ms, update_task_status, write_json_pretty, write_state,
     };
-    use crate::layout::{ensure_project_layout, state_path, tasks_instance_dir, tmp_instance_dir};
+    use crate::layout::{
+        ensure_project_layout, lock_path, logs_instance_dir, session_instance_dir, state_path,
+        tasks_instance_dir, tmp_instance_dir,
+    };
     use crate::types::{AskBusEvent, InstanceState};
 
     fn env_lock() -> &'static Mutex<()> {
@@ -6195,6 +6270,109 @@ mod tests {
         assert_eq!(r.get("status").and_then(|x| x.as_str()), Some("canceled"));
         assert_eq!(q.get("status").and_then(|x| x.as_str()), Some("canceled"));
         assert_eq!(d.get("status").and_then(|x| x.as_str()), Some("completed"));
+
+        let _ = fs::remove_dir_all(&project);
+    }
+
+    #[test]
+    fn cleanup_instance_runtime_removes_runtime_dirs_but_keeps_history() {
+        let project = std::env::temp_dir().join(format!("rccb-runtime-clean-{}", now_unix_ms()));
+        let instance = "default";
+        ensure_project_layout(&project).unwrap();
+
+        write_state(
+            &state_path(&project, instance),
+            &InstanceState {
+                schema_version: 1,
+                instance_id: instance.to_string(),
+                project_dir: project.display().to_string(),
+                pid: 999_999,
+                status: "stopped".to_string(),
+                started_at_unix: 0,
+                last_heartbeat_unix: 0,
+                stopped_at_unix: Some(0),
+                providers: vec!["claude".to_string()],
+                orchestrator: Some("claude".to_string()),
+                executors: vec![],
+                session_file: None,
+                last_task_id: None,
+                daemon_host: None,
+                daemon_port: None,
+                daemon_token: None,
+                debug_enabled: false,
+            },
+        )
+        .unwrap();
+
+        fs::write(lock_path(&project, instance), b"lock").unwrap();
+        fs::create_dir_all(session_instance_dir(&project, instance)).unwrap();
+        fs::write(
+            session_instance_dir(&project, instance).join("session.json"),
+            b"{}",
+        )
+        .unwrap();
+        fs::create_dir_all(tmp_instance_dir(&project, instance).join("launcher")).unwrap();
+        fs::write(
+            tmp_instance_dir(&project, instance)
+                .join("launcher")
+                .join("meta.json"),
+            b"{}",
+        )
+        .unwrap();
+
+        let task_dir = tasks_instance_dir(&project, instance);
+        fs::create_dir_all(&task_dir).unwrap();
+        fs::write(task_dir.join("task-1.json"), b"{}").unwrap();
+        let log_dir = logs_instance_dir(&project, instance);
+        fs::create_dir_all(&log_dir).unwrap();
+        fs::write(log_dir.join("daemon.log"), b"keep").unwrap();
+
+        cleanup_instance_runtime(&project, instance).unwrap();
+
+        assert!(!state_path(&project, instance).exists());
+        assert!(!lock_path(&project, instance).exists());
+        assert!(!session_instance_dir(&project, instance).exists());
+        assert!(!tmp_instance_dir(&project, instance).exists());
+        assert!(task_dir.exists());
+        assert!(log_dir.exists());
+
+        let _ = fs::remove_dir_all(&project);
+    }
+
+    #[test]
+    fn cleanup_instance_runtime_refuses_live_instance() {
+        let project =
+            std::env::temp_dir().join(format!("rccb-runtime-live-guard-{}", now_unix_ms()));
+        let instance = "default";
+        ensure_project_layout(&project).unwrap();
+
+        write_state(
+            &state_path(&project, instance),
+            &InstanceState {
+                schema_version: 1,
+                instance_id: instance.to_string(),
+                project_dir: project.display().to_string(),
+                pid: std::process::id(),
+                status: "running".to_string(),
+                started_at_unix: 0,
+                last_heartbeat_unix: 0,
+                stopped_at_unix: None,
+                providers: vec!["claude".to_string()],
+                orchestrator: Some("claude".to_string()),
+                executors: vec![],
+                session_file: None,
+                last_task_id: None,
+                daemon_host: None,
+                daemon_port: None,
+                daemon_token: None,
+                debug_enabled: false,
+            },
+        )
+        .unwrap();
+
+        let err = cleanup_instance_runtime(&project, instance).unwrap_err();
+        assert!(err.to_string().contains("实例仍在运行"));
+        assert!(state_path(&project, instance).exists());
 
         let _ = fs::remove_dir_all(&project);
     }
