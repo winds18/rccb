@@ -199,6 +199,68 @@ fn build_rule_file_specs(project_dir: &Path) -> Vec<RuleFileSpec> {
         },
         RuleFileSpec {
             path: project_dir
+                .join(".opencode")
+                .join("commands")
+                .join("rccb-code.md"),
+            contents: build_opencode_command_markdown(
+                "把编码任务委派给 opencode",
+                "当任务需要改代码、修复实现、运行测试或联调时，优先通过 RCCB 把任务委派给 `opencode`。\n\
+任务内容：$ARGUMENTS\n\n\
+请执行：\n\
+`rccb --project-dir . ask --instance default --provider opencode --caller claude \"$ARGUMENTS\"`\n\n\
+如果任务依赖外部事实，请先改用 `rccb-research`。",
+            ),
+            kind: RuleFileKind::PlainMarkdown,
+        },
+        RuleFileSpec {
+            path: project_dir
+                .join(".opencode")
+                .join("commands")
+                .join("rccb-research.md"),
+            contents: build_opencode_command_markdown(
+                "先让 gemini 调研，再让 codex 复核",
+                "当任务涉及联网调研、网页资料、版本差异或事实核验时：\n\
+1. 先委派给 `gemini` 做至少两轮调研与交叉验证。\n\
+2. 再把关键结论委派给 `codex` 复核。\n\
+3. 复核完成前，不要把调研结论当作最终依据。\n\n\
+任务内容：$ARGUMENTS",
+            ),
+            kind: RuleFileKind::PlainMarkdown,
+        },
+        RuleFileSpec {
+            path: project_dir
+                .join(".opencode")
+                .join("agents")
+                .join("coder.md"),
+            contents: build_opencode_agent_markdown(
+                "coder",
+                "默认编码者。优先承担实现、修复、重构、测试与联调。",
+                &[
+                    "优先处理代码实现、缺陷修复、测试执行和工程联调。",
+                    "不要把自己当作编排者；如果需要其他执行者配合，应通过 RCCB 委派。",
+                    "如果任务依赖外部事实或资料，提醒编排者先走 gemini 调研和 codex 复核链路。",
+                ],
+            ),
+            kind: RuleFileKind::PlainMarkdown,
+        },
+        RuleFileSpec {
+            path: project_dir
+                .join(".opencode")
+                .join("agents")
+                .join("auditor.md"),
+            contents: build_opencode_agent_markdown(
+                "auditor",
+                "默认代码审计者。优先承担风险分析、边界检查和调研复核。",
+                &[
+                    "优先检查代码风险、边界条件、回归点和缺失测试。",
+                    "对于 gemini 返回的调研结果，重点复核事实冲突、过期信息、落地风险和遗漏约束。",
+                    "输出优先给出结论、风险等级和需要补充验证的点。",
+                ],
+            ),
+            kind: RuleFileKind::PlainMarkdown,
+        },
+        RuleFileSpec {
+            path: project_dir
                 .join(".claude")
                 .join("commands")
                 .join("rccb-code.md"),
@@ -251,6 +313,78 @@ fn build_rule_file_specs(project_dir: &Path) -> Vec<RuleFileSpec> {
 任务内容：$ARGUMENTS\n\n\
 请直接在当前会话中执行下面的委派命令，不要自己运行 bash：\n\
 `rccb --project-dir . ask --instance default --provider droid --caller claude \"$ARGUMENTS\"`",
+            ),
+            kind: RuleFileKind::PlainMarkdown,
+        },
+        RuleFileSpec {
+            path: project_dir
+                .join(".factory")
+                .join("commands")
+                .join("rccb-code.md"),
+            contents: build_factory_command_markdown(
+                "委派编码任务给 opencode",
+                "当任务需要改代码、修复实现、运行测试或联调时，优先通过 RCCB 把任务委派给 `opencode`。\n\
+任务内容：$ARGUMENTS",
+            ),
+            kind: RuleFileKind::PlainMarkdown,
+        },
+        RuleFileSpec {
+            path: project_dir
+                .join(".factory")
+                .join("commands")
+                .join("rccb-research.md"),
+            contents: build_factory_command_markdown(
+                "先让 gemini 调研，再让 codex 复核",
+                "当任务涉及联网调研、网页资料、版本差异或事实核验时，先把任务委派给 `gemini` 做至少两轮调研，再委派给 `codex` 复核关键结论。\n\
+任务内容：$ARGUMENTS",
+            ),
+            kind: RuleFileKind::PlainMarkdown,
+        },
+        RuleFileSpec {
+            path: project_dir
+                .join(".factory")
+                .join("rules")
+                .join("rccb-core.md"),
+            contents: build_factory_rule_markdown(
+                "RCCB 核心协作规则",
+                &[
+                    "本项目统一通过 `rccb` 完成委派与结果消费，优先使用项目级规则文件和工件文件。",
+                    "编排者不直接执行 bash、修改文件或运行测试。",
+                    "静默模式下最终结果优先读取 `.rccb/tasks/<instance>/artifacts/<req_id>.reply.md`。",
+                    "请求超时时先用 `watch --req-id` 查看真实状态，不要立刻重派。",
+                ],
+            ),
+            kind: RuleFileKind::PlainMarkdown,
+        },
+        RuleFileSpec {
+            path: project_dir
+                .join(".factory")
+                .join("droids")
+                .join("researcher.md"),
+            contents: build_factory_droid_markdown(
+                "researcher",
+                "默认调研者，优先承担联网调研、事实核验、资料汇总。",
+                &[
+                    "至少进行两轮调研：第一轮收集官方/一手来源，第二轮交叉验证关键结论、日期、风险和限制。",
+                    "遇到冲突信息时必须明确写出冲突点，不要自行抹平。",
+                    "输出要便于后续由 codex 进行复核。",
+                ],
+            ),
+            kind: RuleFileKind::PlainMarkdown,
+        },
+        RuleFileSpec {
+            path: project_dir
+                .join(".factory")
+                .join("droids")
+                .join("scribe.md"),
+            contents: build_factory_droid_markdown(
+                "scribe",
+                "默认文档记录者，优先承担文档整理、纪要、操作手册和复盘归档。",
+                &[
+                    "优先输出结构清晰、可审阅、可追溯的文档。",
+                    "如果文档结论依赖外部事实，应提醒编排者先完成 gemini 调研和 codex 复核。",
+                    "不要把自己当作编排者或代码审计者。",
+                ],
             ),
             kind: RuleFileKind::PlainMarkdown,
         },
@@ -447,6 +581,69 @@ description: {description}\n\
 argument-hint: [任务内容]\n\
 ---\n\n\
 {body}\n"
+    )
+}
+
+fn build_opencode_command_markdown(description: &str, body: &str) -> String {
+    format!(
+        "---\n\
+description: {description}\n\
+---\n\n\
+{body}\n"
+    )
+}
+
+fn build_opencode_agent_markdown(name: &str, summary: &str, bullets: &[&str]) -> String {
+    let details = bullets
+        .iter()
+        .map(|line| format!("- {line}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "---\n\
+name: {name}\n\
+description: {summary}\n\
+---\n\n\
+# {name}\n\n\
+{summary}\n\n\
+{details}\n"
+    )
+}
+
+fn build_factory_command_markdown(description: &str, body: &str) -> String {
+    format!(
+        "---\n\
+description: {description}\n\
+---\n\n\
+{body}\n\n\
+标准命令：\n\
+`rccb --project-dir . ask --instance default --provider <执行者> --caller <编排者> \"<任务>\"`\n"
+    )
+}
+
+fn build_factory_rule_markdown(title: &str, bullets: &[&str]) -> String {
+    let body = bullets
+        .iter()
+        .map(|line| format!("- {line}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!("# {title}\n\n{body}\n")
+}
+
+fn build_factory_droid_markdown(name: &str, summary: &str, bullets: &[&str]) -> String {
+    let details = bullets
+        .iter()
+        .map(|line| format!("- {line}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "---\n\
+name: {name}\n\
+description: {summary}\n\
+---\n\n\
+# {name}\n\n\
+{summary}\n\n\
+{details}\n"
     )
 }
 
@@ -4426,6 +4623,11 @@ mod tests {
         assert!(project
             .join(".factory/skills/rccb-delegate/SKILL.md")
             .exists());
+        assert!(project.join(".opencode/commands/rccb-code.md").exists());
+        assert!(project.join(".opencode/agents/coder.md").exists());
+        assert!(project.join(".factory/commands/rccb-research.md").exists());
+        assert!(project.join(".factory/rules/rccb-core.md").exists());
+        assert!(project.join(".factory/droids/researcher.md").exists());
         assert!(project.join(".claude/commands/rccb-research.md").exists());
 
         let _ = fs::remove_dir_all(&project);

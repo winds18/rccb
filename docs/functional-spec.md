@@ -211,6 +211,20 @@
 2. 初始化输出：
    - `.rccb/config.example.json`
    - `.rccb/providers/*.example.json`（native profile 模板）
+   - `AGENTS.md`、`CLAUDE.md`、`GEMINI.md`
+   - `.agents/skills/rccb-delegate/SKILL.md`
+   - `.claude/commands/rccb-*.md`
+   - `.opencode/commands/rccb-*.md`
+   - `.opencode/agents/*.md`
+   - `.factory/skills/rccb-delegate/SKILL.md`
+   - `.factory/commands/rccb-*.md`
+   - `.factory/rules/rccb-core.md`
+   - `.factory/droids/*.md`
+3. 覆盖策略：
+   - 普通模式仅补缺失文件
+   - `--force` 会刷新所有 RCCB 生成模板
+   - `debug` 启动会刷新 RCCB 托管规则，便于联调
+   - `AGENTS.md` / `CLAUDE.md` / `GEMINI.md` 通过托管区块 + 用户区块的方式保留用户自定义内容
 
 ### 5.1 启动
 
@@ -219,6 +233,7 @@
 3. 快捷启动行为：
    - 自动确保 `default` 实例 daemon 在线（后台启动）
    - 在 `tmux/wezterm` 环境自动拉起 provider CLI pane
+   - 启动前自动补齐项目级规则文件；若 `debug` 开启则刷新托管规则
    - 默认不向 provider pane 注入旁路 feed；pane 保持真实 CLI 执行视图，实时状态优先放在 debug 日志 pane
    - 若 debug 开启，自动在编排者 pane 上方增加日志 pane（默认追踪首个执行者，`watch --follow`）
    - 默认静默后台通信，不向 pane 输入区注入任务文本/通知
@@ -226,6 +241,8 @@
    - pane 规则：`<=4` 左侧仅 orchestrator；`=5` 左侧分上下，其余在右侧且右侧等分
    - orchestrator 退出即结束本次 `rccb` 进程，并执行清理（停止 daemon + 回收派生 pane）
    - 非 `tmux/wezterm` 环境仅确保 daemon 在线并提示如何继续
+   - 默认职责：`opencode=编码者`、`gemini=调研者`、`droid=文档记录者`、`codex=代码审计者`
+   - 默认调研链路：先 `gemini` 至少两轮调研，再 `codex` 复核关键结论
 
 ### 5.2 通信
 
