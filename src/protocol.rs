@@ -1,6 +1,7 @@
-use std::io::{BufRead, BufReader, Write};
+use std::io::{self, BufRead, BufReader, Write};
 use std::net::TcpStream;
-use std::time::Duration;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use serde_json::Value;
@@ -8,15 +9,9 @@ use serde_json::Value;
 use crate::types::{AskEvent, AskResponse};
 
 pub fn send_wire_message(host: &str, port: u16, req: Value, timeout_s: f64) -> Result<Value> {
+    let timeout = Duration::from_secs_f64(timeout_s.max(0.1));
     let mut reader = connect_and_send(host, port, req, timeout_s)?;
-    let mut line = String::new();
-    let n = reader
-        .read_line(&mut line)
-        .context("read response failed")?;
-    if n == 0 {
-        bail!("daemon returned empty response");
-    }
-
+    let line = read_line_with_retry(&mut reader, timeout).context("read response failed")?;
     let val: Value = serde_json::from_str(&line).context("invalid daemon response json")?;
     Ok(val)
 }
@@ -41,6 +36,29 @@ pub fn connect_and_send(
     Ok(BufReader::new(stream))
 }
 
+fn read_line_with_retry<R: BufRead>(reader: &mut R, timeout: Duration) -> Result<String> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let mut line = String::new();
+        match reader.read_line(&mut line) {
+            Ok(0) => bail!("daemon returned empty response"),
+            Ok(_) => return Ok(line),
+            Err(err)
+                if matches!(
+                    err.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) =>
+            {
+                if Instant::now() >= deadline {
+                    return Err(err).context("response wait timeout");
+                }
+                thread::sleep(Duration::from_millis(20));
+            }
+            Err(err) => return Err(err).context("read line failed"),
+        }
+    }
+}
+
 pub fn write_json_line(stream: &mut TcpStream, resp: &AskResponse) -> Result<()> {
     let data = serde_json::to_vec(resp).context("serialize ask response failed")?;
     stream.write_all(&data).context("write response failed")?;
@@ -63,4 +81,49 @@ pub fn write_json_value_line(stream: &mut TcpStream, val: &Value) -> Result<()> 
     stream.write_all(b"\n").context("write newline failed")?;
     stream.flush().context("flush value failed")?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Read;
+
+    struct FlakyReader {
+        steps: Vec<io::Result<Vec<u8>>>,
+        offset: usize,
+    }
+
+    impl Read for FlakyReader {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            if self.offset >= self.steps.len() {
+                return Ok(0);
+            }
+            match &self.steps[self.offset] {
+                Ok(chunk) => {
+                    let n = chunk.len().min(buf.len());
+                    buf[..n].copy_from_slice(&chunk[..n]);
+                    self.offset += 1;
+                    Ok(n)
+                }
+                Err(err) => {
+                    self.offset += 1;
+                    Err(io::Error::new(err.kind(), err.to_string()))
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn read_line_with_retry_handles_would_block_then_data() {
+        let reader = FlakyReader {
+            steps: vec![
+                Err(io::Error::from(io::ErrorKind::WouldBlock)),
+                Ok(b"{\"type\":\"ask.response\",\"reply\":\"OK\"}\n".to_vec()),
+            ],
+            offset: 0,
+        };
+        let mut reader = BufReader::new(reader);
+        let line = read_line_with_retry(&mut reader, Duration::from_millis(200)).expect("line");
+        assert!(line.contains("\"ask.response\""));
+    }
 }
