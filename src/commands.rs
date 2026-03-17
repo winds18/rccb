@@ -30,6 +30,11 @@ use crate::provider::{
 };
 use crate::types::{AskBusEvent, AskEvent, AskResponse, InstanceState};
 
+const RCCB_MANAGED_BEGIN: &str = "<!-- RCCB:BEGIN MANAGED -->";
+const RCCB_MANAGED_END: &str = "<!-- RCCB:END MANAGED -->";
+const RCCB_USER_BEGIN: &str = "<!-- RCCB:BEGIN USER -->";
+const RCCB_USER_END: &str = "<!-- RCCB:END USER -->";
+
 pub fn cmd_init(project_dir: &Path, force: bool) -> Result<()> {
     ensure_project_layout(project_dir)?;
     let config_path = rccb_dir(project_dir).join("config.example.json");
@@ -42,7 +47,15 @@ pub fn cmd_init(project_dir: &Path, force: bool) -> Result<()> {
                     "listen": "127.0.0.1:0",
                     "debug": false,
                     "providers": ["claude", "codex", "gemini", "opencode", "droid"],
-                    "orchestration_rule": "first provider is orchestrator, remaining providers are executors"
+                    "orchestration_rule": "first provider is orchestrator, remaining providers are executors",
+                    "default_specialties": {
+                        "claude": "编排者",
+                        "opencode": "编码者",
+                        "gemini": "调研者",
+                        "droid": "文档记录者",
+                        "codex": "代码审计者"
+                    },
+                    "research_validation_rule": "research goes to gemini first, and codex verifies key conclusions before final adoption"
                 }
             },
             "channels": {
@@ -59,11 +72,22 @@ pub fn cmd_init(project_dir: &Path, force: bool) -> Result<()> {
     }
 
     let profile_templates = write_native_profile_templates(project_dir, force)?;
+    let rule_templates = ensure_project_rule_bootstrap(
+        project_dir,
+        if force {
+            RuleBootstrapMode::RefreshManaged
+        } else {
+            RuleBootstrapMode::MissingOnly
+        },
+    )?;
 
     println!("初始化完成：{}", rccb_dir(project_dir).display());
     println!("配置模板：{}", config_path.display());
     for p in profile_templates {
         println!("native profile 模板：{}", p.display());
+    }
+    for p in rule_templates {
+        println!("规则模板：{}", p.display());
     }
     Ok(())
 }
@@ -99,6 +123,333 @@ fn write_native_profile_templates(project_dir: &Path, force: bool) -> Result<Vec
     Ok(written)
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RuleBootstrapMode {
+    MissingOnly,
+    RefreshManaged,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RuleFileKind {
+    ManagedMarkdown,
+    PlainMarkdown,
+}
+
+struct RuleFileSpec {
+    path: PathBuf,
+    contents: String,
+    kind: RuleFileKind,
+}
+
+fn ensure_project_rule_bootstrap(
+    project_dir: &Path,
+    mode: RuleBootstrapMode,
+) -> Result<Vec<PathBuf>> {
+    let mut written = Vec::new();
+    for spec in build_rule_file_specs(project_dir) {
+        let changed = match spec.kind {
+            RuleFileKind::ManagedMarkdown => {
+                ensure_managed_markdown_file(&spec.path, &spec.contents, mode)?
+            }
+            RuleFileKind::PlainMarkdown => {
+                ensure_plain_markdown_file(&spec.path, &spec.contents, mode)?
+            }
+        };
+        if changed {
+            written.push(spec.path);
+        }
+    }
+    Ok(written)
+}
+
+fn build_rule_file_specs(project_dir: &Path) -> Vec<RuleFileSpec> {
+    vec![
+        RuleFileSpec {
+            path: project_dir.join("AGENTS.md"),
+            contents: build_agents_rules_markdown(),
+            kind: RuleFileKind::ManagedMarkdown,
+        },
+        RuleFileSpec {
+            path: project_dir.join("CLAUDE.md"),
+            contents: build_claude_rules_markdown(),
+            kind: RuleFileKind::ManagedMarkdown,
+        },
+        RuleFileSpec {
+            path: project_dir.join("GEMINI.md"),
+            contents: build_gemini_rules_markdown(),
+            kind: RuleFileKind::ManagedMarkdown,
+        },
+        RuleFileSpec {
+            path: project_dir
+                .join(".agents")
+                .join("skills")
+                .join("rccb-delegate")
+                .join("SKILL.md"),
+            contents: build_agents_delegate_skill_markdown(),
+            kind: RuleFileKind::PlainMarkdown,
+        },
+        RuleFileSpec {
+            path: project_dir
+                .join(".factory")
+                .join("skills")
+                .join("rccb-delegate")
+                .join("SKILL.md"),
+            contents: build_factory_delegate_skill_markdown(),
+            kind: RuleFileKind::PlainMarkdown,
+        },
+        RuleFileSpec {
+            path: project_dir
+                .join(".claude")
+                .join("commands")
+                .join("rccb-code.md"),
+            contents: build_claude_command_markdown(
+                "委派编码任务给 opencode",
+                "使用 RCCB 把实现、改代码、运行测试、联调修复等任务委派给 `opencode`。\n\
+任务内容：$ARGUMENTS\n\n\
+请直接在当前会话中执行下面的委派命令，不要自己运行 bash：\n\
+`rccb --project-dir . ask --instance default --provider opencode --caller claude \"$ARGUMENTS\"`\n\n\
+如果任务依赖外部事实或资料，请改用 `/rccb-research`。",
+            ),
+            kind: RuleFileKind::PlainMarkdown,
+        },
+        RuleFileSpec {
+            path: project_dir
+                .join(".claude")
+                .join("commands")
+                .join("rccb-research.md"),
+            contents: build_claude_command_markdown(
+                "委派调研任务给 gemini，并要求 codex 复核",
+                "使用 RCCB 先把调研任务委派给 `gemini`，要求它至少做两轮检索与交叉验证，优先官方/一手来源。\n\
+任务内容：$ARGUMENTS\n\n\
+在 gemini 返回后，不要直接采纳结论；继续把关键结论、风险点和冲突信息委派给 `codex` 做复核。\n\
+整个过程中不要自己执行 bash。",
+            ),
+            kind: RuleFileKind::PlainMarkdown,
+        },
+        RuleFileSpec {
+            path: project_dir
+                .join(".claude")
+                .join("commands")
+                .join("rccb-audit.md"),
+            contents: build_claude_command_markdown(
+                "委派代码审计任务给 codex",
+                "使用 RCCB 把代码审计、风险评估、边界条件检查、回归分析和调研复核任务委派给 `codex`。\n\
+任务内容：$ARGUMENTS\n\n\
+请直接在当前会话中执行下面的委派命令，不要自己运行 bash：\n\
+`rccb --project-dir . ask --instance default --provider codex --caller claude \"$ARGUMENTS\"`",
+            ),
+            kind: RuleFileKind::PlainMarkdown,
+        },
+        RuleFileSpec {
+            path: project_dir
+                .join(".claude")
+                .join("commands")
+                .join("rccb-doc.md"),
+            contents: build_claude_command_markdown(
+                "委派文档记录任务给 droid",
+                "使用 RCCB 把文档整理、纪要、变更说明、操作手册和复盘归档任务委派给 `droid`。\n\
+任务内容：$ARGUMENTS\n\n\
+请直接在当前会话中执行下面的委派命令，不要自己运行 bash：\n\
+`rccb --project-dir . ask --instance default --provider droid --caller claude \"$ARGUMENTS\"`",
+            ),
+            kind: RuleFileKind::PlainMarkdown,
+        },
+    ]
+}
+
+fn ensure_managed_markdown_file(
+    path: &Path,
+    managed: &str,
+    mode: RuleBootstrapMode,
+) -> Result<bool> {
+    if path.exists() && matches!(mode, RuleBootstrapMode::MissingOnly) {
+        return Ok(false);
+    }
+
+    let mut user_block = String::new();
+    if path.exists() {
+        let existing = fs::read_to_string(path)
+            .with_context(|| format!("读取规则文件失败：{}", path.display()))?;
+        if let Some(block) = extract_between_markers(&existing, RCCB_USER_BEGIN, RCCB_USER_END) {
+            user_block = block.trim().to_string();
+        }
+    }
+
+    let next = format!(
+        "{RCCB_MANAGED_BEGIN}\n{managed}\n{RCCB_MANAGED_END}\n\n{RCCB_USER_BEGIN}\n{user_block}\n{RCCB_USER_END}\n"
+    );
+    write_rule_file(path, &next)?;
+    Ok(true)
+}
+
+fn ensure_plain_markdown_file(
+    path: &Path,
+    contents: &str,
+    mode: RuleBootstrapMode,
+) -> Result<bool> {
+    if path.exists() && matches!(mode, RuleBootstrapMode::MissingOnly) {
+        return Ok(false);
+    }
+    write_rule_file(path, contents)?;
+    Ok(true)
+}
+
+fn write_rule_file(path: &Path, contents: &str) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(path, contents.as_bytes())
+        .with_context(|| format!("写入规则文件失败：{}", path.display()))
+}
+
+fn extract_between_markers(text: &str, start: &str, end: &str) -> Option<String> {
+    let start_idx = text.find(start)?;
+    let tail = &text[start_idx + start.len()..];
+    let end_idx = tail.find(end)?;
+    Some(tail[..end_idx].trim_matches('\n').to_string())
+}
+
+fn build_agents_rules_markdown() -> String {
+    "# RCCB 项目协作规则\n\n\
+本仓库以 `rccb` 为统一委派入口。优先使用项目级规则文件和技能，不依赖临时 pane 注入。\n\n\
+## 默认职责\n\
+- `claude`：默认编排者，只负责思考、拆解、分派、验收、汇总。\n\
+- `opencode`：默认编码者，优先承担实现、修复、重构、运行测试、联调。\n\
+- `gemini`：默认调研者，优先承担联网调研、资料搜集、事实核对、版本确认。\n\
+- `droid`：默认文档记录者，优先承担文档整理、纪要、变更说明、操作手册、复盘归档。\n\
+- `codex`：默认代码审计者，优先承担代码审查、风险识别、边界条件检查，以及对调研结论的核验。\n\n\
+## 编排原则\n\
+- 默认把第一个 provider 当作编排者，其余 provider 当作执行者。\n\
+- 编排者不要自己执行 bash、不要自己改文件、不要自己跑测试。\n\
+- 所有执行任务统一通过 `rccb --project-dir . ask --instance default --provider <执行者> --caller <编排者> \"<任务>\"` 下发。\n\
+- 选择执行者时优先匹配其默认职责；只有确有必要时才跨职责派单。\n\n\
+## 调研核验链路\n\
+- 只要任务涉及外部事实、时间敏感信息、网页资料、版本差异或供应商能力判断，优先先派给 `gemini`。\n\
+- `gemini` 的调研至少做两轮：第一轮收集官方/一手来源，第二轮交叉验证关键结论、日期和风险点。\n\
+- 任何会影响实现、设计决策或最终结论的调研结果，都必须再派给 `codex` 做复核。\n\
+- `codex` 复核时重点关注：事实冲突、过期信息、落地风险、边界条件、遗漏约束。\n\n\
+## 实时状态与结果\n\
+- 静默模式下，最终结果以 `.rccb/tasks/<instance>/artifacts/<req_id>.reply.md` 为准。\n\
+- 如果同步 `ask` 超时，不要立刻重派；先用 `rccb watch --instance default --req-id <req_id> --follow --with-provider-log --timeout-s 0 --pane-ui` 查看真实状态。\n\
+- 调试日志只应出现在 debug pane，不要把旁路日志刷进 provider 的前台 pane。\n\n\
+## 托管与自定义\n\
+- 本文件由 RCCB 托管生成，普通启动只补缺失文件，不覆盖现有内容。\n\
+- `debug` 模式启动时，RCCB 会刷新托管区块，方便联调规则。\n\
+- 请把项目级个性化规则写在下方用户区块中；RCCB 刷新托管区块时会保留用户区块。".to_string()
+}
+
+fn build_claude_rules_markdown() -> String {
+    "# Claude 编排规则\n\n\
+你在本项目中的默认角色是编排者。除非用户明确改派，否则不要自己执行 bash、修改文件或运行测试。\n\n\
+## 默认派单分工\n\
+- 实现、改代码、运行测试、修复问题：优先派给 `opencode`\n\
+- 调研、搜集资料、核对外部事实：优先派给 `gemini`\n\
+- 文档、纪要、归档、说明整理：优先派给 `droid`\n\
+- 代码审计、风险核验、调研复核：优先派给 `codex`\n\n\
+## 调研强约束\n\
+- 涉及外部事实时，先委派 `gemini` 做至少两轮调研与交叉验证。\n\
+- `gemini` 返回后，不要直接采纳；继续委派 `codex` 复核关键结论、日期、风险和边界条件。\n\
+- 没有 `codex` 复核时，不要把调研结果当成最终依据。\n\n\
+## 标准命令\n\
+```bash\n\
+rccb --project-dir . ask --instance default --provider <执行者> --caller claude \"<任务>\"\n\
+```\n\n\
+## 查看真实状态\n\
+- 若请求超时或你不确定执行者是否仍在运行，优先执行：\n\
+```bash\n\
+rccb --project-dir . watch --instance default --req-id <req_id> --follow --with-provider-log --timeout-s 0 --pane-ui\n\
+```\n\
+- 静默结果消费以 `.reply.md` 工件为准，但运行态判断优先看 `watch`。\n\n\
+## 托管与自定义\n\
+- 本文件由 RCCB 托管生成；普通模式不覆盖已有文件。\n\
+- `debug` 模式会刷新托管区块，便于联调。\n\
+- 自定义规则请写在下方用户区块。".to_string()
+}
+
+fn build_gemini_rules_markdown() -> String {
+    "# Gemini 调研规则\n\n\
+你在本项目中的默认角色是调研者。优先承担联网调研、事实核对、版本信息确认、资料汇总。\n\n\
+## 调研要求\n\
+- 对外部事实、版本、发布时间、网页资料、供应商能力判断，至少执行两轮调研。\n\
+- 第一轮优先搜集官方或一手来源；第二轮交叉验证关键结论、日期、风险和限制条件。\n\
+- 如果遇到冲突信息，要明确写出冲突点，不要自行抹平。\n\
+- 输出时尽量给出来源线索、日期、置信度和未确认项，方便后续由 `codex` 复核。\n\n\
+## 边界\n\
+- 除非任务明确要求，否则不要把自己当成最终代码审计者。\n\
+- 除非任务明确要求，否则不要承担文档归档者职责。\n\
+- 如果用户要基于调研结果做实现或结论，请明确提醒：还需要由 `codex` 做复核。\n\n\
+## RCCB 交互\n\
+- 你通常通过 RCCB 收到任务，回复内容应尽量结构化，便于编排者继续派单。\n\
+- 如需长内容，保持正文清晰，不要重复协议占位文本。"
+        .to_string()
+}
+
+fn build_agents_delegate_skill_markdown() -> String {
+    "# Skill: rccb-delegate\n\n\
+## 用途\n\
+通过 `rccb` 把执行任务委派给合适的执行者，并在静默模式或超时场景下用 `watch`/`reply.md` 获取真实状态与最终结果。\n\n\
+## 选择执行者\n\
+- `opencode`：编码、改文件、运行测试、修复实现问题\n\
+- `gemini`：联网调研、资料搜集、事实核对\n\
+- `droid`：文档、纪要、复盘、整理记录\n\
+- `codex`：代码审计、风险核验、边界检查，以及对调研结果的复核\n\n\
+## 调研链路\n\
+- 如果任务涉及外部事实或网页资料，先委派 `gemini` 做至少两轮调研。\n\
+- `gemini` 返回后，再委派 `codex` 复核关键结论、日期、风险和遗漏项。\n\n\
+## 标准命令\n\
+```bash\n\
+rccb --project-dir . ask --instance default --provider <provider> --caller <caller> \"<task>\"\n\
+```\n\n\
+## 运行态查看\n\
+- 如果 `ask` 超时，不要默认任务失败。\n\
+- 优先执行：\n\
+```bash\n\
+rccb --project-dir . watch --instance default --req-id <req_id> --follow --with-provider-log --timeout-s 0 --pane-ui\n\
+```\n\n\
+## 工件约定\n\
+- 请求工件：`.rccb/tasks/<instance>/artifacts/<req_id>.request.md`\n\
+- 结果工件：`.rccb/tasks/<instance>/artifacts/<req_id>.reply.md`\n\
+- 静默消费最终结果时，优先读取 `reply.md`。".to_string()
+}
+
+fn build_factory_delegate_skill_markdown() -> String {
+    "---\n\
+name: rccb-delegate\n\
+description: 通过 RCCB 委派执行任务，并在静默模式下用 watch/reply.md 跟踪真实状态与最终结果。\n\
+---\n\n\
+# Skill: RCCB Delegate\n\n\
+## 选择执行者\n\
+- `opencode`：编码与测试\n\
+- `gemini`：调研与事实核验\n\
+- `droid`：文档与记录\n\
+- `codex`：代码审计与调研复核\n\n\
+## 调研链路\n\
+1. 先派 `gemini` 做至少两轮调研。\n\
+2. 再派 `codex` 复核关键结论、日期、风险和边界条件。\n\
+3. 没有经过 `codex` 复核时，不要把调研结论当最终依据。\n\n\
+## 标准命令\n\
+```bash\n\
+rccb --project-dir . ask --instance default --provider <provider> --caller <caller> \"<task>\"\n\
+```\n\n\
+## 状态查看\n\
+```bash\n\
+rccb --project-dir . watch --instance default --req-id <req_id> --follow --with-provider-log --timeout-s 0 --pane-ui\n\
+```\n\n\
+## 工件驱动\n\
+- 最终结果优先来自 `.rccb/tasks/<instance>/artifacts/<req_id>.reply.md`\n\
+- 超时后先看 `watch`，不要立刻重复派单。".to_string()
+}
+
+fn build_claude_command_markdown(description: &str, body: &str) -> String {
+    format!(
+        "---\n\
+description: {description}\n\
+argument-hint: [任务内容]\n\
+---\n\n\
+{body}\n"
+    )
+}
+
 pub fn cmd_start(
     project_dir: &Path,
     instance: &str,
@@ -114,6 +465,14 @@ pub fn cmd_start(
         normalize_provider_list(&providers)?
     };
     let effective_debug = resolve_start_debug(project_dir, instance, debug.then_some(true));
+    let _ = ensure_project_rule_bootstrap(
+        project_dir,
+        if effective_debug {
+            RuleBootstrapMode::RefreshManaged
+        } else {
+            RuleBootstrapMode::MissingOnly
+        },
+    )?;
 
     start_instance(
         project_dir,
@@ -154,6 +513,14 @@ pub fn cmd_external_provider_launch(project_dir: &Path, raw: Vec<String>) -> Res
     }
     let effective_debug = resolve_start_debug(project_dir, "default", env_debug_override());
     ensure_project_layout(project_dir)?;
+    let _ = ensure_project_rule_bootstrap(
+        project_dir,
+        if effective_debug {
+            RuleBootstrapMode::RefreshManaged
+        } else {
+            RuleBootstrapMode::MissingOnly
+        },
+    )?;
     restart_default_daemon_for_shortcut(project_dir)?;
     ensure_default_daemon_running(project_dir, &normalized, effective_debug)?;
 
@@ -1048,7 +1415,7 @@ fn orchestrator_guardrail_prompt(orchestrator: &str, executors: &[String]) -> St
         executors.join(", ")
     };
     format!(
-        "RCCB 编排模式已启用。\n\n你当前是编排者：{orchestrator}。\n可用执行者：{executor_list}。\n\n严格规则：\n- 不要自己执行 bash 命令。\n- 不要自己修改文件或运行测试。\n- 所有执行任务都必须通过 RCCB 委派给执行者。\n- 你的职责只包括：规划、拆解、分派、验收、汇总。\n\n推荐委派格式：\n`rccb --project-dir . ask --instance default --provider <执行者> --caller {orchestrator} \"<任务>\"`\n\n运行期间，执行者状态与最终结果都会先写入后台 inbox。\n默认不会把结果刷到你的 pane；只有显式启用回调时，系统才会向前台注入状态或结果。\n\n如果还需要动作，请继续通过 RCCB 委派给执行者，而不是自己执行。"
+        "RCCB 编排模式已启用。\n\n你当前是编排者：{orchestrator}。\n可用执行者：{executor_list}。\n\n严格规则：\n- 不要自己执行 bash 命令。\n- 不要自己修改文件或运行测试。\n- 所有执行任务都必须通过 RCCB 委派给执行者。\n- 你的职责只包括：规划、拆解、分派、验收、汇总。\n\n默认分工：\n- opencode：编码者，优先承担实现、修复、重构、测试。\n- gemini：调研者，优先承担联网调研、资料搜集、事实核对。\n- droid：文档记录者，优先承担文档、纪要、说明、归档。\n- codex：代码审计者，优先承担代码审查、风险分析、边界检查，以及对调研结论的复核。\n\n调研链路：\n- 涉及外部事实时，先派 gemini 做至少两轮调研与交叉验证。\n- gemini 返回后，不要直接采纳；继续派 codex 复核关键结论、日期、风险和边界条件。\n\n推荐委派格式：\n`rccb --project-dir . ask --instance default --provider <执行者> --caller {orchestrator} \"<任务>\"`\n\n运行期间，执行者状态与最终结果都会先写入后台 inbox。\n默认不会把结果刷到你的 pane；只有显式启用回调时，系统才会向前台注入状态或结果。\n如果 ask 超时，请优先使用 `rccb --project-dir . watch --instance default --req-id <req_id> --follow --with-provider-log --timeout-s 0 --pane-ui` 查看真实状态，而不是立刻重派。\n\n如果还需要动作，请继续通过 RCCB 委派给执行者，而不是自己执行。"
     )
 }
 
@@ -3758,11 +4125,13 @@ mod tests {
 
     use super::{
         build_debug_watch_command, cleanup_inflight_tasks, compact_watch_line,
-        debug_watch_pane_percent, is_in_flight_status, is_terminal_bus_task_event,
-        is_terminal_task_status, load_task_by_req_id, orchestrator_guardrail_prompt,
-        orchestrator_strict_mode_enabled, provider_start_cmd, resolve_debug_watch_provider,
-        select_watch_req_for_provider, select_watch_req_for_provider_follow, split_layout_groups,
-        split_percent_for_equal_stack, task_file_for_req_id, watch_bus_enabled,
+        debug_watch_pane_percent, ensure_project_rule_bootstrap, is_in_flight_status,
+        is_terminal_bus_task_event, is_terminal_task_status, load_task_by_req_id,
+        orchestrator_guardrail_prompt, orchestrator_strict_mode_enabled, provider_start_cmd,
+        resolve_debug_watch_provider, select_watch_req_for_provider,
+        select_watch_req_for_provider_follow, split_layout_groups, split_percent_for_equal_stack,
+        task_file_for_req_id, watch_bus_enabled, RuleBootstrapMode, RCCB_MANAGED_BEGIN,
+        RCCB_MANAGED_END, RCCB_USER_BEGIN, RCCB_USER_END,
     };
     use crate::io_utils::{now_unix, now_unix_ms, update_task_status, write_json_pretty};
     use crate::layout::{ensure_project_layout, state_path, tasks_instance_dir};
@@ -4040,6 +4409,52 @@ mod tests {
     }
 
     #[test]
+    fn rule_bootstrap_creates_expected_files() {
+        let project = std::env::temp_dir().join(format!("rccb-rules-{}", now_unix_ms()));
+        ensure_project_layout(&project).unwrap();
+
+        let written =
+            ensure_project_rule_bootstrap(&project, RuleBootstrapMode::MissingOnly).unwrap();
+
+        assert!(written.iter().any(|p| p.ends_with("AGENTS.md")));
+        assert!(project.join("AGENTS.md").exists());
+        assert!(project.join("CLAUDE.md").exists());
+        assert!(project.join("GEMINI.md").exists());
+        assert!(project
+            .join(".agents/skills/rccb-delegate/SKILL.md")
+            .exists());
+        assert!(project
+            .join(".factory/skills/rccb-delegate/SKILL.md")
+            .exists());
+        assert!(project.join(".claude/commands/rccb-research.md").exists());
+
+        let _ = fs::remove_dir_all(&project);
+    }
+
+    #[test]
+    fn rule_bootstrap_refresh_keeps_user_section() {
+        let project = std::env::temp_dir().join(format!("rccb-rules-user-{}", now_unix_ms()));
+        ensure_project_layout(&project).unwrap();
+
+        let agents_path = project.join("AGENTS.md");
+        fs::write(
+            &agents_path,
+            format!(
+                "{RCCB_MANAGED_BEGIN}\nold\n{RCCB_MANAGED_END}\n\n{RCCB_USER_BEGIN}\n自定义规则\n{RCCB_USER_END}\n"
+            ),
+        )
+        .unwrap();
+
+        ensure_project_rule_bootstrap(&project, RuleBootstrapMode::RefreshManaged).unwrap();
+        let updated = fs::read_to_string(&agents_path).unwrap();
+        assert!(updated.contains("自定义规则"));
+        assert!(updated.contains("gemini"));
+        assert!(updated.contains("codex"));
+
+        let _ = fs::remove_dir_all(&project);
+    }
+
+    #[test]
     fn select_watch_req_for_provider_prefers_inflight_then_latest() {
         let project = std::env::temp_dir().join(format!("rccb-watch-provider-{}", now_unix_ms()));
         let instance = "default";
@@ -4273,6 +4688,9 @@ mod tests {
         assert!(prompt.contains("--caller claude"));
         assert!(prompt.contains("后台 inbox"));
         assert!(prompt.contains("默认不会把结果刷到你的 pane"));
+        assert!(prompt.contains("opencode：编码者"));
+        assert!(prompt.contains("gemini 做至少两轮调研"));
+        assert!(prompt.contains("继续派 codex 复核"));
     }
 
     #[test]
