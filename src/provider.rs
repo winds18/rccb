@@ -558,6 +558,11 @@ fn execute_native_via_tmux_feed(
     };
     let feed_path = target.feed_file.as_ref().context("tmux feed 文件缺失")?;
     let mut feed_offset = current_feed_size(feed_path);
+    let feed_window_bytes = parse_env_f64("RCCB_PANE_FEED_WINDOW_BYTES")
+        .unwrap_or(512_000.0)
+        .clamp(32_000.0, 4_000_000.0) as usize;
+    let mut feed_window = String::new();
+    let mut feed_reply = String::new();
     let previous_snapshot = capture_pane_text(target, capture_lines)
         .with_context(|| format!("下发前抓取 tmux pane 内容失败：pane={}", target.pane_id))?;
 
@@ -606,6 +611,12 @@ fn execute_native_via_tmux_feed(
         let delta = read_feed_delta(feed_path, &mut feed_offset)?;
         let meaningful_activity = pane_delta_has_meaningful_activity(&delta);
         if !delta.is_empty() {
+            append_feed_window(&mut feed_window, &delta, feed_window_bytes);
+            let streamed_reply = extract_reply_for_req_from_stream(&feed_window, req_id);
+            if !streamed_reply.trim().is_empty() {
+                feed_reply = streamed_reply;
+                final_reply_seen = true;
+            }
             if !effective_quiet {
                 on_delta(delta);
             }
@@ -691,9 +702,14 @@ fn execute_native_via_tmux_feed(
         }
     }
 
-    let mut reply = extract_reply_for_req(&previous_window, req_id);
-    if reply.trim().is_empty() && should_fallback_to_strip_done(&previous_window, req_id) {
-        reply = strip_done_text(&previous_window, req_id);
+    let final_capture = capture_pane_text(target, capture_lines).unwrap_or_default();
+    let final_window = pane_window_for_req(&final_capture, req_id).unwrap_or(previous_window);
+    let mut reply = extract_reply_for_req(&final_window, req_id);
+    if reply.trim().is_empty() && should_fallback_to_strip_done(&final_window, req_id) {
+        reply = strip_done_text(&final_window, req_id);
+    }
+    if reply.trim().is_empty() && !feed_reply.trim().is_empty() {
+        reply = feed_reply;
     }
     Ok(ProviderExecResult {
         exit_code: 0,
@@ -1775,6 +1791,32 @@ fn extract_reply_for_req(text: &str, req_id: &str) -> String {
     sanitize_reply_text(&lines.join("\n"))
 }
 
+fn extract_reply_for_req_from_stream(text: &str, req_id: &str) -> String {
+    let begin_marker = format!("{} {}", BEGIN_PREFIX, req_id);
+    let done_marker = format!("{} {}", DONE_PREFIX, req_id);
+    if !text.contains(&begin_marker) || !text.contains(&done_marker) {
+        return String::new();
+    }
+
+    let mut best = String::new();
+    let mut search_from = 0usize;
+    while let Some(begin_rel) = text[search_from..].find(&begin_marker) {
+        let begin_idx = search_from + begin_rel;
+        let body_start = begin_idx + begin_marker.len();
+        let Some(done_rel) = text[body_start..].find(&done_marker) else {
+            break;
+        };
+        let done_idx = body_start + done_rel;
+        let candidate = sanitize_stream_reply_text(&text[body_start..done_idx]);
+        if is_meaningful_stream_reply(&candidate) && candidate.len() > best.len() {
+            best = candidate;
+        }
+        search_from = body_start;
+    }
+
+    best
+}
+
 fn strip_done_text(text: &str, req_id: &str) -> String {
     let marker = format!("{} {}", DONE_PREFIX, req_id);
     let mut lines: Vec<String> = text.lines().map(|s| s.to_string()).collect();
@@ -1851,6 +1893,87 @@ fn sanitize_reply_text(reply: &str) -> String {
     lines.retain(|line| !is_reply_placeholder_line(line));
     trim_blank_lines(&mut lines);
     lines.join("\n").trim_end().to_string()
+}
+
+fn sanitize_stream_reply_text(reply: &str) -> String {
+    let mut shaped = String::with_capacity(reply.len());
+    let mut last_was_space = false;
+    let mut last_was_newline = false;
+    for ch in reply.chars() {
+        match ch {
+            '\r' | '\n' | '│' | '┃' | '╎' | '▌' | '▎' | '▍' | '▕' | '▏' | '╭' | '╮' | '╰' | '╯'
+            | '─' => {
+                if !last_was_newline {
+                    shaped.push('\n');
+                    last_was_newline = true;
+                }
+                last_was_space = false;
+            }
+            '█' | '■' | '⬝' | '▄' | '▀' | '▣' | '╹' | '◌' | '⠸' | '⠼' | '✻' => {
+                if !last_was_space && !last_was_newline {
+                    shaped.push(' ');
+                    last_was_space = true;
+                }
+            }
+            c if c.is_control() => {}
+            c if c.is_whitespace() => {
+                if !last_was_space && !last_was_newline {
+                    shaped.push(' ');
+                    last_was_space = true;
+                }
+            }
+            _ => {
+                shaped.push(ch);
+                last_was_space = false;
+                last_was_newline = false;
+            }
+        }
+    }
+
+    let mut lines: Vec<String> = shaped
+        .lines()
+        .map(sanitize_reply_line)
+        .filter(|line| {
+            let trimmed = line.trim();
+            !trimmed.is_empty()
+                && !trimmed.starts_with(REQ_ID_PREFIX)
+                && !trimmed.starts_with(REPLY_FORMAT_PROMPT_LINE)
+                && !trimmed.starts_with("Copied to clipboard")
+                && !trimmed.starts_with("Ask anything...")
+                && !trimmed.starts_with("Type your message")
+        })
+        .collect();
+    trim_blank_lines(&mut lines);
+    lines.join("\n").trim().to_string()
+}
+
+fn is_meaningful_stream_reply(reply: &str) -> bool {
+    let trimmed = reply.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    if trimmed.contains("<回复内容>") || trimmed.contains("<reply>") {
+        return false;
+    }
+    if trimmed == "..." || trimmed == "……" {
+        return false;
+    }
+    true
+}
+
+fn append_feed_window(window: &mut String, delta: &str, max_bytes: usize) {
+    window.push_str(delta);
+    if window.len() <= max_bytes {
+        return;
+    }
+
+    let mut trim_at = window.len().saturating_sub(max_bytes);
+    while trim_at < window.len() && !window.is_char_boundary(trim_at) {
+        trim_at += 1;
+    }
+    if trim_at > 0 && trim_at <= window.len() {
+        window.drain(..trim_at);
+    }
 }
 
 fn current_feed_size(path: &Path) -> u64 {
@@ -2453,6 +2576,28 @@ mod tests {
         );
         let got = extract_reply_for_req(&raw, req_id);
         assert_eq!(got, "ZeroClaw 项目调研报告\n核心语言是 Rust");
+    }
+
+    #[test]
+    fn extract_reply_for_req_from_stream_ignores_placeholder_echo() {
+        let req_id = "req-stream-placeholder";
+        let raw = format!("noise RCCB_BEGIN: {req_id} <回复内容> RCCB_DONE: {req_id} more noise");
+        let got = extract_reply_for_req_from_stream(&raw, req_id);
+        assert!(got.is_empty());
+    }
+
+    #[test]
+    fn extract_reply_for_req_from_stream_handles_opencode_tui_feed() {
+        let req_id = "req-stream-opencode";
+        let raw = format!(
+            "prompt RCCB_BEGIN: {req_id} <回复内容> RCCB_DONE: {req_id} Thinking: searching \
+             frame RCCB_BEGIN: {req_id} █ ZeroClaw 项目调研报告 █ 1. 项目概述 █ 核心语言：Rust █ RCCB_DONE: {req_id} \
+             tmux;]52;c;Q0NCX0RPTkU= Copied to clipboard"
+        );
+        let got = extract_reply_for_req_from_stream(&raw, req_id);
+        assert!(got.contains("ZeroClaw 项目调研报告"));
+        assert!(got.contains("核心语言：Rust"));
+        assert!(!got.contains("<回复内容>"));
     }
 
     #[test]
