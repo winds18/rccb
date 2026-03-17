@@ -24,6 +24,8 @@ rccb --project-dir . init
 - `./CLAUDE.md`
 - `./GEMINI.md`
 - `./.agents/skills/rccb-delegate/SKILL.md`（Codex 技能）
+- `./.agents/skills/rccb-audit/SKILL.md`
+- `./.agents/skills/rccb-research-verify/SKILL.md`
 - `./.opencode/skills/rccb-delegate/SKILL.md`
 - `./.opencode/commands/rccb-*.md`
 - `./.opencode/agents/*.md`
@@ -40,6 +42,11 @@ rccb --project-dir . init
 - `debug` 模式：刷新 RCCB 生成模板，包括 `.rccb/config.example.json`、`providers/*.example.json` 与项目级托管规则
 - 启动包装脚本也属于 RCCB 生成模板，`debug` 模式会一并刷新
 - `AGENTS.md` / `CLAUDE.md` / `GEMINI.md` 会保留用户区块，方便写项目个性化规则
+
+Codex / Gemini 强化点：
+
+- `Codex` 额外生成审计与调研复核技能：`rccb-audit`、`rccb-research-verify`
+- `GEMINI.md` 内置两轮调研、多路径交叉验证、冲突项显式输出的工作流
 
 ## 编排启动
 

@@ -303,6 +303,24 @@ fn build_rule_file_specs(project_dir: &Path) -> Vec<RuleFileSpec> {
         },
         RuleFileSpec {
             path: project_dir
+                .join(".agents")
+                .join("skills")
+                .join("rccb-audit")
+                .join("SKILL.md"),
+            contents: build_agents_audit_skill_markdown(),
+            kind: RuleFileKind::PlainMarkdown,
+        },
+        RuleFileSpec {
+            path: project_dir
+                .join(".agents")
+                .join("skills")
+                .join("rccb-research-verify")
+                .join("SKILL.md"),
+            contents: build_agents_research_verify_skill_markdown(),
+            kind: RuleFileKind::PlainMarkdown,
+        },
+        RuleFileSpec {
+            path: project_dir
                 .join(".opencode")
                 .join("skills")
                 .join("rccb-delegate")
@@ -654,6 +672,17 @@ fn build_gemini_rules_markdown() -> String {
 - 第一轮优先搜集官方或一手来源；第二轮交叉验证关键结论、日期、风险和限制条件。\n\
 - 如果遇到冲突信息，要明确写出冲突点，不要自行抹平。\n\
 - 输出时尽量给出来源线索、日期、置信度和未确认项，方便后续由 `codex` 复核。\n\n\
+## 建议工作流\n\
+1. 先把问题拆成若干可验证子问题。\n\
+2. 第一轮检索时优先官方文档、源仓库、发行说明、标准文档或一手公告。\n\
+3. 第二轮至少换一种检索路径，专门验证第一轮的关键日期、版本、限制条件与风险点。\n\
+4. 把“已确认 / 待确认 / 存在冲突”明确分区。\n\
+5. 交付前提醒编排者将关键结论交给 `codex` 复核。\n\n\
+## 输出建议\n\
+- 先给结论摘要\n\
+- 再给证据点与日期\n\
+- 最后列出风险、冲突与待确认项\n\
+- 不要只给单轮搜索结论\n\n\
 ## 边界\n\
 - 除非任务明确要求，否则不要把自己当成最终代码审计者。\n\
 - 除非任务明确要求，否则不要承担文档归档者职责。\n\
@@ -690,6 +719,47 @@ rccb --project-dir . watch --instance default --req-id <req_id> --follow --with-
 - 请求工件：`.rccb/tasks/<instance>/artifacts/<req_id>.request.md`\n\
 - 结果工件：`.rccb/tasks/<instance>/artifacts/<req_id>.reply.md`\n\
 - 静默消费最终结果时，优先读取 `reply.md`。".to_string()
+}
+
+fn build_agents_audit_skill_markdown() -> String {
+    "# Skill: rccb-audit\n\n\
+## 用途\n\
+当你在本项目中承担 `codex` 的默认职责时，优先用这套规则完成代码审计、风险分析、边界条件检查和回归评估。\n\n\
+## 审计重点\n\
+- 行为回归\n\
+- 边界条件与异常路径\n\
+- 并发/时序问题\n\
+- 与 pane、实时状态、静默结果消费相关的协议一致性\n\
+- 缺失测试与未覆盖场景\n\n\
+## 结论结构\n\
+1. 先列最严重的问题\n\
+2. 每个问题明确：影响范围、触发条件、为何危险\n\
+3. 说明是否需要补测或追加验证\n\
+\n\
+## 和调研链路的关系\n\
+- 如果上游结论来自 `gemini` 调研，请重点复核日期、版本、事实冲突和是否能真正落到当前代码路径。\n\
+- 不要只复述调研结论，要给出采纳/不采纳的判断。".to_string()
+}
+
+fn build_agents_research_verify_skill_markdown() -> String {
+    "# Skill: rccb-research-verify\n\n\
+## 用途\n\
+专门用于 `codex` 对 `gemini` 调研结果做第二阶段复核。\n\n\
+## 复核步骤\n\
+1. 先抽取 `gemini` 给出的关键结论、日期、版本号和风险点。\n\
+2. 对最影响决策的结论逐条核验，不要平均用力。\n\
+3. 优先检查：是否过期、是否误读、是否缺少适用前提、是否和当前项目上下文不匹配。\n\
+4. 输出采纳建议：可直接采纳、需要附条件采纳、不能采纳。\n\n\
+## 输出模板\n\
+- 已采纳结论\n\
+- 有条件采纳结论\n\
+- 不建议采纳的结论\n\
+- 仍待补证据的点\n\
+\n\
+## 原则\n\
+- 复核不是重复总结，而是做筛错和减风险。\n\
+- 如果证据不足，要明确说不足，不要替上游补脑。"
+        .to_string()
 }
 
 fn build_opencode_delegate_skill_markdown() -> String {
@@ -4889,8 +4959,15 @@ mod tests {
         assert!(project.join("AGENTS.md").exists());
         assert!(project.join("CLAUDE.md").exists());
         assert!(project.join("GEMINI.md").exists());
+        let gemini_rules = fs::read_to_string(project.join("GEMINI.md")).unwrap();
+        assert!(gemini_rules.contains("建议工作流"));
+        assert!(gemini_rules.contains("至少执行两轮调研"));
         assert!(project
             .join(".agents/skills/rccb-delegate/SKILL.md")
+            .exists());
+        assert!(project.join(".agents/skills/rccb-audit/SKILL.md").exists());
+        assert!(project
+            .join(".agents/skills/rccb-research-verify/SKILL.md")
             .exists());
         assert!(project
             .join(".opencode/skills/rccb-delegate/SKILL.md")

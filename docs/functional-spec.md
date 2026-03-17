@@ -214,6 +214,8 @@
    - `.rccb/bin/*`（provider 启动包装脚本）
    - `AGENTS.md`、`CLAUDE.md`、`GEMINI.md`
    - `.agents/skills/rccb-delegate/SKILL.md`
+   - `.agents/skills/rccb-audit/SKILL.md`
+   - `.agents/skills/rccb-research-verify/SKILL.md`
    - `.opencode/skills/rccb-delegate/SKILL.md`
    - `.claude/commands/rccb-*.md`
    - `.claude/agents/*.md`
@@ -228,6 +230,7 @@
    - `--force` 会刷新所有 RCCB 生成模板
    - `debug` 启动会刷新 RCCB 生成模板，包括 `.rccb/config.example.json`、`providers/*.example.json`、`.rccb/bin/*` 与托管规则
    - `AGENTS.md` / `CLAUDE.md` / `GEMINI.md` 通过托管区块 + 用户区块的方式保留用户自定义内容
+   - Codex 额外生成审计/调研复核技能；Gemini 的项目级规则默认包含两轮调研与交叉验证工作流
 
 ### 5.1 启动
 
