@@ -1866,7 +1866,7 @@ fn orchestrator_guardrail_prompt(orchestrator: &str, executors: &[String]) -> St
         executors.join(", ")
     };
     format!(
-        "RCCB 编排模式已启用。\n\n你当前是编排者：{orchestrator}。\n可用执行者：{executor_list}。\n\n严格规则：\n- 不要自己执行 bash 命令。\n- 不要自己修改文件或运行测试。\n- 所有执行任务都必须通过 RCCB 委派给执行者。\n- 你的职责只包括：规划、拆解、分派、验收、汇总。\n\n默认分工：\n- opencode：编码者，优先承担实现、修复、重构、测试。\n- gemini：调研者，优先承担联网调研、资料搜集、事实核对。\n- droid：文档记录者，优先承担文档、纪要、说明、归档。\n- codex：代码审计者，优先承担代码审查、风险分析、边界检查，以及对调研结论的复核。\n\n调研链路：\n- 涉及外部事实时，先派 gemini 做至少两轮调研与交叉验证。\n- gemini 返回后，不要直接采纳；继续派 codex 复核关键结论、日期、风险和边界条件。\n\n推荐委派格式：\n`rccb --project-dir . ask --instance default --provider <执行者> --caller {orchestrator} \"<任务>\"`\n\n运行期间，执行者状态与最终结果都会先写入后台 inbox。\n默认不会把结果刷到你的 pane；只有显式启用回调时，系统才会向前台注入状态或结果。\n如果 ask 超时，请优先使用 `rccb --project-dir . watch --instance default --req-id <req_id> --follow --with-provider-log --timeout-s 0 --pane-ui` 查看真实状态，而不是立刻重派。\n\n如果还需要动作，请继续通过 RCCB 委派给执行者，而不是自己执行。"
+        "RCCB 编排模式已启用。\n\n当前编排者：{orchestrator}\n可用执行者：{executor_list}\n\n只做：规划、拆解、委派、验收、汇总。\n不要自己执行 bash、修改文件或运行测试。\n\n默认分工：opencode=编码，gemini=调研，droid=文档，codex=审计。\n调研规则：先 gemini 至少两轮调研，再 codex 复核关键结论。\n\n委派格式：\n`rccb --project-dir . ask --instance default --provider <执行者> --caller {orchestrator} \"<任务>\"`\n\n结果默认走后台 inbox 和 `.reply.md`，不会刷屏。\n若 ask 超时，先用 `watch --req-id` 看真实状态，不要立刻重派。\n详细规则见 `AGENTS.md` 与 `CLAUDE.md`。"
     )
 }
 
@@ -5264,14 +5264,14 @@ mod tests {
     fn orchestrator_guardrail_prompt_mentions_delegate_only_rules() {
         let prompt =
             orchestrator_guardrail_prompt("claude", &["codex".to_string(), "gemini".to_string()]);
-        assert!(prompt.contains("不要自己执行 bash 命令"));
+        assert!(prompt.contains("不要自己执行 bash"));
         assert!(prompt.contains("codex, gemini"));
         assert!(prompt.contains("--caller claude"));
         assert!(prompt.contains("后台 inbox"));
-        assert!(prompt.contains("默认不会把结果刷到你的 pane"));
-        assert!(prompt.contains("opencode：编码者"));
-        assert!(prompt.contains("gemini 做至少两轮调研"));
-        assert!(prompt.contains("继续派 codex 复核"));
+        assert!(prompt.contains("`.reply.md`"));
+        assert!(prompt.contains("opencode=编码"));
+        assert!(prompt.contains("先 gemini 至少两轮调研"));
+        assert!(prompt.contains("再 codex 复核关键结论"));
     }
 
     #[test]
