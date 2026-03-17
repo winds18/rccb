@@ -172,6 +172,12 @@ delegate-scribe       -> droid
 2. 执行 `rccb --project-dir . ask --instance default --provider <执行者> --caller claude --async "..."`
 3. 把 `req_id`、`watch` 命令和 `.reply.md` 路径回报给主编排者
 
+文档类任务补充约定：
+
+1. 如果文档需要长期保留但用户还没指定目录，先询问是否创建项目级目录，例如 `docs/`、`notes/`、`reports/`
+2. 如果只是单次零散文档，默认保存到当前目录 `./temp/rccb-docs/`
+3. `droid` 回复时至少应同时包含保存文件路径和内容摘要，不要只返回一个路径
+
 默认职责：
 
 - `opencode`：编码者

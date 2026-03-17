@@ -683,6 +683,8 @@ fn build_rule_file_specs(project_dir: &Path, providers: &[String]) -> Vec<RuleFi
                     &[
                         "整理任务时要明确期望的文档结构、输出格式和目标受众。",
                         "如果文档依赖外部事实，请提醒主编排者先完成调研和复核链路。",
+                        "如果任务需要保存文档且用户未指定路径，先询问是否创建项目级目录；若只是单次零散任务，默认保存到当前目录 `./temp/rccb-docs/`。",
+                        "要求 droid 回复时同时给出 `saved_files` 和内容摘要，不要只回保存路径。",
                     ],
                 ),
                 kind: RuleFileKind::PlainMarkdown,
@@ -749,6 +751,10 @@ fn build_rule_file_specs(project_dir: &Path, providers: &[String]) -> Vec<RuleFi
                 "委派文档记录任务给 droid",
                 "使用 RCCB 把文档整理、纪要、变更说明、操作手册和复盘归档任务委派给 `droid`。\n\
 任务内容：$ARGUMENTS\n\n\
+如果任务要求落盘保存文档，请附加以下约束：\n\
+1. 先判断是否需要长期保留；若用户未指定目录，先询问是否创建项目级目录。\n\
+2. 如果只是单次零散文档，默认保存到当前目录 `./temp/rccb-docs/`。\n\
+3. 回复时必须同时给出保存文件路径与内容摘要，不要只返回路径。\n\n\
 请直接在当前会话中执行下面的委派命令，不要自己运行 bash：\n\
 `rccb --project-dir . ask --instance default --provider droid --caller claude \"$ARGUMENTS\"`",
             ),
@@ -812,6 +818,7 @@ fn build_rule_file_specs(project_dir: &Path, providers: &[String]) -> Vec<RuleFi
                     "编排者不直接执行 bash、修改文件或运行测试。",
                     "静默模式下最终结果优先读取 `.rccb/tasks/<instance>/artifacts/<req_id>.reply.md`。",
                     "请求超时时先用 `watch --req-id` 查看真实状态，不要立刻重派。",
+                    "文档类任务如果只是单次零散输出，默认保存到当前目录 `./temp/rccb-docs/`；如果需要长期保留，先询问是否创建项目级目录。",
                 ],
             ),
             kind: RuleFileKind::PlainMarkdown,
@@ -844,6 +851,8 @@ fn build_rule_file_specs(project_dir: &Path, providers: &[String]) -> Vec<RuleFi
                     "优先输出结构清晰、可审阅、可追溯的文档。",
                     "如果文档结论依赖外部事实，应提醒编排者先完成 gemini 调研和 codex 复核。",
                     "不要把自己当作编排者或代码审计者。",
+                    "如果需要保存文档且用户未指定长期目录，先询问是否创建项目级目录；若只是单次零散文档，默认保存到当前目录 `./temp/rccb-docs/`。",
+                    "回复时至少包含保存文件路径、内容摘要与交付说明，不要只输出一个路径。",
                 ],
             ),
             kind: RuleFileKind::PlainMarkdown,
@@ -943,6 +952,11 @@ fn build_agents_rules_markdown(providers: &[String]) -> String {
 - 选择执行者时优先匹配其默认职责；只有确有必要时才跨职责派单。\n\n\
 ## 调研核验链路\n\
 {}\n\n\
+## 文档交付约定\n\
+- 文档类任务如果需要落盘，先区分长期项目文档和单次零散交付。\n\
+- 长期项目文档在用户未指定目录时，先询问是否创建项目级目录。\n\
+- 单次零散文档默认保存到当前目录 `./temp/rccb-docs/`。\n\
+- reply 里的路径只是索引，不要把保存路径误当作最终交付内容。\n\n\
 ## 实时状态与结果\n\
 - 静默模式下，最终结果以 `.rccb/tasks/<instance>/artifacts/<req_id>.reply.md` 为准。\n\
 - 如果同步 `ask` 超时，不要立刻重派；先用 `rccb watch --instance default --req-id <req_id> --follow --with-provider-log --timeout-s 0 --pane-ui` 查看真实状态。\n\
@@ -1003,12 +1017,19 @@ fn build_claude_rules_markdown(providers: &[String]) -> String {
         subagent_lines
             .push("- 可调用 Claude 子代理 `delegate-scribe`，由它异步把文档任务派给 `droid`。");
     }
+    let doc_delivery_rules = if contains_provider(providers, "droid") {
+        "- 文档类任务不要把 reply 里的保存路径误当作最终交付内容；路径只是索引，最终要看实际保存的文件。\n- 如果任务需要长期保留的项目文档，先询问用户是否创建项目级目录（如 `docs/`、`notes/`、`reports/`）。\n- 如果只是单次零散输出、且用户未指定长期目录，默认保存到当前目录下的 `./temp/rccb-docs/`。\n- 文档执行者回报时，至少同时给出：保存文件路径、内容摘要、适用场景，不要只回一个路径。".to_string()
+    } else {
+        "- 当前未启用文档执行者。".to_string()
+    };
     format!(
         "# Claude 编排规则\n\n\
 你在本项目中的默认角色是编排者。除非用户明确改派，否则不要自己执行 bash、修改文件或运行测试。\n\n\
 ## 默认派单分工\n\
 {}\n\n\
 ## 子代理优先策略\n\
+{}\n\n\
+## 文档交付约定\n\
 {}\n\n\
 ## 调研强约束\n\
 {}\n\n\
@@ -1036,6 +1057,7 @@ rccb --project-dir . watch --instance default --req-id <req_id> --follow --with-
         } else {
             subagent_lines.join("\n")
         },
+        doc_delivery_rules,
         research_rules
     )
 }
@@ -1362,6 +1384,15 @@ rccb --project-dir . ask --instance default --provider {provider} --caller claud
     )
 }
 
+fn build_doc_delivery_rules_markdown() -> &'static str {
+    "## 文档交付约定\n\
+- 如果任务要求产出需要保存的文档，先判断它是长期项目文档还是单次零散交付。\n\
+- 如果属于长期项目文档，且用户还没指定目录，先询问是否创建项目级目录（如 `docs/`、`notes/`、`reports/`）。\n\
+- 如果只是单次零散任务，或用户没有明确给出长期目录，默认保存到当前目录下的 `./temp/rccb-docs/`。\n\
+- 回复时不要只给一个保存路径；至少要同时返回：`saved_files`、简要摘要、为什么存到该目录。\n\
+- 保存路径只是索引，不要把路径本身冒充成最终交付内容。\n"
+}
+
 fn build_opencode_command_markdown(description: &str, body: &str) -> String {
     format!(
         "---\n\
@@ -1422,8 +1453,10 @@ description: {summary}\n\
 ---\n\n\
 # {}\n\n\
 {summary}\n\n\
-{details}\n",
-        localized_agent_title(name)
+{details}\n\n\
+{}\n",
+        localized_agent_title(name),
+        build_doc_delivery_rules_markdown()
     )
 }
 
@@ -5926,6 +5959,10 @@ mod tests {
             fs::read_to_string(project.join(".claude/agents/orchestrator.md")).unwrap();
         assert!(orchestrator_agent.contains("# 编排者"));
         assert!(orchestrator_agent.contains("delegate-coder"));
+        let delegate_scribe =
+            fs::read_to_string(project.join(".claude/agents/delegate-scribe.md")).unwrap();
+        assert!(delegate_scribe.contains("./temp/rccb-docs/"));
+        assert!(delegate_scribe.contains("saved_files"));
         assert!(project
             .join(".agents/skills/rccb-delegate/SKILL.md")
             .exists());
@@ -5947,6 +5984,9 @@ mod tests {
         assert!(project.join(".factory/droids/researcher.md").exists());
         assert!(project.join(".factory/settings.local.json").exists());
         assert!(project.join(".claude/commands/rccb-research.md").exists());
+        let doc_cmd = fs::read_to_string(project.join(".claude/commands/rccb-doc.md")).unwrap();
+        assert!(doc_cmd.contains("./temp/rccb-docs/"));
+        assert!(doc_cmd.contains("不要只返回路径"));
         assert!(project.join(".claude/commands/rccb-parallel.md").exists());
         assert!(project.join(".claude/agents/delegate-coder.md").exists());
         assert!(project

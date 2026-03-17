@@ -301,6 +301,8 @@
    - 若编排者为 `claude`，guardrail 会优先引导其使用 Claude 子代理做上下文隔离式异步派单
    - 若 `ask.request.caller == orchestrator` 且目标 provider 为执行者，则任务状态与最终结果都会写入 `.rccb/tmp/<instance>/orchestrator/<orchestrator>.jsonl` 作为 inbox 记录
    - 默认不向编排者 pane 注入最终结果；只有显式启用结果回调时才会回注到前台
+   - 文档类任务若未指定长期目录，先询问是否创建项目级目录；若只是单次零散文档，默认落到当前目录 `./temp/rccb-docs/`
+   - 文档执行者回报时至少包含保存文件路径与内容摘要，避免编排者把路径本身误判为最终交付
 4. 开关：
    - `RCCB_ORCHESTRATOR_STRICT=0` 可关闭
    - `RCCB_ORCHESTRATOR_RESULT_CALLBACK=1` 可启用最终结果前台回注
