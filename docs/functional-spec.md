@@ -285,6 +285,11 @@
    - provider/orchestrator pane 不显示旁路日志；旁路状态与流式信息只在 debug 日志 pane 展示
    - 当开启 orchestrator strict mode 时，执行者完成后的最终结果会后台回注给编排者 pane（仅最终结果，不回注过程日志）
 
+6. `rccb inbox --instance <id> [--orchestrator <provider>] [--req-id <id>] [--kind <status|progress|result>] [--limit <n>]`
+   - 查看静默模式下写入编排者后台 inbox 的 notice
+   - 省略 `--orchestrator` 时，优先从实例状态里的 orchestrator 推断
+   - 适合排查“pane 不刷屏，但后台是否已收到状态/结果”
+
 ### 5.3.1 Orchestrator Strict Mode
 
 1. 默认开启条件：快捷 pane 启动且存在至少一个执行者

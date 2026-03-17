@@ -83,6 +83,13 @@ rccb claude codex gemini opencode droid
    - `RCCB_ORCHESTRATOR_STRICT=0`：关闭编排者 strict mode（默认开启，且仅在存在执行者时生效）
    - `RCCB_ORCHESTRATOR_CALLBACK_MAX_CHARS=<N>`：限制回注给编排者的结果长度（默认 12000）
 
+静默后台消费排查：
+
+```bash
+rccb --project-dir . inbox --instance default --orchestrator claude --limit 20
+rccb --project-dir . inbox --instance default --req-id <req_id> --kind result --as-json
+```
+
 provider CLI 启动命令可覆盖：
 
 - `RCCB_CLAUDE_START_CMD`

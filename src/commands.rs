@@ -2489,6 +2489,112 @@ struct TaskView {
     reply_file: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct InboxEntryView {
+    instance: String,
+    orchestrator: String,
+    kind: String,
+    req_id: Option<String>,
+    executor: Option<String>,
+    caller: Option<String>,
+    status: Option<String>,
+    exit_code: Option<i32>,
+    ts_unix: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reply: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reply_file: Option<String>,
+}
+
+pub fn cmd_inbox(
+    project_dir: &Path,
+    instance: &str,
+    orchestrator: Option<&str>,
+    req_id: Option<&str>,
+    kind: Option<&str>,
+    limit: usize,
+    as_json: bool,
+) -> Result<()> {
+    ensure_project_layout(project_dir)?;
+    let orchestrator = resolve_inbox_orchestrator(project_dir, instance, orchestrator)?;
+    let mut items = load_orchestrator_inbox_entries(project_dir, instance, &orchestrator)?;
+
+    if let Some(req_id) = req_id.map(str::trim).filter(|v| !v.is_empty()) {
+        items.retain(|x| x.req_id.as_deref() == Some(req_id));
+    }
+    if let Some(kind) = kind.map(str::trim).filter(|v| !v.is_empty()) {
+        items.retain(|x| x.kind.eq_ignore_ascii_case(kind));
+    }
+
+    items.reverse();
+    if limit > 0 && items.len() > limit {
+        items.truncate(limit);
+    }
+
+    if as_json {
+        let val = json!({
+            "project": project_dir.display().to_string(),
+            "instance": instance,
+            "orchestrator": orchestrator,
+            "entries": items,
+        });
+        println!("{}", serde_json::to_string_pretty(&val)?);
+        return Ok(());
+    }
+
+    if items.is_empty() {
+        println!(
+            "未找到 inbox 条目：instance={} orchestrator={}",
+            instance, orchestrator
+        );
+        return Ok(());
+    }
+
+    println!(
+        "编排者 inbox：instance={} orchestrator={} 条目数={}",
+        instance,
+        orchestrator,
+        items.len()
+    );
+    for item in items {
+        println!(
+            "- kind={} req_id={} executor={} status={} exit={} ts={}",
+            item.kind,
+            item.req_id.unwrap_or_else(|| "-".to_string()),
+            item.executor.unwrap_or_else(|| "-".to_string()),
+            item.status.unwrap_or_else(|| "-".to_string()),
+            item.exit_code
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            item.ts_unix
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "-".to_string()),
+        );
+        if let Some(message) = item
+            .message
+            .as_deref()
+            .map(|v| compact_inbox_text(v, 160))
+            .filter(|v| !v.is_empty())
+        {
+            println!("  message={}", message);
+        }
+        if let Some(reply) = item
+            .reply
+            .as_deref()
+            .map(|v| compact_inbox_text(v, 200))
+            .filter(|v| !v.is_empty())
+        {
+            println!("  reply={}", reply);
+        }
+        if let Some(path) = item.reply_file.as_deref().filter(|v| !v.trim().is_empty()) {
+            println!("  reply_file={}", path);
+        }
+    }
+    Ok(())
+}
+
 pub fn cmd_tasks(
     project_dir: &Path,
     instance: Option<&str>,
@@ -2572,6 +2678,116 @@ fn load_tasks_in_instance(project_dir: &Path, instance: &str) -> Result<Vec<Task
         return Ok(Vec::new());
     }
     load_tasks_from_dir(&dir, instance)
+}
+
+fn resolve_inbox_orchestrator(
+    project_dir: &Path,
+    instance: &str,
+    explicit: Option<&str>,
+) -> Result<String> {
+    if let Some(v) = explicit.map(str::trim).filter(|v| !v.is_empty()) {
+        return Ok(v.to_string());
+    }
+    let path = state_path(project_dir, instance);
+    if path.exists() {
+        let state = load_state(&path)?;
+        if let Some(orchestrator) = state.orchestrator.filter(|v| !v.trim().is_empty()) {
+            return Ok(orchestrator);
+        }
+    }
+    bail!("缺少 --orchestrator，且无法从实例状态推断编排者");
+}
+
+fn load_orchestrator_inbox_entries(
+    project_dir: &Path,
+    instance: &str,
+    orchestrator: &str,
+) -> Result<Vec<InboxEntryView>> {
+    let path = tmp_instance_dir(project_dir, instance)
+        .join("orchestrator")
+        .join(format!("{}.jsonl", sanitize_filename(orchestrator)));
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut out = Vec::new();
+    let file =
+        File::open(&path).with_context(|| format!("打开编排者 inbox 失败：{}", path.display()))?;
+    let reader = io::BufReader::new(file);
+    for line in reader.lines() {
+        let line = match line {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let v: Value = match serde_json::from_str(line) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        out.push(InboxEntryView {
+            instance: instance.to_string(),
+            orchestrator: orchestrator.to_string(),
+            kind: v
+                .get("kind")
+                .and_then(|x| x.as_str())
+                .unwrap_or("unknown")
+                .to_string(),
+            req_id: v
+                .get("req_id")
+                .and_then(|x| x.as_str())
+                .map(|s| s.to_string()),
+            executor: v
+                .get("executor")
+                .and_then(|x| x.as_str())
+                .map(|s| s.to_string()),
+            caller: v
+                .get("caller")
+                .and_then(|x| x.as_str())
+                .map(|s| s.to_string()),
+            status: v
+                .get("status")
+                .and_then(|x| x.as_str())
+                .map(|s| s.to_string()),
+            exit_code: v
+                .get("exit_code")
+                .and_then(|x| x.as_i64())
+                .map(|x| x as i32),
+            ts_unix: v.get("ts_unix").and_then(|x| x.as_u64()),
+            message: v
+                .get("message")
+                .and_then(|x| x.as_str())
+                .map(|s| s.to_string()),
+            reply: v
+                .get("reply")
+                .and_then(|x| x.as_str())
+                .map(|s| s.to_string()),
+            reply_file: v
+                .get("reply_file")
+                .and_then(|x| x.as_str())
+                .map(|s| s.to_string()),
+        });
+    }
+    Ok(out)
+}
+
+fn compact_inbox_text(raw: &str, max_chars: usize) -> String {
+    let single = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    let compact = single.trim();
+    if compact.chars().count() <= max_chars {
+        return compact.to_string();
+    }
+    let mut out = String::new();
+    for ch in compact.chars() {
+        if out.chars().count() >= max_chars {
+            break;
+        }
+        out.push(ch);
+    }
+    out.push('…');
+    out
 }
 
 fn load_tasks_from_dir(dir: &Path, instance: &str) -> Result<Vec<TaskView>> {
@@ -4665,14 +4881,14 @@ mod tests {
         build_debug_watch_command, cleanup_inflight_tasks, compact_watch_line,
         debug_watch_pane_percent, ensure_project_bootstrap, ensure_project_rule_bootstrap,
         is_in_flight_status, is_terminal_bus_task_event, is_terminal_task_status,
-        load_task_by_req_id, orchestrator_guardrail_prompt, orchestrator_strict_mode_enabled,
-        provider_start_cmd, resolve_debug_watch_provider, select_watch_req_for_provider,
-        select_watch_req_for_provider_follow, split_layout_groups, split_percent_for_equal_stack,
-        task_file_for_req_id, watch_bus_enabled, BootstrapMode, RCCB_MANAGED_BEGIN,
-        RCCB_MANAGED_END, RCCB_USER_BEGIN, RCCB_USER_END,
+        load_orchestrator_inbox_entries, load_task_by_req_id, orchestrator_guardrail_prompt,
+        orchestrator_strict_mode_enabled, provider_start_cmd, resolve_debug_watch_provider,
+        select_watch_req_for_provider, select_watch_req_for_provider_follow, split_layout_groups,
+        split_percent_for_equal_stack, task_file_for_req_id, watch_bus_enabled, BootstrapMode,
+        RCCB_MANAGED_BEGIN, RCCB_MANAGED_END, RCCB_USER_BEGIN, RCCB_USER_END,
     };
     use crate::io_utils::{now_unix, now_unix_ms, update_task_status, write_json_pretty};
-    use crate::layout::{ensure_project_layout, tasks_instance_dir};
+    use crate::layout::{ensure_project_layout, tasks_instance_dir, tmp_instance_dir};
     use crate::types::{AskBusEvent, InstanceState};
 
     fn env_lock() -> &'static Mutex<()> {
@@ -5344,6 +5560,34 @@ mod tests {
         assert_eq!(r.get("status").and_then(|x| x.as_str()), Some("canceled"));
         assert_eq!(q.get("status").and_then(|x| x.as_str()), Some("canceled"));
         assert_eq!(d.get("status").and_then(|x| x.as_str()), Some("completed"));
+
+        let _ = fs::remove_dir_all(&project);
+    }
+
+    #[test]
+    fn load_orchestrator_inbox_entries_reads_jsonl_entries() {
+        let project = std::env::temp_dir().join(format!("rccb-inbox-{}", now_unix_ms()));
+        let instance = "default";
+        ensure_project_layout(&project).unwrap();
+        let inbox = tmp_instance_dir(&project, instance)
+            .join("orchestrator")
+            .join("claude.jsonl");
+        fs::create_dir_all(inbox.parent().unwrap()).unwrap();
+        fs::write(
+            &inbox,
+            concat!(
+                "{\"kind\":\"status\",\"req_id\":\"req-1\",\"executor\":\"gemini\",\"status\":\"running\",\"message\":\"still working\",\"ts_unix\":1}\n",
+                "{\"kind\":\"result\",\"req_id\":\"req-1\",\"executor\":\"gemini\",\"status\":\"completed\",\"exit_code\":0,\"reply\":\"done\",\"reply_file\":\"/tmp/reply.md\",\"ts_unix\":2}\n"
+            ),
+        )
+        .unwrap();
+
+        let items = load_orchestrator_inbox_entries(&project, instance, "claude").unwrap();
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].kind, "status");
+        assert_eq!(items[1].kind, "result");
+        assert_eq!(items[1].reply.as_deref(), Some("done"));
+        assert_eq!(items[1].reply_file.as_deref(), Some("/tmp/reply.md"));
 
         let _ = fs::remove_dir_all(&project);
     }

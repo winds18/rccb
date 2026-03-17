@@ -28,6 +28,7 @@ const HELP_EXAMPLES: &str = r#"示例：
      rccb --project-dir . status --as-json
      rccb --project-dir . mounted --as-json
      rccb --project-dir . tasks --instance team-a --limit 50 --as-json
+     rccb --project-dir . inbox --instance team-a --orchestrator claude --limit 20
 
   8) 兼容旧命令（统一入口）：
      rccb cask "..."
@@ -129,6 +130,30 @@ pub enum Command {
     Tasks {
         #[arg(long, help = "仅查看指定实例")]
         instance: Option<String>,
+
+        #[arg(long, default_value_t = 20, help = "返回条数上限")]
+        limit: usize,
+
+        #[arg(long, default_value_t = false, help = "以 JSON 输出")]
+        as_json: bool,
+    },
+
+    #[command(
+        about = "查看编排者后台 inbox",
+        long_about = "查看静默模式下写入编排者后台 inbox 的 notice 记录，可按 orchestrator/req_id/kind 过滤。"
+    )]
+    Inbox {
+        #[arg(long, default_value = "default", help = "实例 ID")]
+        instance: String,
+
+        #[arg(long, help = "编排者 provider；省略时优先从实例状态推断")]
+        orchestrator: Option<String>,
+
+        #[arg(long, help = "仅查看指定 req_id")]
+        req_id: Option<String>,
+
+        #[arg(long, help = "仅查看指定 kind（status/progress/result）")]
+        kind: Option<String>,
 
         #[arg(long, default_value_t = 20, help = "返回条数上限")]
         limit: usize,

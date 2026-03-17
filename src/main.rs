@@ -16,8 +16,8 @@ use clap::Parser;
 
 use crate::cli::{Cli, Command};
 use crate::commands::{
-    cmd_ask, cmd_cancel, cmd_debug, cmd_external_provider_launch, cmd_init, cmd_mounted, cmd_ping,
-    cmd_send, cmd_start, cmd_status, cmd_stop, cmd_tasks, cmd_watch,
+    cmd_ask, cmd_cancel, cmd_debug, cmd_external_provider_launch, cmd_inbox, cmd_init, cmd_mounted,
+    cmd_ping, cmd_send, cmd_start, cmd_status, cmd_stop, cmd_tasks, cmd_watch,
 };
 use crate::io_utils::{cleanup_project_retention, resolve_project_dir};
 use crate::orchestrator_callback::cmd_orchestrator_notify;
@@ -59,6 +59,22 @@ fn main() -> Result<()> {
             limit,
             as_json,
         } => cmd_tasks(&project_dir, instance.as_deref(), limit, as_json),
+        Command::Inbox {
+            instance,
+            orchestrator,
+            req_id,
+            kind,
+            limit,
+            as_json,
+        } => cmd_inbox(
+            &project_dir,
+            &instance,
+            orchestrator.as_deref(),
+            req_id.as_deref(),
+            kind.as_deref(),
+            limit,
+            as_json,
+        ),
         Command::Watch {
             instance,
             req_id,
