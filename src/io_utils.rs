@@ -258,3 +258,24 @@ pub fn update_task_status(
 
     write_json_pretty(task_file, &val)
 }
+
+pub fn update_task_artifact(task_file: &Path, key: &str, value: Option<&str>) -> Result<()> {
+    let mut raw = String::new();
+    File::open(task_file)
+        .with_context(|| format!("open task file failed: {}", task_file.display()))?
+        .read_to_string(&mut raw)
+        .with_context(|| format!("read task file failed: {}", task_file.display()))?;
+
+    let mut val: Value = serde_json::from_str(&raw)
+        .with_context(|| format!("parse task file failed: {}", task_file.display()))?;
+
+    if !val.get("artifacts").is_some_and(|v| v.is_object()) {
+        val["artifacts"] = serde_json::json!({});
+    }
+    val["artifacts"][key] = match value {
+        Some(v) => serde_json::json!(v),
+        None => Value::Null,
+    };
+
+    write_json_pretty(task_file, &val)
+}

@@ -20,11 +20,12 @@ use crate::completion_hook::{notify_completion_async, CompletionHookInput};
 use crate::constants::{PROTOCOL_PREFIX, PROTOCOL_VERSION, SUPPORTED_PROVIDERS};
 use crate::io_utils::{
     make_req_id, normalize_connect_host, now_unix, now_unix_ms, parse_listen_addr, random_token,
-    update_task_status, write_json_pretty, write_line, write_state,
+    update_task_artifact, update_task_status, write_json_pretty, write_line, write_state,
 };
 use crate::layout::{
     ensure_project_layout, launcher_meta_path, lock_path, logs_instance_dir, sanitize_filename,
-    sanitize_instance, session_instance_dir, state_path, tasks_instance_dir, tmp_instance_dir,
+    sanitize_instance, session_instance_dir, state_path, task_reply_artifact_path,
+    task_request_artifact_path, tasks_instance_dir, tmp_instance_dir,
 };
 use crate::orchestrator_callback::OrchestratorNoticeKind;
 use crate::protocol::{write_json_event_line, write_json_line, write_json_value_line};
@@ -1216,7 +1217,7 @@ fn worker_loop(
 
     for task in rx {
         let started_at = now_unix();
-        let req = task.request.clone();
+        let mut req = task.request.clone();
         debug_log_json(&context, "[WORKER][TASK][queued]", &req);
 
         let _ = update_task_status(
@@ -1230,6 +1231,11 @@ fn worker_loop(
 
         let provider_log = logs_instance_dir(&context.project_dir, &context.instance_id)
             .join(format!("{}.log", req.provider));
+        let request_artifact =
+            task_request_artifact_path(&context.project_dir, &context.instance_id, &task.req_id);
+        if request_artifact.exists() {
+            req.request_file = Some(request_artifact.display().to_string());
+        }
 
         let _ = write_line(
             provider_log.clone(),
@@ -1388,6 +1394,11 @@ fn worker_loop(
             }
         };
         let reply = exec.reply.clone();
+        let reply_artifact = write_reply_artifact(&context, &task.req_id, &reply).ok();
+        let reply_artifact_str = reply_artifact
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string());
+        let _ = update_task_artifact(&task.task_file, "reply_file", reply_artifact_str.as_deref());
         let task_status = match exec.status.as_str() {
             "completed" => "completed",
             "timeout" => "timeout",
@@ -1505,6 +1516,16 @@ fn worker_loop(
         log_file,
         &format!("[INFO] worker stopped key={}", worker_key),
     );
+}
+
+fn write_reply_artifact(context: &DaemonContext, req_id: &str, reply: &str) -> Result<PathBuf> {
+    let path = task_reply_artifact_path(&context.project_dir, &context.instance_id, req_id);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(&path, reply.as_bytes())
+        .with_context(|| format!("写入任务结果文件失败：{}", path.display()))?;
+    Ok(path)
 }
 
 fn append_provider_stream_chunk(provider_log: &Path, req_id: &str, chunk: &str) {
@@ -1709,6 +1730,13 @@ fn write_request_task(context: &DaemonContext, req: &AskRequest, req_id: &str) -
     let task_id = format!("task-{}", sanitize_filename(req_id));
     let task_file = tasks_instance_dir(&context.project_dir, &context.instance_id)
         .join(format!("{}.json", task_id));
+    let request_file =
+        task_request_artifact_path(&context.project_dir, &context.instance_id, req_id);
+    if let Some(parent) = request_file.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(&request_file, req.message.as_bytes())
+        .with_context(|| format!("写入任务请求文件失败：{}", request_file.display()))?;
 
     let content = json!({
         "schema_version": 1,
@@ -1726,6 +1754,10 @@ fn write_request_task(context: &DaemonContext, req: &AskRequest, req_id: &str) -
         "message": req.message,
         "timeout_s": req.timeout_s,
         "work_dir": req.work_dir,
+        "artifacts": {
+            "request_file": request_file.display().to_string(),
+            "reply_file": Value::Null,
+        }
     });
 
     write_json_pretty(&task_file, &content)?;

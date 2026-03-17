@@ -79,6 +79,10 @@ pub struct AskRequest {
     pub message: String,
     pub caller: String,
     pub req_id: Option<String>,
+    #[serde(default)]
+    pub instance_id: Option<String>,
+    #[serde(default)]
+    pub request_file: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

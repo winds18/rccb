@@ -21,6 +21,7 @@
 - `run/`: 进程状态与锁
 - `sessions/`: 会话主文件和 provider 角色文件
 - `tasks/`: 请求任务生命周期
+- `tasks/<instance>/artifacts/`: 基于 `req_id` 的请求/结果交换文件
 - `tmp/`: provider 临时目录
 - `logs/`: daemon/provider 日志
 
@@ -36,7 +37,9 @@
 1. `sessions/<instance>/session.json`
 2. `sessions/<instance>/providers/<provider>.json`
 3. `tasks/<instance>/task-*.json`
-4. `tmp/<instance>/<provider>/`
+4. `tasks/<instance>/artifacts/<req_id>.request.md`
+5. `tasks/<instance>/artifacts/<req_id>.reply.md`
+6. `tmp/<instance>/<provider>/`
 
 ## 3.1 Provider 执行模型
 

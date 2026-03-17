@@ -3414,6 +3414,7 @@ pub fn cmd_ask(
         "message": message,
         "caller": caller,
         "req_id": req_id,
+        "instance_id": instance,
     });
 
     if stream {

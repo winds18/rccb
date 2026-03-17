@@ -35,8 +35,34 @@ pub fn tasks_instance_dir(project_dir: &Path, instance: &str) -> PathBuf {
     tasks_root_dir(project_dir).join(sanitize_instance(instance))
 }
 
+pub fn task_artifacts_dir(project_dir: &Path, instance: &str) -> PathBuf {
+    tasks_instance_dir(project_dir, instance).join("artifacts")
+}
+
+pub fn task_request_artifact_path(project_dir: &Path, instance: &str, req_id: &str) -> PathBuf {
+    task_artifacts_dir(project_dir, instance)
+        .join(format!("{}.request.md", sanitize_filename(req_id)))
+}
+
+pub fn task_reply_artifact_path(project_dir: &Path, instance: &str, req_id: &str) -> PathBuf {
+    task_artifacts_dir(project_dir, instance)
+        .join(format!("{}.reply.md", sanitize_filename(req_id)))
+}
+
 pub fn tmp_instance_dir(project_dir: &Path, instance: &str) -> PathBuf {
     tmp_root_dir(project_dir).join(sanitize_instance(instance))
+}
+
+pub fn provider_request_dir(project_dir: &Path, provider: &str) -> PathBuf {
+    tmp_root_dir(project_dir)
+        .join(sanitize_filename(
+            provider.trim().to_ascii_lowercase().as_str(),
+        ))
+        .join("requests")
+}
+
+pub fn provider_request_file(project_dir: &Path, provider: &str, req_id: &str) -> PathBuf {
+    provider_request_dir(project_dir, provider).join(format!("{}.md", sanitize_filename(req_id)))
 }
 
 pub fn launcher_dir(project_dir: &Path, instance: &str) -> PathBuf {

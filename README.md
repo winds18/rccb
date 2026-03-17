@@ -327,6 +327,7 @@ export RCCB_EXEC_MODE=stub
 - `./.rccb/run/`：实例状态与锁
 - `./.rccb/sessions/`：会话记录与 provider 角色
 - `./.rccb/tasks/`：任务生命周期记录
+- `./.rccb/tasks/<instance>/artifacts/`：按 `req_id` 落盘的请求/结果交换文件
 - `./.rccb/tmp/`：provider 临时目录
 - `./.rccb/logs/`：daemon/provider 日志
 

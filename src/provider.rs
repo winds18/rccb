@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 
-use crate::layout::{launcher_feed_path, sanitize_filename};
+use crate::layout::{launcher_feed_path, provider_request_file};
 use crate::types::AskRequest;
 
 const REQ_ID_PREFIX: &str = "RCCB_REQ_ID:";
@@ -291,18 +291,26 @@ fn materialize_task_message(req: &AskRequest, req_id: &str) -> Result<String> {
         return Ok(req.message.clone());
     }
 
-    let work_dir = resolve_cmd_path(req.work_dir.trim(), Path::new("."));
-    let request_dir = work_dir
-        .join(".rccb")
-        .join("tmp")
-        .join(req.provider.trim().to_ascii_lowercase())
-        .join("requests");
-    fs::create_dir_all(&request_dir)
-        .with_context(|| format!("创建长任务临时目录失败：{}", request_dir.display()))?;
-
-    let request_file = request_dir.join(format!("{}.md", sanitize_filename(req_id)));
-    fs::write(&request_file, req.message.as_bytes())
-        .with_context(|| format!("写入长任务临时文件失败：{}", request_file.display()))?;
+    let request_file = if let Some(existing) = req
+        .request_file
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+    {
+        PathBuf::from(existing)
+    } else {
+        let work_dir = resolve_cmd_path(req.work_dir.trim(), Path::new("."));
+        let request_file = provider_request_file(&work_dir, &req.provider, req_id);
+        let request_dir = request_file
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| work_dir.join(".rccb").join("tmp"));
+        fs::create_dir_all(&request_dir)
+            .with_context(|| format!("创建长任务临时目录失败：{}", request_dir.display()))?;
+        fs::write(&request_file, req.message.as_bytes())
+            .with_context(|| format!("写入长任务临时文件失败：{}", request_file.display()))?;
+        request_file
+    };
 
     let request_path = request_file
         .canonicalize()
@@ -2346,6 +2354,8 @@ mod tests {
             message: "hello".to_string(),
             caller: "claude".to_string(),
             req_id: None,
+            instance_id: Some("default".to_string()),
+            request_file: None,
         }
     }
 
