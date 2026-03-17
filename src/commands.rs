@@ -138,6 +138,15 @@ fn write_provider_support_files(project_dir: &Path, mode: BootstrapMode) -> Resu
         written.push(gemini_trusted_folders_path);
     }
 
+    let droid_settings_path = project_dir.join(".factory").join("settings.local.json");
+    if !(droid_settings_path.exists() && matches!(mode, BootstrapMode::MissingOnly)) {
+        let settings = json!({
+            "autonomyMode": "auto-high"
+        });
+        write_json_pretty(&droid_settings_path, &settings)?;
+        written.push(droid_settings_path);
+    }
+
     Ok(written)
 }
 
@@ -216,7 +225,7 @@ set -euo pipefail
 project_root="${RCCB_PROJECT_DIR:-$PWD}"
 cd "$project_root"
 agent="${RCCB_PROVIDER_AGENT:-}"
-cmd=(claude --setting-sources user,project,local --permission-mode bypassPermissions)
+cmd=(claude --setting-sources user,project,local --permission-mode bypassPermissions --dangerously-skip-permissions)
 if [[ -n "$agent" ]]; then
   cmd+=(--agent "$agent")
 fi
@@ -258,11 +267,11 @@ exec gemini --approval-mode yolo "$@"
 set -euo pipefail
 project_root="${RCCB_PROJECT_DIR:-$PWD}"
 cd "$project_root"
-droid_settings_path="${RCCB_DROID_SETTINGS_PATH:-$project_root/.rccb/providers/droid.settings.json}"
+droid_settings_path="${RCCB_DROID_SETTINGS_PATH:-$project_root/.factory/settings.local.json}"
 if [[ -f "$droid_settings_path" ]]; then
-  exec droid --settings "$droid_settings_path" "$@"
+  exec droid --skip-permissions-unsafe --settings "$droid_settings_path" "$@"
 fi
-exec droid "$@"
+exec droid --skip-permissions-unsafe "$@"
 "#
         }
         other => bail!("unsupported provider wrapper: {}", other),
@@ -5207,6 +5216,7 @@ mod tests {
         assert!(project.join(".factory/commands/rccb-research.md").exists());
         assert!(project.join(".factory/rules/rccb-core.md").exists());
         assert!(project.join(".factory/droids/researcher.md").exists());
+        assert!(project.join(".factory/settings.local.json").exists());
         assert!(project.join(".claude/commands/rccb-research.md").exists());
         assert!(project.join(".rccb/providers/codex.example.json").exists());
         assert!(project
@@ -5259,10 +5269,13 @@ mod tests {
         let profile = fs::read_to_string(&profile_path).unwrap();
         let trusted =
             fs::read_to_string(project.join(".rccb/providers/gemini.trustedFolders.json")).unwrap();
+        let droid_settings =
+            fs::read_to_string(project.join(".factory/settings.local.json")).unwrap();
         assert!(config.contains("default_specialties"));
         assert!(profile.contains("\"RCCB_TASK_ID\""));
         assert!(trusted.contains("\"TRUST_FOLDER\""));
         assert!(trusted.contains(&project.display().to_string()));
+        assert!(droid_settings.contains("\"autonomyMode\": \"auto-high\""));
 
         let _ = fs::remove_dir_all(&project);
     }
@@ -5275,10 +5288,12 @@ mod tests {
         let droid = super::build_provider_wrapper_script("droid").expect("droid wrapper");
 
         assert!(claude.contains("--permission-mode bypassPermissions"));
+        assert!(claude.contains("--dangerously-skip-permissions"));
         assert!(codex.contains("-a never -s workspace-write"));
         assert!(gemini.contains("GEMINI_CLI_TRUSTED_FOLDERS_PATH"));
         assert!(gemini.contains("--approval-mode yolo"));
-        assert!(droid.contains("--settings \"$droid_settings_path\""));
+        assert!(droid.contains("--skip-permissions-unsafe"));
+        assert!(droid.contains(".factory/settings.local.json"));
     }
 
     #[test]
