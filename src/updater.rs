@@ -90,17 +90,15 @@ pub fn maybe_auto_update_notice(project_dir: &Path, command: Option<&Command>) {
     let interval = Duration::from_secs(update_check_interval_hours() * 3600);
 
     if let Ok(Some(cache)) = load_update_cache(&cache_path) {
+        if cache_has_pending_update(&cache, &current, include_prerelease) {
+            print_update_notice(&cache.latest_tag, &current, true);
+            return;
+        }
         let age = now_unix().saturating_sub(cache.checked_at_unix);
         if cache.current_version == current
             && cache.include_prerelease == include_prerelease
             && age < interval.as_secs()
         {
-            if version_cmp(&cache.latest_version, &current) == Ordering::Greater {
-                eprintln!(
-                    "提示：发现新版本 {}（当前 {}）。可执行 `rccb update apply` 自动更新。",
-                    cache.latest_tag, current
-                );
-            }
             return;
         }
     }
@@ -126,10 +124,7 @@ pub fn maybe_auto_update_notice(project_dir: &Path, command: Option<&Command>) {
     let _ = write_json_pretty(&cache_path, &cache);
 
     if version_cmp(&release.version, &current) == Ordering::Greater {
-        eprintln!(
-            "提示：发现新版本 {}（当前 {}）。可执行 `rccb update apply` 自动更新。",
-            release.tag, current
-        );
+        print_update_notice(&release.tag, &current, false);
     }
 }
 
@@ -611,6 +606,29 @@ fn update_check_interval_hours() -> u64 {
         .clamp(1, 24 * 30)
 }
 
+fn cache_has_pending_update(
+    cache: &UpdateCache,
+    current_version: &str,
+    include_prerelease: bool,
+) -> bool {
+    cache.include_prerelease == include_prerelease
+        && version_cmp(&cache.latest_version, current_version) == Ordering::Greater
+}
+
+fn print_update_notice(latest_tag: &str, current_version: &str, from_cache: bool) {
+    if from_cache {
+        eprintln!(
+            "提示：发现新版本 {}（当前 {}）。已记录到本地 `.rccb`，本次直接使用本地提醒。可执行 `rccb update apply` 自动更新。",
+            latest_tag, current_version
+        );
+    } else {
+        eprintln!(
+            "提示：发现新版本 {}（当前 {}）。已记录到本地 `.rccb`，后续启动会直接本地提醒。可执行 `rccb update apply` 自动更新。",
+            latest_tag, current_version
+        );
+    }
+}
+
 fn env_bool(name: &str, default: bool) -> bool {
     match env::var(name) {
         Ok(raw) => match raw.trim().to_ascii_lowercase().as_str() {
@@ -625,8 +643,8 @@ fn env_bool(name: &str, default: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        load_expected_checksum, normalize_tag, normalize_version, parse_version_triplet,
-        version_cmp,
+        cache_has_pending_update, load_expected_checksum, normalize_tag, normalize_version,
+        parse_version_triplet, version_cmp, UpdateCache,
     };
     use std::cmp::Ordering;
     use std::fs;
@@ -667,5 +685,21 @@ mod tests {
             load_expected_checksum(&path, "rccb-v0.1.1-linux-x86_64.tar.gz").expect("checksum");
         assert_eq!(got, "bbbb2222");
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn cache_has_pending_update_requires_newer_cached_version() {
+        let cache = UpdateCache {
+            checked_at_unix: 1,
+            include_prerelease: true,
+            current_version: "0.1.1".to_string(),
+            latest_tag: "v0.1.2".to_string(),
+            latest_version: "0.1.2".to_string(),
+            release_url: None,
+            asset_name: Some("asset".to_string()),
+        };
+        assert!(cache_has_pending_update(&cache, "0.1.1", true));
+        assert!(!cache_has_pending_update(&cache, "0.1.2", true));
+        assert!(!cache_has_pending_update(&cache, "0.1.1", false));
     }
 }

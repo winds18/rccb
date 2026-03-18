@@ -70,8 +70,9 @@
    - Linux x86_64 musl
 2. 若当前运行的是开发态二进制（如 `target/debug/rccb`），默认拒绝直接覆盖，需显式传入 `--install-path`
 3. 启动时默认进行轻量更新检查，并将结果缓存到 `.rccb/update/last_check.json`
-4. `RCCB_AUTO_UPDATE_CHECK=0` 可关闭自动检查
-5. `RCCB_UPDATE_INCLUDE_PRERELEASE=0` 可只看正式版
+4. 一旦某次检查发现待升级版本，后续启动优先使用本地缓存提醒，不为同一待升级版本重复联网
+5. `RCCB_AUTO_UPDATE_CHECK=0` 可关闭自动检查
+6. `RCCB_UPDATE_INCLUDE_PRERELEASE=0` 可只看正式版
 
 ## 3.1 Provider 执行模型
 

@@ -46,6 +46,8 @@ rccb --project-dir . update apply
   - Linux x86_64 musl
 - 如果你当前运行的是开发态二进制（如 `./target/debug/rccb`），`update apply` 默认不会直接覆盖，需显式指定 `--install-path`
 - 启动时默认会做轻量更新检查；可用 `RCCB_AUTO_UPDATE_CHECK=0` 关闭
+- 一旦某次联网发现新版本，RCCB 会把这条升级提醒记录到 `.rccb/update/last_check.json`
+- 后续启动会优先使用本地升级提醒，不会为同一待升级版本反复联网检查
 - 默认包含开发预览版检查；可用 `RCCB_UPDATE_INCLUDE_PRERELEASE=0` 只看正式版
 
 常用命令：
