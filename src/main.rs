@@ -66,6 +66,7 @@ fn main() -> Result<()> {
             orchestrator,
             req_id,
             kind,
+            latest,
             limit,
             as_json,
         }) => cmd_inbox(
@@ -74,6 +75,7 @@ fn main() -> Result<()> {
             orchestrator.as_deref(),
             req_id.as_deref(),
             kind.as_deref(),
+            latest,
             limit,
             as_json,
         ),

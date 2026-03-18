@@ -126,9 +126,15 @@ rccb claude codex gemini opencode droid
 静默后台消费排查：
 
 ```bash
+rccb --project-dir . inbox --instance default --req-id <req_id> --latest --limit 5
 rccb --project-dir . inbox --instance default --orchestrator claude --limit 20
 rccb --project-dir . inbox --instance default --req-id <req_id> --kind result --as-json
 ```
+
+- 编排者前台默认最多确认一次“已委派，等待后台结果”
+- 默认不要在编排者前台循环执行 `sleep`、`cat .reply.md`、`watch --follow`
+- 如需安静查看最新状态，优先使用 `inbox --latest`
+- 只有任务超时、异常或用户明确要求实时跟踪时，再使用一次性 `watch --req-id ... --with-provider-log --timeout-s 3 --pane-ui`
 
 provider CLI 启动命令可覆盖：
 

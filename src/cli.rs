@@ -158,6 +158,13 @@ pub enum Command {
         #[arg(long, help = "仅查看指定 kind（status/progress/result）")]
         kind: Option<String>,
 
+        #[arg(
+            long,
+            default_value_t = false,
+            help = "按 req_id/结果类型折叠，只保留最新状态与最新结果"
+        )]
+        latest: bool,
+
         #[arg(long, default_value_t = 20, help = "返回条数上限")]
         limit: usize,
 

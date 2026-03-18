@@ -287,6 +287,7 @@
    - 查看静默模式下写入编排者后台 inbox 的 notice
    - 省略 `--orchestrator` 时，优先从实例状态里的 orchestrator 推断
    - 适合排查“pane 不刷屏，但后台是否已收到状态/结果”
+   - `--latest` 会按 `req_id` 折叠，只保留最新状态与最新结果，适合编排者安静消费
 
 ### 5.3.1 Orchestrator Strict Mode
 
@@ -298,6 +299,8 @@
    - 编排者 pane 启动后自动收到 strict guardrail 提示
    - 若 `ask.request.caller == orchestrator` 且目标 provider 为执行者，则任务状态与最终结果都会写入 `.rccb/tmp/<instance>/orchestrator/<orchestrator>.jsonl` 作为 inbox 记录
    - 默认不向编排者 pane 注入最终结果；只有显式启用结果回调时才会回注到前台
+   - 编排者前台默认最多确认一次“已委派，等待后台结果”，后续状态优先通过 `inbox --latest` 静默消费
+   - `watch --follow` 只用于 debug pane 或用户明确要求持续跟踪的场景，不作为默认前台轮询手段
 4. 开关：
    - `RCCB_ORCHESTRATOR_STRICT=0` 可关闭
    - `RCCB_ORCHESTRATOR_RESULT_CALLBACK=1` 可启用最终结果前台回注

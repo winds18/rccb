@@ -669,8 +669,11 @@ fn build_rule_file_specs(project_dir: &Path, providers: &[String]) -> Vec<RuleFi
                 "委派编码任务给 opencode",
                 "使用 RCCB 把实现、改代码、运行测试、联调修复等任务委派给 `opencode`。\n\
 任务内容：$ARGUMENTS\n\n\
-请直接在当前会话中执行下面的委派命令，不要自己运行 bash：\n\
-`rccb --project-dir . ask --instance default --provider opencode --caller claude \"$ARGUMENTS\"`\n\n\
+请直接异步委派，前台只保留最小提交信息，不要自己轮询状态：\n\
+`RCCB_ASK_ASYNC_STDOUT=minimal rccb --project-dir . ask --instance default --provider opencode --caller claude --async \"$ARGUMENTS\"`\n\n\
+提交成功后，不要主动执行 `sleep`、`cat .reply.md`、`watch --follow`。\n\
+如需安静查看状态，优先用：\n\
+`rccb --project-dir . inbox --instance default --req-id <req_id> --latest --limit 5`\n\n\
 如果任务依赖外部事实或资料，请改用 `/rccb-research`。",
             ),
             kind: RuleFileKind::PlainMarkdown,
@@ -687,7 +690,12 @@ fn build_rule_file_specs(project_dir: &Path, providers: &[String]) -> Vec<RuleFi
                 "使用 RCCB 先把调研任务委派给 `gemini`，要求它至少做两轮检索与交叉验证，优先官方/一手来源。\n\
 任务内容：$ARGUMENTS\n\n\
 在 gemini 返回后，不要直接采纳结论；继续把关键结论、风险点和冲突信息委派给 `codex` 做复核。\n\
-整个过程中不要自己执行 bash。",
+整个过程中优先异步委派，不要自己轮询状态。\n\n\
+推荐派单：\n\
+`RCCB_ASK_ASYNC_STDOUT=minimal rccb --project-dir . ask --instance default --provider gemini --caller claude --async \"$ARGUMENTS\"`\n\n\
+提交成功后，不要主动执行 `sleep`、`cat .reply.md`、`watch --follow`。\n\
+如需安静查看状态，优先用：\n\
+`rccb --project-dir . inbox --instance default --req-id <req_id> --latest --limit 5`。",
             ),
             kind: RuleFileKind::PlainMarkdown,
         });
@@ -702,8 +710,11 @@ fn build_rule_file_specs(project_dir: &Path, providers: &[String]) -> Vec<RuleFi
                 "委派代码审计任务给 codex",
                 "使用 RCCB 把代码审计、风险评估、边界条件检查、回归分析和调研复核任务委派给 `codex`。\n\
 任务内容：$ARGUMENTS\n\n\
-请直接在当前会话中执行下面的委派命令，不要自己运行 bash：\n\
-`rccb --project-dir . ask --instance default --provider codex --caller claude \"$ARGUMENTS\"`",
+请直接异步委派，前台只保留最小提交信息，不要自己轮询状态：\n\
+`RCCB_ASK_ASYNC_STDOUT=minimal rccb --project-dir . ask --instance default --provider codex --caller claude --async \"$ARGUMENTS\"`\n\n\
+提交成功后，不要主动执行 `sleep`、`cat .reply.md`、`watch --follow`。\n\
+如需安静查看状态，优先用：\n\
+`rccb --project-dir . inbox --instance default --req-id <req_id> --latest --limit 5`",
             ),
             kind: RuleFileKind::PlainMarkdown,
         });
@@ -718,8 +729,11 @@ fn build_rule_file_specs(project_dir: &Path, providers: &[String]) -> Vec<RuleFi
                 "委派文档记录任务给 droid",
                 "使用 RCCB 把文档整理、纪要、变更说明、操作手册和复盘归档任务委派给 `droid`。\n\
 任务内容：$ARGUMENTS\n\n\
-请直接在当前会话中执行下面的委派命令，不要自己运行 bash：\n\
-`rccb --project-dir . ask --instance default --provider droid --caller claude \"$ARGUMENTS\"`",
+请直接异步委派，前台只保留最小提交信息，不要自己轮询状态：\n\
+`RCCB_ASK_ASYNC_STDOUT=minimal rccb --project-dir . ask --instance default --provider droid --caller claude --async \"$ARGUMENTS\"`\n\n\
+提交成功后，不要主动执行 `sleep`、`cat .reply.md`、`watch --follow`。\n\
+如需安静查看状态，优先用：\n\
+`rccb --project-dir . inbox --instance default --req-id <req_id> --latest --limit 5`",
             ),
             kind: RuleFileKind::PlainMarkdown,
         });
@@ -895,7 +909,11 @@ fn build_agents_rules_markdown(providers: &[String]) -> String {
 {}\n\n\
 ## 实时状态与结果\n\
 - 静默模式下，最终结果以 `.rccb/tasks/<instance>/artifacts/<req_id>.reply.md` 为准。\n\
-- 如果同步 `ask` 超时，不要立刻重派；先用 `rccb watch --instance default --req-id <req_id> --follow --with-provider-log --timeout-s 0 --pane-ui` 查看真实状态。\n\
+- 长任务前台最多确认一次“已委派，等待后台结果”，不要循环播报等待、重复贴命令或频繁自查。\n\
+- 默认不要主动执行 `Read file`、`Bash sleep`、`cat .reply.md`、`watch --follow` 这类轮询动作。\n\
+- 如需安静查看某个请求的最新状态与结果，优先执行 `rccb --project-dir . inbox --instance default --req-id <req_id> --latest --limit 5`。\n\
+- 如果同步 `ask` 超时，不要立刻重派；先用 `rccb watch --instance default --req-id <req_id> --with-provider-log --timeout-s 3 --pane-ui` 查看一次真实状态。\n\
+- `watch --follow` 只用于 debug pane 或用户明确要求持续追踪时，不要默认在编排者前台使用。\n\
 - 调试日志只应出现在 debug pane，不要把旁路日志刷进 provider 的前台 pane。\n\n\
 ## 托管与自定义\n\
 - 本文件由 RCCB 托管生成，普通启动只补缺失文件，不覆盖现有内容。\n\
@@ -946,11 +964,18 @@ fn build_claude_rules_markdown(providers: &[String]) -> String {
 rccb --project-dir . ask --instance default --provider <执行者> --caller claude \"<任务>\"\n\
 ```\n\n\
 ## 查看真实状态\n\
-- 若请求超时或你不确定执行者是否仍在运行，优先执行：\n\
+- 委派成功后，前台最多确认一次“已委派，等待后台结果”；不要循环播报等待、不要频繁自查。\n\
+- 默认不要主动执行 `Read file`、`Bash sleep`、`cat .reply.md`、`watch --follow` 等轮询动作。\n\
+- 如需安静查看最新状态与结果，优先执行：\n\
 ```bash\n\
-rccb --project-dir . watch --instance default --req-id <req_id> --follow --with-provider-log --timeout-s 0 --pane-ui\n\
+rccb --project-dir . inbox --instance default --req-id <req_id> --latest --limit 5\n\
 ```\n\
-- 静默结果消费以 `.reply.md` 工件为准，但运行态判断优先看 `watch`。\n\n\
+- 若请求超时或你不确定执行者是否仍在运行，再执行：\n\
+```bash\n\
+rccb --project-dir . watch --instance default --req-id <req_id> --with-provider-log --timeout-s 3 --pane-ui\n\
+```\n\
+- 静默结果消费以 `.reply.md` 工件为准，但运行态判断优先看 `watch`。\n\
+- `watch --follow` 只用于 debug pane 或用户明确要求持续观察时，不要默认在前台使用。\n\n\
 ## 托管与自定义\n\
 - 本文件由 RCCB 托管生成；普通模式不覆盖已有文件。\n\
 - `debug` 模式会刷新托管区块，便于联调。\n\
@@ -1042,9 +1067,14 @@ rccb --project-dir . ask --instance default --provider <provider> --caller <call
 ```\n\n\
 ## 运行态查看\n\
 - 如果 `ask` 超时，不要默认任务失败。\n\
-- 优先执行：\n\
+- 默认不要主动执行 `Read file`、`Bash sleep`、`cat .reply.md`、`watch --follow` 等轮询动作。\n\
+- 如需安静查看某个请求的最新状态与结果，优先执行：\n\
 ```bash\n\
-rccb --project-dir . watch --instance default --req-id <req_id> --follow --with-provider-log --timeout-s 0 --pane-ui\n\
+rccb --project-dir . inbox --instance default --req-id <req_id> --latest --limit 5\n\
+```\n\
+- 只有任务超时、异常或用户明确要求实时观察时，再执行：\n\
+```bash\n\
+rccb --project-dir . watch --instance default --req-id <req_id> --with-provider-log --timeout-s 3 --pane-ui\n\
 ```\n\n\
 ## 工件约定\n\
 - 请求工件：`.rccb/tasks/<instance>/artifacts/<req_id>.request.md`\n\
@@ -1143,8 +1173,13 @@ fn build_opencode_delegate_skill_markdown(providers: &[String]) -> String {
 rccb --project-dir . ask --instance default --provider <provider> --caller <caller> \"<task>\"\n\
 ```\n\n\
 ## 超时处理\n\
+- 默认不要主动执行 `Read file`、`Bash sleep`、`cat .reply.md`、`watch --follow` 等轮询动作。\n\
 ```bash\n\
-rccb --project-dir . watch --instance default --req-id <req_id> --follow --with-provider-log --timeout-s 0 --pane-ui\n\
+rccb --project-dir . inbox --instance default --req-id <req_id> --latest --limit 5\n\
+```\n\
+- 只有任务超时、异常或用户明确要求实时观察时，再执行：\n\
+```bash\n\
+rccb --project-dir . watch --instance default --req-id <req_id> --with-provider-log --timeout-s 3 --pane-ui\n\
 ```\n",
         build_skill_frontmatter(
             "rccb-delegate",
@@ -1188,8 +1223,13 @@ fn build_factory_delegate_skill_markdown(providers: &[String]) -> String {
 rccb --project-dir . ask --instance default --provider <provider> --caller <caller> \"<task>\"\n\
 ```\n\n\
 ## 状态查看\n\
+- 默认不要主动执行 `Read file`、`Bash sleep`、`cat .reply.md`、`watch --follow` 等轮询动作。\n\
 ```bash\n\
-rccb --project-dir . watch --instance default --req-id <req_id> --follow --with-provider-log --timeout-s 0 --pane-ui\n\
+rccb --project-dir . inbox --instance default --req-id <req_id> --latest --limit 5\n\
+```\n\
+- 只有任务超时、异常或用户明确要求实时观察时，再执行：\n\
+```bash\n\
+rccb --project-dir . watch --instance default --req-id <req_id> --with-provider-log --timeout-s 3 --pane-ui\n\
 ```\n\n\
 ## 工件驱动\n\
 - 最终结果优先来自 `.rccb/tasks/<instance>/artifacts/<req_id>.reply.md`\n\
@@ -2396,7 +2436,7 @@ fn orchestrator_guardrail_prompt(
     render_project_bootstrap_content(
         project_dir,
         &format!(
-        "RCCB 编排模式已启用。\n\n当前编排者：{orchestrator}\n可用执行者：{executor_list}\n\n只做：规划、拆解、委派、验收、汇总。\n不要自己执行 bash、修改文件或运行测试。\n\n默认分工：opencode=编码，gemini=调研，droid=文档，codex=审计。\n调研规则：先 gemini 至少两轮调研，再 codex 复核关键结论。\n\n委派格式：\n`rccb --project-dir . ask --instance default --provider <执行者> --caller {orchestrator} \"<任务>\"`\n\n结果默认走后台 inbox 和 `.reply.md`，不会刷屏。\n若 ask 超时，先用 `watch --req-id` 看真实状态，不要立刻重派。\n详细规则见 `AGENTS.md` 与 `CLAUDE.md`。"
+        "RCCB 编排模式已启用。\n\n当前编排者：{orchestrator}\n可用执行者：{executor_list}\n\n只做：规划、拆解、委派、验收、汇总。\n不要自己执行 bash、修改文件或运行测试。\n\n默认分工：opencode=编码，gemini=调研，droid=文档，codex=审计。\n调研规则：先 gemini 至少两轮调研，再 codex 复核关键结论。\n\n委派格式：\n`rccb --project-dir . ask --instance default --provider <执行者> --caller {orchestrator} \"<任务>\"`\n\n结果默认走后台 inbox 和 `.reply.md`，不会刷屏。\n前台最多确认一次“已委派，等待后台结果”；不要循环 `sleep`、`cat .reply.md`、`watch --follow` 自己轮询。\n如需安静查看最新状态，优先用 `rccb --project-dir . inbox --instance default --req-id <req_id> --latest --limit 5`。\n若 ask 超时，再用不跟随的一次性 `watch --req-id` 看真实状态，不要立刻重派。\n详细规则见 `AGENTS.md` 与 `CLAUDE.md`。"
         ),
     )
 }
@@ -3121,6 +3161,7 @@ pub fn cmd_inbox(
     orchestrator: Option<&str>,
     req_id: Option<&str>,
     kind: Option<&str>,
+    latest: bool,
     limit: usize,
     as_json: bool,
 ) -> Result<()> {
@@ -3133,6 +3174,9 @@ pub fn cmd_inbox(
     }
     if let Some(kind) = kind.map(str::trim).filter(|v| !v.is_empty()) {
         items.retain(|x| x.kind.eq_ignore_ascii_case(kind));
+    }
+    if latest {
+        items = collapse_inbox_entries_latest(items);
     }
 
     items.reverse();
@@ -3200,6 +3244,30 @@ pub fn cmd_inbox(
         }
     }
     Ok(())
+}
+
+fn collapse_inbox_entries_latest(items: Vec<InboxEntryView>) -> Vec<InboxEntryView> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for item in items.into_iter().rev() {
+        let key = inbox_entry_latest_key(&item);
+        if seen.insert(key) {
+            out.push(item);
+        }
+    }
+    out.reverse();
+    out
+}
+
+fn inbox_entry_latest_key(item: &InboxEntryView) -> String {
+    let req_id = item.req_id.as_deref().unwrap_or("-");
+    let executor = item.executor.as_deref().unwrap_or("-");
+    let kind_group = if item.kind.eq_ignore_ascii_case("result") {
+        "result"
+    } else {
+        "status"
+    };
+    format!("{req_id}\t{executor}\t{kind_group}")
 }
 
 pub fn cmd_tasks(
@@ -6223,6 +6291,7 @@ mod tests {
         assert!(prompt.contains("codex, gemini"));
         assert!(prompt.contains("--caller claude"));
         assert!(prompt.contains("后台 inbox"));
+        assert!(prompt.contains("--latest --limit 5"));
         assert!(prompt.contains("`.reply.md`"));
         assert!(prompt.contains("opencode=编码"));
         assert!(prompt.contains("先 gemini 至少两轮调研"));
@@ -6620,5 +6689,77 @@ mod tests {
         assert_eq!(items[1].reply_file.as_deref(), Some("/tmp/reply.md"));
 
         let _ = fs::remove_dir_all(&project);
+    }
+
+    #[test]
+    fn collapse_inbox_entries_latest_keeps_latest_status_and_result_per_req() {
+        let items = vec![
+            super::InboxEntryView {
+                instance: "default".to_string(),
+                orchestrator: "claude".to_string(),
+                kind: "status".to_string(),
+                req_id: Some("req-1".to_string()),
+                executor: Some("gemini".to_string()),
+                caller: Some("claude".to_string()),
+                status: Some("running".to_string()),
+                exit_code: None,
+                ts_unix: Some(1),
+                message: Some("started".to_string()),
+                reply: None,
+                reply_file: None,
+            },
+            super::InboxEntryView {
+                instance: "default".to_string(),
+                orchestrator: "claude".to_string(),
+                kind: "status".to_string(),
+                req_id: Some("req-1".to_string()),
+                executor: Some("gemini".to_string()),
+                caller: Some("claude".to_string()),
+                status: Some("running".to_string()),
+                exit_code: None,
+                ts_unix: Some(2),
+                message: Some("still working".to_string()),
+                reply: None,
+                reply_file: None,
+            },
+            super::InboxEntryView {
+                instance: "default".to_string(),
+                orchestrator: "claude".to_string(),
+                kind: "result".to_string(),
+                req_id: Some("req-1".to_string()),
+                executor: Some("gemini".to_string()),
+                caller: Some("claude".to_string()),
+                status: Some("completed".to_string()),
+                exit_code: Some(0),
+                ts_unix: Some(3),
+                message: None,
+                reply: Some("done".to_string()),
+                reply_file: Some("/tmp/reply.md".to_string()),
+            },
+            super::InboxEntryView {
+                instance: "default".to_string(),
+                orchestrator: "claude".to_string(),
+                kind: "status".to_string(),
+                req_id: Some("req-2".to_string()),
+                executor: Some("opencode".to_string()),
+                caller: Some("claude".to_string()),
+                status: Some("running".to_string()),
+                exit_code: None,
+                ts_unix: Some(4),
+                message: Some("queued".to_string()),
+                reply: None,
+                reply_file: None,
+            },
+        ];
+
+        let got = super::collapse_inbox_entries_latest(items);
+        assert_eq!(got.len(), 3);
+        assert_eq!(got[0].req_id.as_deref(), Some("req-1"));
+        assert_eq!(got[0].kind, "status");
+        assert_eq!(got[0].message.as_deref(), Some("still working"));
+        assert_eq!(got[1].req_id.as_deref(), Some("req-1"));
+        assert_eq!(got[1].kind, "result");
+        assert_eq!(got[2].req_id.as_deref(), Some("req-2"));
+        assert_eq!(got[2].kind, "status");
     }
 }
