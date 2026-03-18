@@ -1035,6 +1035,27 @@ fn build_claude_rules_markdown(providers: &[String]) -> String {
 - 中间派单默认只提交“变化的部分”：新增约束、最新发现、变更文件、最新错误、被推翻的假设；不要把整段历史对话反复转发。\n\
 - 如果上下文很长，优先给“路径 + 摘要 + 变化点”，只有执行者明确需要时再补充更大上下文。\n\
 \n\
+### 推荐上下文包模板\n\
+```text\n\
+任务目标：<一句话说明要完成什么>\n\
+项目根目录：<绝对路径或相对路径>\n\
+工作范围：<目录 / 模块 / 文件>\n\
+当前状态：<当前行为 / 当前报错 / 当前实现>\n\
+目标状态：<期望行为 / 期望产出>\n\
+验收标准：<如何判断完成>\n\
+\n\
+本轮变化：\n\
+- <最新新增约束>\n\
+- <最新错误或日志结论>\n\
+- <最新变更文件或关键差异>\n\
+\n\
+仅供本轮参考的关键路径：\n\
+- <path1>\n\
+- <path2>\n\
+\n\
+不需要重复的历史：<已经确认但本轮不用再展开的背景>\n\
+```\n\
+\n\
 ## 子代理优先策略\n\
 {}\n\n\
 ## 文档交付约定\n\
@@ -1059,6 +1080,7 @@ rccb --project-dir . ask --instance default --provider <执行者> --caller clau
 - 给 `codex` 的审计任务优先传：变更文件列表、关键路径、diff 摘要、风险假设、期望对齐的行为。\n\
 - 如果只改了局部逻辑，不要把整仓背景全文重发给审计者；先给最小必要上下文，再按需补充。\n\
 - 审计结论要明确指向具体路径、模块或变更点，避免只给泛化建议。\n\
+- 推荐审计上下文包：`任务目标 + 项目根目录 + 变更文件 + diff 摘要 + 风险假设 + 验收口径`。\n\
 \n\
 ## 查看真实状态\n\
 - 若请求超时或你不确定执行者是否仍在运行，优先执行：\n\
@@ -1158,6 +1180,22 @@ fn build_agents_delegate_skill_markdown(providers: &[String]) -> String {
 - 中间派单默认只传增量上下文：最新变化、最新错误、变更文件、被推翻的假设、当前决策所需的最小背景。\n\
 - 不要重复转发整段历史；优先使用“路径 + 摘要 + 变化点”的紧凑形式。\n\
 \n\
+### 推荐模板\n\
+```text\n\
+任务目标：<一句话>\n\
+项目根目录：<路径>\n\
+工作范围：<目录/文件>\n\
+当前状态：<当前行为>\n\
+目标状态：<期望行为>\n\
+验收标准：<完成标准>\n\
+本轮变化：\n\
+- <变化1>\n\
+- <变化2>\n\
+关键路径：\n\
+- <path1>\n\
+- <path2>\n\
+```\n\
+\n\
 ## 选择执行者\n\
 {}\n\n\
 ## 调研链路\n\
@@ -1194,6 +1232,24 @@ fn build_agents_audit_skill_markdown() -> String {
 - 优先接收增量上下文，而不是完整历史：变更文件、关键路径、diff 摘要、异常日志、待验证假设。\n\
 - 如果上游已经给出项目根目录或文件路径，结论必须尽量落到这些具体路径上。\n\
 - 如果当前证据只覆盖局部变更，不要假装你已经审过整仓；明确说明审计边界。\n\
+\n\
+### 推荐审计上下文包\n\
+```text\n\
+审计目标：<要验证什么>\n\
+项目根目录：<路径>\n\
+变更文件：\n\
+- <file1>\n\
+- <file2>\n\
+关键路径：\n\
+- <path1>\n\
+- <path2>\n\
+diff 摘要：\n\
+- <差异1>\n\
+- <差异2>\n\
+风险假设：\n\
+- <担心的回归点>\n\
+验收口径：<什么算对齐>\n\
+```\n\
 \n\
 ## 审计重点\n\
 - 行为回归\n\
@@ -1270,6 +1326,19 @@ fn build_opencode_delegate_skill_markdown(providers: &[String]) -> String {
 - 工程任务尽量带上项目根目录、目标路径、关键文件、当前状态、目标状态和验收标准。\n\
 - 中间派单只传增量上下文，不要把整段历史重复塞给执行者。\n\
 \n\
+### 推荐模板\n\
+```text\n\
+任务目标：<一句话>\n\
+项目根目录：<路径>\n\
+工作范围：<目录/文件>\n\
+当前状态：<当前行为>\n\
+目标状态：<期望行为>\n\
+验收标准：<完成标准>\n\
+本轮变化：\n\
+- <变化1>\n\
+- <变化2>\n\
+```\n\
+\n\
 ## 默认职责映射\n\
 {}\n\n\
 ## 调研约束\n\
@@ -1318,6 +1387,19 @@ fn build_factory_delegate_skill_markdown(providers: &[String]) -> String {
 ## 上下文打包\n\
 - 复杂任务要附带路径、关键文件、当前状态、目标状态和验收口径。\n\
 - 中间派单默认只提交变化的部分，不重复转发整段历史。\n\
+\n\
+### 推荐模板\n\
+```text\n\
+任务目标：<一句话>\n\
+项目根目录：<路径>\n\
+工作范围：<目录/文件>\n\
+当前状态：<当前行为>\n\
+目标状态：<期望行为>\n\
+验收标准：<完成标准>\n\
+本轮变化：\n\
+- <变化1>\n\
+- <变化2>\n\
+```\n\
 \n\
 ## 选择执行者\n\
 {}\n\n\
@@ -1418,6 +1500,22 @@ description: {summary}\n\
 - 复杂工程任务必须带上项目根目录、目标路径、关键文件、受影响模块、当前状态、目标状态、验收标准。\n\
 - 中间派单默认只传增量上下文：最新变化、最新错误、最新约束、变更文件和关键差异。\n\
 - 不要把整段历史对话原样转发给执行者；优先整理成“路径 + 摘要 + 变化点”。\n\
+\n\
+### 推荐上下文包\n\
+```text\n\
+任务目标：<一句话>\n\
+项目根目录：<路径>\n\
+工作范围：<目录/文件>\n\
+当前状态：<当前行为>\n\
+目标状态：<期望行为>\n\
+验收标准：<完成标准>\n\
+本轮变化：\n\
+- <变化1>\n\
+- <变化2>\n\
+关键路径：\n\
+- <path1>\n\
+- <path2>\n\
+```\n\
 \n\
 ## 标准派单命令\n\
 ```bash\n\
@@ -5774,17 +5872,17 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        async_submit_stdout_mode, build_debug_watch_command, cleanup_inflight_tasks,
-        cleanup_instance_runtime, compact_watch_line, debug_watch_pane_percent,
-        ensure_project_bootstrap, ensure_project_rule_bootstrap, is_ignorable_pane_command_error,
-        is_in_flight_status, is_terminal_bus_task_event, is_terminal_task_status,
-        load_orchestrator_inbox_entries, load_task_by_req_id, orchestrator_guardrail_prompt,
-        orchestrator_strict_mode_enabled, provider_start_cmd, render_project_bootstrap_content,
-        resolve_debug_watch_provider, resolve_shortcut_restore_providers, run_simple,
-        select_watch_req_for_provider, select_watch_req_for_provider_follow, split_layout_groups,
-        split_percent_for_equal_stack, task_file_for_req_id, watch_bus_enabled,
-        AsyncSubmitStdoutMode, BootstrapMode, RCCB_MANAGED_BEGIN, RCCB_MANAGED_END,
-        RCCB_USER_BEGIN, RCCB_USER_END,
+        async_submit_stdout_mode, build_claude_rules_markdown, build_debug_watch_command,
+        cleanup_inflight_tasks, cleanup_instance_runtime, compact_watch_line,
+        debug_watch_pane_percent, ensure_project_bootstrap, ensure_project_rule_bootstrap,
+        is_ignorable_pane_command_error, is_in_flight_status, is_terminal_bus_task_event,
+        is_terminal_task_status, load_orchestrator_inbox_entries, load_task_by_req_id,
+        orchestrator_guardrail_prompt, orchestrator_strict_mode_enabled, provider_start_cmd,
+        render_project_bootstrap_content, resolve_debug_watch_provider,
+        resolve_shortcut_restore_providers, run_simple, select_watch_req_for_provider,
+        select_watch_req_for_provider_follow, split_layout_groups, split_percent_for_equal_stack,
+        task_file_for_req_id, watch_bus_enabled, AsyncSubmitStdoutMode, BootstrapMode,
+        RCCB_MANAGED_BEGIN, RCCB_MANAGED_END, RCCB_USER_BEGIN, RCCB_USER_END,
     };
     use crate::io_utils::{
         now_unix, now_unix_ms, update_task_status, write_json_pretty, write_state,
@@ -6509,6 +6607,15 @@ mod tests {
         assert!(prompt.contains("RCCB_ASK_ASYNC_STDOUT=minimal"));
         assert!(prompt.contains("最多只确认一次"));
         assert!(prompt.contains("禁止在异步派单成功后主动执行"));
+    }
+
+    #[test]
+    fn claude_rules_markdown_contains_delta_context_template() {
+        let prompt = build_claude_rules_markdown(&all_test_providers());
+        assert!(prompt.contains("### 推荐上下文包模板"));
+        assert!(prompt.contains("任务目标：<一句话说明要完成什么>"));
+        assert!(prompt.contains("本轮变化："));
+        assert!(prompt.contains("关键路径："));
     }
 
     #[test]
