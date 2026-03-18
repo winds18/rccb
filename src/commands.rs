@@ -259,6 +259,43 @@ fn write_provider_launch_wrappers(
     Ok(written)
 }
 
+fn refresh_legacy_provider_wrappers(
+    project_dir: &Path,
+    providers: &[String],
+) -> Result<Vec<PathBuf>> {
+    let bin_dir = rccb_dir(project_dir).join("bin");
+    if !bin_dir.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut refreshed = Vec::new();
+    for provider in providers {
+        let path = bin_dir.join(provider.trim().to_ascii_lowercase());
+        if !provider_wrapper_needs_refresh(&path)? {
+            continue;
+        }
+        write_wrapper_script(&path, provider)?;
+        refreshed.push(path);
+    }
+    Ok(refreshed)
+}
+
+fn provider_wrapper_needs_refresh(path: &Path) -> Result<bool> {
+    if !path.exists() {
+        return Ok(false);
+    }
+    let raw = fs::read_to_string(path)
+        .with_context(|| format!("读取 provider wrapper 失败：{}", path.display()))?;
+    let first_line = raw.lines().next().unwrap_or_default();
+    if first_line.contains("zsh") {
+        return Ok(true);
+    }
+    if raw.contains("[[ ") || raw.contains("cmd=(") || raw.contains("cmd+=(") {
+        return Ok(true);
+    }
+    Ok(false)
+}
+
 fn write_wrapper_script(path: &Path, provider: &str) -> Result<()> {
     let script = build_provider_wrapper_script(provider)?;
     if let Some(parent) = path.parent() {
@@ -274,86 +311,96 @@ fn build_provider_wrapper_script(provider: &str) -> Result<String> {
     let base = provider.trim().to_ascii_lowercase();
     let script = match base.as_str() {
         "claude" => {
-            r#"#!/usr/bin/env zsh
-set -euo pipefail
+            r#"#!/usr/bin/env sh
+set -eu
 project_root="${RCCB_PROJECT_DIR:-$PWD}"
 cd "$project_root"
 role="${RCCB_PROVIDER_ROLE:-executor}"
 agent="${RCCB_PROVIDER_AGENT:-}"
-if [[ "$role" == "orchestrator" ]]; then
-  cmd=(
-    claude
-    --setting-sources user,project,local
-    --permission-mode default
-    --allowedTools "Read Grep Glob LS Bash(rccb:*) Bash(./target/debug/rccb:*) Bash($project_root/target/debug/rccb:*)"
-    --disallowedTools "Edit MultiEdit Write NotebookEdit"
-  )
-else
-  cmd=(
-    claude
-    --setting-sources user,project,local
-    --permission-mode bypassPermissions
-    --dangerously-skip-permissions
-  )
+if [ "$role" = "orchestrator" ]; then
+  if [ -n "$agent" ]; then
+    exec claude \
+      --setting-sources user,project,local \
+      --permission-mode default \
+      --allowedTools "Read Grep Glob LS Task Bash(rccb:*) Bash(./target/debug/rccb:*) Bash($project_root/target/debug/rccb:*)" \
+      --disallowedTools "Edit MultiEdit Write NotebookEdit" \
+      --agent "$agent" \
+      "$@"
+  fi
+  exec claude \
+    --setting-sources user,project,local \
+    --permission-mode default \
+    --allowedTools "Read Grep Glob LS Task Bash(rccb:*) Bash(./target/debug/rccb:*) Bash($project_root/target/debug/rccb:*)" \
+    --disallowedTools "Edit MultiEdit Write NotebookEdit" \
+    "$@"
 fi
-if [[ -n "$agent" ]]; then
-  cmd+=(--agent "$agent")
+if [ -n "$agent" ]; then
+  exec claude \
+    --setting-sources user,project,local \
+    --permission-mode bypassPermissions \
+    --dangerously-skip-permissions \
+    --agent "$agent" \
+    "$@"
 fi
-exec "${cmd[@]}" "$@"
+exec claude \
+  --setting-sources user,project,local \
+  --permission-mode bypassPermissions \
+  --dangerously-skip-permissions \
+  "$@"
 "#
         }
         "opencode" => {
-            r#"#!/usr/bin/env zsh
-set -euo pipefail
+            r#"#!/usr/bin/env sh
+set -eu
 project_root="${RCCB_PROJECT_DIR:-$PWD}"
 cd "$project_root"
 agent="${RCCB_PROVIDER_AGENT:-}"
-if [[ -n "$agent" ]]; then
+if [ -n "$agent" ]; then
   exec opencode "$project_root" --agent "$agent" "$@"
 fi
 exec opencode "$project_root" "$@"
 "#
         }
         "codex" => {
-            r#"#!/usr/bin/env zsh
-set -euo pipefail
+            r#"#!/usr/bin/env sh
+set -eu
 project_root="${RCCB_PROJECT_DIR:-$PWD}"
 cd "$project_root"
 role="${RCCB_PROVIDER_ROLE:-executor}"
-if [[ "$role" == "orchestrator" ]]; then
+if [ "$role" = "orchestrator" ]; then
   exec codex --cd "$project_root" -a on-request -s workspace-write "$@"
 fi
 exec codex --cd "$project_root" -a never -s workspace-write "$@"
 "#
         }
         "gemini" => {
-            r#"#!/usr/bin/env zsh
-set -euo pipefail
+            r#"#!/usr/bin/env sh
+set -eu
 project_root="${RCCB_PROJECT_DIR:-$PWD}"
 cd "$project_root"
 role="${RCCB_PROVIDER_ROLE:-executor}"
 trusted_folders_path="${RCCB_GEMINI_TRUSTED_FOLDERS_PATH:-$project_root/.rccb/providers/gemini.trustedFolders.json}"
 export GEMINI_CLI_TRUSTED_FOLDERS_PATH="$trusted_folders_path"
-if [[ "$role" == "orchestrator" ]]; then
+if [ "$role" = "orchestrator" ]; then
   exec gemini --approval-mode default "$@"
 fi
 exec gemini --approval-mode yolo "$@"
 "#
         }
         "droid" => {
-            r#"#!/usr/bin/env zsh
-set -euo pipefail
+            r#"#!/usr/bin/env sh
+set -eu
 project_root="${RCCB_PROJECT_DIR:-$PWD}"
 cd "$project_root"
 role="${RCCB_PROVIDER_ROLE:-executor}"
 droid_settings_path="${RCCB_DROID_SETTINGS_PATH:-$project_root/.factory/settings.local.json}"
-if [[ "$role" == "orchestrator" ]]; then
-  if [[ -f "$droid_settings_path" ]]; then
+if [ "$role" = "orchestrator" ]; then
+  if [ -f "$droid_settings_path" ]; then
     exec droid --settings "$droid_settings_path" "$@"
   fi
   exec droid "$@"
 fi
-if [[ -f "$droid_settings_path" ]]; then
+if [ -f "$droid_settings_path" ]; then
   exec droid --skip-permissions-unsafe --settings "$droid_settings_path" "$@"
 fi
 exec droid --skip-permissions-unsafe "$@"
@@ -1275,6 +1322,7 @@ pub fn cmd_start(
     } else {
         normalize_provider_list(&providers)?
     };
+    validate_provider_prerequisites(project_dir, &normalized)?;
     let effective_debug = resolve_start_debug(debug.then_some(true).or_else(env_debug_override));
     let _ = ensure_project_bootstrap(
         project_dir,
@@ -1285,6 +1333,7 @@ pub fn cmd_start(
         },
         &normalized,
     )?;
+    let _ = refresh_legacy_provider_wrappers(project_dir, &normalized)?;
 
     start_instance(
         project_dir,
@@ -1332,6 +1381,7 @@ pub fn cmd_external_provider_launch(project_dir: &Path, raw: Vec<String>) -> Res
 }
 
 fn launch_shortcut_instance(project_dir: &Path, providers: &[String]) -> Result<()> {
+    validate_provider_prerequisites(project_dir, providers)?;
     let effective_debug = resolve_start_debug(env_debug_override());
     let _ = ensure_project_bootstrap(
         project_dir,
@@ -1342,6 +1392,7 @@ fn launch_shortcut_instance(project_dir: &Path, providers: &[String]) -> Result<
         },
         providers,
     )?;
+    let _ = refresh_legacy_provider_wrappers(project_dir, providers)?;
     restart_default_daemon_for_shortcut(project_dir)?;
     ensure_default_daemon_running(project_dir, providers, effective_debug)?;
 
@@ -1431,6 +1482,31 @@ fn filter_launchable_providers(project_dir: &Path, providers: &[String]) -> Opti
     } else {
         Some(filtered)
     }
+}
+
+fn validate_provider_prerequisites(project_dir: &Path, providers: &[String]) -> Result<()> {
+    let mut missing = Vec::new();
+    for provider in providers {
+        if provider_cli_is_available(project_dir, provider) {
+            continue;
+        }
+        let key = format!("RCCB_{}_START_CMD", provider.trim().to_ascii_uppercase());
+        missing.push(format!(
+            "- {}: 未检测到可用 CLI；请安装 `{}`，或设置环境变量 `{}`",
+            provider,
+            provider_cli_command(provider).unwrap_or(provider),
+            key
+        ));
+    }
+
+    if missing.is_empty() {
+        return Ok(());
+    }
+
+    bail!(
+        "启动前检查失败：基础环境不满足，已取消启动。\n{}\n请先补齐上述 provider CLI，再重新执行。",
+        missing.join("\n")
+    )
 }
 
 fn legacy_ask_alias_provider(op: &str) -> Option<&'static str> {
@@ -2697,11 +2773,21 @@ fn env_bool(key: &str, default: bool) -> bool {
 }
 
 fn resolve_shell_path() -> String {
-    env::var("SHELL")
-        .map(|v| v.trim().to_string())
+    let from_env = env::var("SHELL")
         .ok()
-        .filter(|v| !v.is_empty())
-        .unwrap_or_else(|| "/bin/bash".to_string())
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty());
+
+    if let Some(shell) = from_env.filter(|v| Path::new(v).is_absolute() && Path::new(v).exists()) {
+        return shell;
+    }
+    if Path::new("/bin/bash").exists() {
+        return "/bin/bash".to_string();
+    }
+    if Path::new("/bin/sh").exists() {
+        return "/bin/sh".to_string();
+    }
+    "sh".to_string()
 }
 
 fn wrap_shell_command(cmd: &str) -> String {
@@ -5884,18 +5970,20 @@ mod tests {
         let gemini = super::build_provider_wrapper_script("gemini").expect("gemini wrapper");
         let droid = super::build_provider_wrapper_script("droid").expect("droid wrapper");
 
+        assert!(claude.starts_with("#!/usr/bin/env sh"));
         assert!(claude.contains("role=\"${RCCB_PROVIDER_ROLE:-executor}\""));
         assert!(claude.contains("--allowedTools \"Read Grep Glob LS Bash(rccb:*)"));
         assert!(claude.contains("--disallowedTools \"Edit MultiEdit Write NotebookEdit\""));
         assert!(claude.contains("--permission-mode bypassPermissions"));
         assert!(claude.contains("--dangerously-skip-permissions"));
+        assert!(!claude.contains("[["));
         assert!(codex.contains("-a on-request -s workspace-write"));
         assert!(codex.contains("-a never -s workspace-write"));
         assert!(gemini.contains("GEMINI_CLI_TRUSTED_FOLDERS_PATH"));
         assert!(gemini.contains("--approval-mode default"));
         assert!(gemini.contains("--approval-mode yolo"));
         assert!(droid.contains("--skip-permissions-unsafe"));
-        assert!(droid.contains("if [[ \"$role\" == \"orchestrator\" ]]"));
+        assert!(droid.contains("if [ \"$role\" = \"orchestrator\" ]"));
         assert!(droid.contains(".factory/settings.local.json"));
     }
 
@@ -6219,6 +6307,74 @@ mod tests {
         assert!(cmd.contains(".rccb/bin/opencode"));
         assert!(!cmd.contains("tail -n0 -F"));
         let _ = fs::remove_dir_all(&project);
+    }
+
+    #[test]
+    fn legacy_zsh_wrapper_is_marked_for_refresh() {
+        let project = std::env::temp_dir().join(format!("rccb-wrapper-refresh-{}", now_unix_ms()));
+        ensure_project_layout(&project).unwrap();
+        let wrapper = project.join(".rccb").join("bin").join("gemini");
+        fs::create_dir_all(wrapper.parent().unwrap()).unwrap();
+        fs::write(
+            &wrapper,
+            "#!/usr/bin/env zsh\nset -euo pipefail\nif [[ \"$role\" == \"orchestrator\" ]]; then\n  exit 0\nfi\n",
+        )
+        .unwrap();
+
+        assert!(super::provider_wrapper_needs_refresh(&wrapper).unwrap());
+        let refreshed =
+            super::refresh_legacy_provider_wrappers(&project, &["gemini".to_string()]).unwrap();
+        assert_eq!(refreshed.len(), 1);
+        let raw = fs::read_to_string(&wrapper).unwrap();
+        assert!(raw.starts_with("#!/usr/bin/env sh"));
+        assert!(!raw.contains("[["));
+
+        let _ = fs::remove_dir_all(&project);
+    }
+
+    #[test]
+    fn validate_provider_prerequisites_reports_missing_cli() {
+        let _guard = env_lock().lock().expect("lock env");
+        let old_path = std::env::var("PATH").ok();
+        unsafe {
+            std::env::set_var("PATH", "");
+        }
+        let project = Path::new("/tmp/rccb-preflight");
+        let err =
+            super::validate_provider_prerequisites(project, &["gemini".to_string()]).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("启动前检查失败"));
+        assert!(msg.contains("gemini"));
+        assert!(msg.contains("RCCB_GEMINI_START_CMD"));
+        if let Some(v) = old_path {
+            unsafe {
+                std::env::set_var("PATH", v);
+            }
+        } else {
+            unsafe {
+                std::env::remove_var("PATH");
+            }
+        }
+    }
+
+    #[test]
+    fn resolve_shell_path_falls_back_when_env_shell_is_invalid() {
+        let _guard = env_lock().lock().expect("lock env");
+        let old_shell = std::env::var("SHELL").ok();
+        unsafe {
+            std::env::set_var("SHELL", "/definitely/missing/rccb-shell");
+        }
+        let shell = super::resolve_shell_path();
+        assert!(shell == "/bin/bash" || shell == "/bin/sh" || shell == "sh");
+        if let Some(v) = old_shell {
+            unsafe {
+                std::env::set_var("SHELL", v);
+            }
+        } else {
+            unsafe {
+                std::env::remove_var("SHELL");
+            }
+        }
     }
 
     #[test]
