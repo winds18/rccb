@@ -832,6 +832,9 @@ fn build_rule_file_specs(project_dir: &Path, providers: &[String]) -> Vec<RuleFi
 整个过程中必须通过 `delegate-researcher` 子代理异步委派，主编排者不要直接下场执行。\n\n\
 推荐派单：\n\
 `RCCB_ASK_ASYNC_STDOUT=minimal rccb --project-dir . ask --instance default --provider gemini --caller claude --async \"$ARGUMENTS\"`\n\n\
+只有真正拿到 RCCB 输出中的 `req_id=<数字或请求ID>`，才算派单成功。\n\
+绝对不要把 Claude Bash 工具自己的后台任务 ID（如 `bg...`、`bu...`、`task ...`）当成 RCCB 的 `req_id`。\n\
+如果没拿到真正的 `req_id`，应直接说明“本次派单不可追踪，需重新派单”，不要继续用错误 ID 查 `inbox/watch`。\n\n\
 提交成功后，不要自己执行 WebSearch / Read / 通用 Bash，也不要自己完成这项调研。\n\
 如需安静查看状态，只允许用：\n\
 `rccb --project-dir . inbox --instance default --req-id <req_id> --latest --limit 5`。",
@@ -852,6 +855,9 @@ fn build_rule_file_specs(project_dir: &Path, providers: &[String]) -> Vec<RuleFi
 必须通过 `delegate-auditor` 子代理完成派单，主编排者不要直接下场执行。\n\
 请直接异步委派，前台只保留最小提交信息，不要自己轮询状态：\n\
 `RCCB_ASK_ASYNC_STDOUT=minimal rccb --project-dir . ask --instance default --provider codex --caller claude --async \"$ARGUMENTS\"`\n\n\
+只有真正拿到 RCCB 输出中的 `req_id=<数字或请求ID>`，才算派单成功。\n\
+绝对不要把 Claude Bash 工具自己的后台任务 ID（如 `bg...`、`bu...`、`task ...`）当成 RCCB 的 `req_id`。\n\
+如果没拿到真正的 `req_id`，应直接说明“本次派单不可追踪，需重新派单”，不要继续用错误 ID 查 `inbox/watch`。\n\n\
 提交成功后，不要自己执行 WebSearch / Read / 通用 Bash，也不要自己做审计。\n\
 如需安静查看状态，只允许用：\n\
 `rccb --project-dir . inbox --instance default --req-id <req_id> --latest --limit 5`",
