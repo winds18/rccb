@@ -2271,7 +2271,7 @@ fn run_orchestrator_callback_worker(
 
 fn build_orchestrator_started_prompt(req_id: &str, executor: &str, timeout_s: f64) -> String {
     format!(
-        "RCCB_STATUS\nreq_id={req_id}\n执行者={executor}\n状态=running\n\n执行者已开始处理，超时预算 {:.0} 秒。继续等待，不要重复派单。",
+        "RCCB_STATUS\nreq_id={req_id}\n执行者={executor}\n状态=running\n\n执行者已开始处理，超时预算 {:.0} 秒。\n你现在进入等待态：\n- 不要重复派单\n- 不要自己执行 WebSearch / Read / 通用 Bash\n- 不要自己下场完成这个任务\n- 如需查看状态，只允许使用 RCCB 状态接口（`rccb inbox` / `rccb watch`）\n\n继续等待 RCCB_RESULT；如果长时间没有最终结果，只向用户报告当前异常并等待裁决。",
         timeout_s.max(0.0)
     )
 }
@@ -2279,7 +2279,7 @@ fn build_orchestrator_started_prompt(req_id: &str, executor: &str, timeout_s: f6
 fn build_orchestrator_progress_prompt(req_id: &str, executor: &str, message: &str) -> String {
     let progress = clamp_bus_text(message.trim(), orchestrator_progress_callback_max_chars());
     format!(
-        "RCCB_STATUS\nreq_id={req_id}\n执行者={executor}\n状态=running\n\n执行者仍在处理，最新进展：\n{progress}\n\n这不是最终结果，请继续等待，不要重复派单。"
+        "RCCB_STATUS\nreq_id={req_id}\n执行者={executor}\n状态=running\n\n执行者仍在处理，最新进展：\n{progress}\n\n这不是最终结果。继续保持等待态：不要重复派单，不要自己执行 WebSearch / Read / 通用 Bash，也不要自己下场完成任务。若确需查看状态，只允许使用 `rccb inbox` / `rccb watch`。若后续长时间仍无最终结果，只向用户报告异常并等待裁决。"
     )
 }
 
@@ -2297,7 +2297,7 @@ fn build_orchestrator_result_prompt(
         reply
     };
     format!(
-        "RCCB_RESULT\nreq_id={req_id}\n执行者={executor}\n状态={status}\n退出码={exit_code}\n\n执行结果：\n{reply}\n\n你现在只继续做编排工作。\n不要自己执行 bash、修改文件或运行测试。\n如果还需要后续动作，请继续通过 RCCB 委派给执行者。"
+        "RCCB_RESULT\nreq_id={req_id}\n执行者={executor}\n状态={status}\n退出码={exit_code}\n\n执行结果：\n{reply}\n\n你现在只继续做编排工作。\n不要自己执行 bash、修改文件或运行测试。\n如果结果异常、不完整或仍需后续动作：\n- 只做判断、汇总和再次委派\n- 继续通过 RCCB 委派给执行者\n- 不要自己下场执行这个任务\n- 如果需要人工裁决，直接向用户说明并等待用户决定。"
     )
 }
 

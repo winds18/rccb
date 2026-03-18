@@ -24,6 +24,7 @@ use crate::layout::{
     logs_instance_dir, rccb_dir, sanitize_filename, session_instance_dir, state_path,
     tasks_instance_dir, tasks_root_dir, tmp_instance_dir,
 };
+use crate::orchestrator_lock::{clear_inflight, load_inflight, mark_inflight};
 use crate::protocol::{connect_and_send, send_wire_message};
 use crate::provider::{
     dispatch_text_to_pane, PaneBackend as ProviderPaneBackend, PaneDispatchTarget,
@@ -771,6 +772,7 @@ fn build_rule_file_specs(project_dir: &Path, providers: &[String]) -> Vec<RuleFi
                 "默认编排者，只负责思考、拆解、委派、验收与汇总。",
                 &[
                     "不要自己执行 bash、修改文件或运行测试。",
+                    "执行任务优先通过对应的 Claude 委派子代理派出，不要让主编排者直接下场执行。",
                     "实现优先派给 opencode，调研优先派给 gemini，文档优先派给 droid，审计优先派给 codex。",
                     "涉及外部事实时，先让 gemini 做至少两轮调研，再让 codex 复核关键结论。",
                 ],
@@ -805,10 +807,11 @@ fn build_rule_file_specs(project_dir: &Path, providers: &[String]) -> Vec<RuleFi
                 "委派编码任务给 opencode",
                 "使用 RCCB 把实现、改代码、运行测试、联调修复等任务委派给 `opencode`。\n\
 任务内容：$ARGUMENTS\n\n\
+优先通过 `delegate-coder` 子代理完成派单，主编排者不要直接下场执行。\n\
 请直接异步委派，前台只保留最小提交信息，不要自己轮询状态：\n\
 `RCCB_ASK_ASYNC_STDOUT=minimal rccb --project-dir . ask --instance default --provider opencode --caller claude --async \"$ARGUMENTS\"`\n\n\
-提交成功后，不要主动执行 `sleep`、`cat .reply.md`、`watch --follow`。\n\
-如需安静查看状态，优先用：\n\
+提交成功后，不要自己执行 WebSearch / Read / 通用 Bash，也不要下场做这个任务。\n\
+如需安静查看状态，只允许用：\n\
 `rccb --project-dir . inbox --instance default --req-id <req_id> --latest --limit 5`\n\n\
 如果任务依赖外部事实或资料，请改用 `/rccb-research`。",
             ),
@@ -826,11 +829,11 @@ fn build_rule_file_specs(project_dir: &Path, providers: &[String]) -> Vec<RuleFi
                 "使用 RCCB 先把调研任务委派给 `gemini`，要求它至少做两轮检索与交叉验证，优先官方/一手来源。\n\
 任务内容：$ARGUMENTS\n\n\
 在 gemini 返回后，不要直接采纳结论；继续把关键结论、风险点和冲突信息委派给 `codex` 做复核。\n\
-整个过程中优先异步委派，不要自己轮询状态。\n\n\
+整个过程中优先通过 `delegate-researcher` 子代理异步委派，主编排者不要直接下场执行。\n\n\
 推荐派单：\n\
 `RCCB_ASK_ASYNC_STDOUT=minimal rccb --project-dir . ask --instance default --provider gemini --caller claude --async \"$ARGUMENTS\"`\n\n\
-提交成功后，不要主动执行 `sleep`、`cat .reply.md`、`watch --follow`。\n\
-如需安静查看状态，优先用：\n\
+提交成功后，不要自己执行 WebSearch / Read / 通用 Bash，也不要自己完成这项调研。\n\
+如需安静查看状态，只允许用：\n\
 `rccb --project-dir . inbox --instance default --req-id <req_id> --latest --limit 5`。",
             ),
             kind: RuleFileKind::PlainMarkdown,
@@ -846,10 +849,11 @@ fn build_rule_file_specs(project_dir: &Path, providers: &[String]) -> Vec<RuleFi
                 "委派代码审计任务给 codex",
                 "使用 RCCB 把代码审计、风险评估、边界条件检查、回归分析和调研复核任务委派给 `codex`。\n\
 任务内容：$ARGUMENTS\n\n\
+优先通过 `delegate-auditor` 子代理完成派单，主编排者不要直接下场执行。\n\
 请直接异步委派，前台只保留最小提交信息，不要自己轮询状态：\n\
 `RCCB_ASK_ASYNC_STDOUT=minimal rccb --project-dir . ask --instance default --provider codex --caller claude --async \"$ARGUMENTS\"`\n\n\
-提交成功后，不要主动执行 `sleep`、`cat .reply.md`、`watch --follow`。\n\
-如需安静查看状态，优先用：\n\
+提交成功后，不要自己执行 WebSearch / Read / 通用 Bash，也不要自己做审计。\n\
+如需安静查看状态，只允许用：\n\
 `rccb --project-dir . inbox --instance default --req-id <req_id> --latest --limit 5`",
             ),
             kind: RuleFileKind::PlainMarkdown,
@@ -865,10 +869,11 @@ fn build_rule_file_specs(project_dir: &Path, providers: &[String]) -> Vec<RuleFi
                 "委派文档记录任务给 droid",
                 "使用 RCCB 把文档整理、纪要、变更说明、操作手册和复盘归档任务委派给 `droid`。\n\
 任务内容：$ARGUMENTS\n\n\
+优先通过 `delegate-scribe` 子代理完成派单，主编排者不要直接下场执行。\n\
 请直接异步委派，前台只保留最小提交信息，不要自己轮询状态：\n\
 `RCCB_ASK_ASYNC_STDOUT=minimal rccb --project-dir . ask --instance default --provider droid --caller claude --async \"$ARGUMENTS\"`\n\n\
-提交成功后，不要主动执行 `sleep`、`cat .reply.md`、`watch --follow`。\n\
-如需安静查看状态，优先用：\n\
+提交成功后，不要自己执行 WebSearch / Read / 通用 Bash，也不要自己做文档交付。\n\
+如需安静查看状态，只允许用：\n\
 `rccb --project-dir . inbox --instance default --req-id <req_id> --latest --limit 5`",
             ),
             kind: RuleFileKind::PlainMarkdown,
@@ -1039,6 +1044,7 @@ fn build_agents_rules_markdown(providers: &[String]) -> String {
 ## 编排原则\n\
 - 默认把第一个 provider 当作编排者，其余 provider 当作执行者。\n\
 - 编排者不要自己执行 bash、不要自己改文件、不要自己跑测试。\n\
+- 主编排者优先调用对应委派子代理派单，不要直接下场执行执行者任务。\n\
 - 所有执行任务统一通过 `rccb --project-dir . ask --instance default --provider <执行者> --caller <编排者> \"<任务>\"` 下发。\n\
 - 选择执行者时优先匹配其默认职责；只有确有必要时才跨职责派单。\n\n\
 ## 调研核验链路\n\
@@ -1046,9 +1052,9 @@ fn build_agents_rules_markdown(providers: &[String]) -> String {
 ## 实时状态与结果\n\
 - 静默模式下，最终结果以 `.rccb/tasks/<instance>/artifacts/<req_id>.reply.md` 为准。\n\
 - 长任务前台最多确认一次“已委派，等待后台结果”，不要循环播报等待、重复贴命令或频繁自查。\n\
-- 默认不要主动执行 `Read file`、`Bash sleep`、`cat .reply.md`、`watch --follow` 这类轮询动作。\n\
-- 如需安静查看某个请求的最新状态与结果，优先执行 `rccb --project-dir . inbox --instance default --req-id <req_id> --latest --limit 5`。\n\
-- 如果同步 `ask` 超时，不要立刻重派；先用 `rccb watch --instance default --req-id <req_id> --with-provider-log --timeout-s 3 --pane-ui` 查看一次真实状态。\n\
+- 派单后不要自己执行 WebSearch / Read / 通用 Bash，也不要自己下场完成该任务。\n\
+- 如需安静查看某个请求的最新状态与结果，只允许执行 `rccb --project-dir . inbox --instance default --req-id <req_id> --latest --limit 5`。\n\
+- 如果同步 `ask` 超时，不要立刻重派；只允许用 `rccb watch --instance default --req-id <req_id> --with-provider-log --timeout-s 3 --pane-ui` 查看真实状态。\n\
 - `watch --follow` 只用于 debug pane 或用户明确要求持续追踪时，不要默认在编排者前台使用。\n\
 - 调试日志只应出现在 debug pane，不要把旁路日志刷进 provider 的前台 pane。\n\n\
 ## 托管与自定义\n\
@@ -1090,7 +1096,8 @@ fn build_claude_rules_markdown(providers: &[String]) -> String {
     };
     format!(
         "# Claude 编排规则\n\n\
-你在本项目中的默认角色是编排者。除非用户明确改派，否则不要自己执行 bash、修改文件或运行测试。\n\n\
+你在本项目中的默认角色是编排者。除非用户明确改派，否则不要自己执行 bash、修改文件或运行测试。\n\
+所有执行型任务优先通过对应的 Claude 委派子代理派出，不要让主编排者直接下场执行。\n\n\
 ## 默认派单分工\n\
 {}\n\n\
 ## 调研强约束\n\
@@ -1101,8 +1108,8 @@ rccb --project-dir . ask --instance default --provider <执行者> --caller clau
 ```\n\n\
 ## 查看真实状态\n\
 - 委派成功后，前台最多确认一次“已委派，等待后台结果”；不要循环播报等待、不要频繁自查。\n\
-- 默认不要主动执行 `Read file`、`Bash sleep`、`cat .reply.md`、`watch --follow` 等轮询动作。\n\
-- 如需安静查看最新状态与结果，优先执行：\n\
+- 派单后不要自己执行 WebSearch / Read / 通用 Bash，也不要自己下场完成这个任务。\n\
+- 如需安静查看最新状态与结果，只允许执行：\n\
 ```bash\n\
 rccb --project-dir . inbox --instance default --req-id <req_id> --latest --limit 5\n\
 ```\n\
@@ -5427,6 +5434,8 @@ pub fn cmd_ask(
         bail!("message is empty");
     }
 
+    enforce_orchestrator_dispatch_guard(project_dir, instance, &state, &provider, caller)?;
+
     let req = json!({
         "type": format!("{}.request", PROTOCOL_PREFIX),
         "v": PROTOCOL_VERSION,
@@ -5470,6 +5479,19 @@ pub fn cmd_ask(
         if async_submit {
             let req_id_print = parsed.req_id.unwrap_or_else(|| "-".to_string());
             let provider_print = parsed.provider.unwrap_or_else(|| provider.to_string());
+            if req_id_print != "-" && is_orchestrator_executor_call(&state, &provider_print, caller)
+            {
+                if let Some(orchestrator) = state.orchestrator.as_deref() {
+                    let _ = mark_inflight(
+                        project_dir,
+                        instance,
+                        orchestrator,
+                        &provider_print,
+                        &req_id_print,
+                        "submitted",
+                    );
+                }
+            }
             print_async_submit_notice(
                 project_dir,
                 instance,
@@ -5500,6 +5522,16 @@ pub fn cmd_ask(
             req_id,
         )? {
             let provider_print = parsed.provider.unwrap_or_else(|| provider.to_string());
+            if let Some(orchestrator) = state.orchestrator.as_deref() {
+                let _ = mark_inflight(
+                    project_dir,
+                    instance,
+                    orchestrator,
+                    &provider_print,
+                    req_id,
+                    "running",
+                );
+            }
             print_async_submit_notice(project_dir, instance, &provider_print, req_id, "running");
             return Ok(());
         }
@@ -5511,6 +5543,77 @@ pub fn cmd_ask(
         parsed_reply,
         parsed.req_id.unwrap_or_else(|| "-".to_string())
     )
+}
+
+fn enforce_orchestrator_dispatch_guard(
+    project_dir: &Path,
+    instance: &str,
+    state: &InstanceState,
+    provider: &str,
+    caller: &str,
+) -> Result<()> {
+    if !env_bool("RCCB_ORCHESTRATOR_WAIT_GUARD", true) {
+        return Ok(());
+    }
+    if env_bool("RCCB_ORCHESTRATOR_ALLOW_PARALLEL", false) {
+        return Ok(());
+    }
+    if !env::var("RCCB_PROVIDER_ROLE")
+        .ok()
+        .map(|v| v.trim().eq_ignore_ascii_case("orchestrator"))
+        .unwrap_or(false)
+    {
+        return Ok(());
+    }
+    let current_agent = env::var("RCCB_PROVIDER_AGENT").ok().unwrap_or_default();
+    if !current_agent.trim().is_empty()
+        && !current_agent.trim().eq_ignore_ascii_case("orchestrator")
+    {
+        return Ok(());
+    }
+    if !is_orchestrator_executor_call(state, provider, caller) {
+        return Ok(());
+    }
+
+    let Some(orchestrator) = state
+        .orchestrator
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+    else {
+        return Ok(());
+    };
+
+    let mut inflight = load_inflight(project_dir, instance, orchestrator)?;
+    inflight.retain(|entry| {
+        let rid = entry.req_id.trim();
+        if rid.is_empty() {
+            return false;
+        }
+        match load_task_by_req_id(project_dir, instance, rid) {
+            Ok(Some(task)) if is_terminal_task_status(&task.status) => {
+                let _ = clear_inflight(project_dir, instance, orchestrator, rid);
+                false
+            }
+            Ok(Some(_)) => true,
+            Ok(None) => true,
+            Err(_) => true,
+        }
+    });
+
+    if inflight.is_empty() {
+        return Ok(());
+    }
+
+    let summary = inflight
+        .iter()
+        .map(|entry| format!("{}({}->{})", entry.req_id, entry.executor, entry.status))
+        .collect::<Vec<_>>()
+        .join(", ");
+    bail!(
+        "主编排者等待态已生效，当前已有未完成任务：{}。在收到最终结果前，主编排者允许使用 `rccb inbox/watch` 查询状态，但不允许继续直接派发新的执行任务，也不要自己下场执行。若需要并行派单，请改用 Claude 的 `delegate-*` 子代理；如确需临时放开，也可显式设置 `RCCB_ORCHESTRATOR_ALLOW_PARALLEL=1`。",
+        summary
+    );
 }
 
 fn should_suppress_sync_reply_for_orchestrator(
@@ -5841,16 +5944,16 @@ mod tests {
     use super::{
         async_submit_stdout_mode, build_debug_watch_command, cleanup_inflight_tasks,
         cleanup_instance_runtime, compact_watch_line, debug_watch_pane_percent,
-        ensure_project_bootstrap, ensure_project_rule_bootstrap, is_ignorable_pane_command_error,
-        is_in_flight_status, is_orchestrator_executor_call, is_terminal_bus_task_event,
-        is_terminal_task_status, load_orchestrator_inbox_entries, load_task_by_req_id,
-        orchestrator_guardrail_prompt, orchestrator_strict_mode_enabled, provider_start_cmd,
-        render_project_bootstrap_content, resolve_debug_watch_provider,
-        resolve_shortcut_restore_providers, run_simple, select_watch_req_for_provider,
-        select_watch_req_for_provider_follow, should_degrade_timeout_to_pending,
-        split_layout_groups, split_percent_for_equal_stack, task_file_for_req_id,
-        watch_bus_enabled, BootstrapMode, RCCB_MANAGED_BEGIN, RCCB_MANAGED_END, RCCB_USER_BEGIN,
-        RCCB_USER_END,
+        enforce_orchestrator_dispatch_guard, ensure_project_bootstrap,
+        ensure_project_rule_bootstrap, is_ignorable_pane_command_error, is_in_flight_status,
+        is_orchestrator_executor_call, is_terminal_bus_task_event, is_terminal_task_status,
+        load_orchestrator_inbox_entries, load_task_by_req_id, orchestrator_guardrail_prompt,
+        orchestrator_strict_mode_enabled, provider_start_cmd, render_project_bootstrap_content,
+        resolve_debug_watch_provider, resolve_shortcut_restore_providers, run_simple,
+        select_watch_req_for_provider, select_watch_req_for_provider_follow,
+        should_degrade_timeout_to_pending, split_layout_groups, split_percent_for_equal_stack,
+        task_file_for_req_id, watch_bus_enabled, BootstrapMode, RCCB_MANAGED_BEGIN,
+        RCCB_MANAGED_END, RCCB_USER_BEGIN, RCCB_USER_END,
     };
     use crate::io_utils::{
         now_unix, now_unix_ms, update_task_status, write_json_pretty, write_state,
@@ -5859,6 +5962,7 @@ mod tests {
         ensure_project_layout, lock_path, logs_instance_dir, session_instance_dir, state_path,
         tasks_instance_dir, tmp_instance_dir,
     };
+    use crate::orchestrator_lock::mark_inflight;
     use crate::types::{AskBusEvent, InstanceState};
 
     fn env_lock() -> &'static Mutex<()> {
@@ -6152,6 +6256,95 @@ mod tests {
         )
         .unwrap());
 
+        let _ = fs::remove_dir_all(&project);
+    }
+
+    #[test]
+    fn orchestrator_dispatch_guard_blocks_main_orchestrator_parallel_ask() {
+        let _guard = env_lock().lock().unwrap();
+        let project = std::env::temp_dir().join(format!("rccb-ask-guard-main-{}", now_unix_ms()));
+        let instance = "default";
+        ensure_project_layout(&project).unwrap();
+        let state = InstanceState {
+            schema_version: 1,
+            instance_id: instance.to_string(),
+            project_dir: project.display().to_string(),
+            pid: 1,
+            status: "running".to_string(),
+            started_at_unix: 1,
+            last_heartbeat_unix: 1,
+            stopped_at_unix: None,
+            providers: vec!["claude".to_string(), "gemini".to_string()],
+            orchestrator: Some("claude".to_string()),
+            executors: vec!["gemini".to_string()],
+            session_file: None,
+            last_task_id: None,
+            daemon_host: None,
+            daemon_port: None,
+            daemon_token: None,
+            debug_enabled: false,
+        };
+        write_state(&state_path(&project, instance), &state).unwrap();
+        mark_inflight(&project, instance, "claude", "gemini", "req-1", "running").unwrap();
+
+        unsafe {
+            std::env::set_var("RCCB_PROVIDER_ROLE", "orchestrator");
+            std::env::set_var("RCCB_PROVIDER_AGENT", "orchestrator");
+            std::env::remove_var("RCCB_ORCHESTRATOR_ALLOW_PARALLEL");
+        }
+        let err =
+            enforce_orchestrator_dispatch_guard(&project, instance, &state, "gemini", "claude")
+                .unwrap_err();
+        assert!(err.to_string().contains("主编排者等待态已生效"));
+
+        unsafe {
+            std::env::remove_var("RCCB_PROVIDER_ROLE");
+            std::env::remove_var("RCCB_PROVIDER_AGENT");
+        }
+        let _ = fs::remove_dir_all(&project);
+    }
+
+    #[test]
+    fn orchestrator_dispatch_guard_allows_delegate_agent_parallel_ask() {
+        let _guard = env_lock().lock().unwrap();
+        let project =
+            std::env::temp_dir().join(format!("rccb-ask-guard-delegate-{}", now_unix_ms()));
+        let instance = "default";
+        ensure_project_layout(&project).unwrap();
+        let state = InstanceState {
+            schema_version: 1,
+            instance_id: instance.to_string(),
+            project_dir: project.display().to_string(),
+            pid: 1,
+            status: "running".to_string(),
+            started_at_unix: 1,
+            last_heartbeat_unix: 1,
+            stopped_at_unix: None,
+            providers: vec!["claude".to_string(), "gemini".to_string()],
+            orchestrator: Some("claude".to_string()),
+            executors: vec!["gemini".to_string()],
+            session_file: None,
+            last_task_id: None,
+            daemon_host: None,
+            daemon_port: None,
+            daemon_token: None,
+            debug_enabled: false,
+        };
+        write_state(&state_path(&project, instance), &state).unwrap();
+        mark_inflight(&project, instance, "claude", "gemini", "req-1", "running").unwrap();
+
+        unsafe {
+            std::env::set_var("RCCB_PROVIDER_ROLE", "orchestrator");
+            std::env::set_var("RCCB_PROVIDER_AGENT", "delegate-researcher");
+            std::env::remove_var("RCCB_ORCHESTRATOR_ALLOW_PARALLEL");
+        }
+        enforce_orchestrator_dispatch_guard(&project, instance, &state, "gemini", "claude")
+            .unwrap();
+
+        unsafe {
+            std::env::remove_var("RCCB_PROVIDER_ROLE");
+            std::env::remove_var("RCCB_PROVIDER_AGENT");
+        }
         let _ = fs::remove_dir_all(&project);
     }
 

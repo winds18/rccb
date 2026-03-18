@@ -10,6 +10,7 @@ use serde::Deserialize;
 
 use crate::io_utils::{read_stdin_all, write_line};
 use crate::layout::{launcher_meta_path, logs_instance_dir};
+use crate::orchestrator_lock::{clear_inflight, mark_inflight};
 use crate::provider::{
     dispatch_text_to_pane, PaneBackend as ProviderPaneBackend, PaneDispatchTarget,
 };
@@ -91,6 +92,27 @@ pub fn deliver_orchestrator_notice(req: &OrchestratorNoticeRequest) -> Result<()
     let body = req.body.trim();
     if body.is_empty() {
         return Ok(());
+    }
+
+    match req.kind {
+        OrchestratorNoticeKind::Started | OrchestratorNoticeKind::Progress => {
+            let _ = mark_inflight(
+                &req.project_dir,
+                &req.instance,
+                &req.orchestrator,
+                "",
+                &req.req_id,
+                req.kind.as_str(),
+            );
+        }
+        OrchestratorNoticeKind::Result => {
+            let _ = clear_inflight(
+                &req.project_dir,
+                &req.instance,
+                &req.orchestrator,
+                &req.req_id,
+            );
+        }
     }
 
     let attempts = orchestrator_callback_retries();

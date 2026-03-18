@@ -7,6 +7,7 @@ mod im;
 mod io_utils;
 mod layout;
 mod orchestrator_callback;
+mod orchestrator_lock;
 mod protocol;
 mod provider;
 mod types;
