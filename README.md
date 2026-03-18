@@ -11,15 +11,17 @@
 
 ## 当前发布
 
-当前已发布版本：`v0.1.0`
+当前已发布版本：`v0.1.1`
 
-- GitHub Release: `v0.1.0`
+- GitHub Release: `v0.1.1`
 - 发布产物：
-  - `rccb-v0.1.0-macos-arm64.tar.gz`
-  - `rccb-v0.1.0-linux-x86_64.tar.gz`
+  - `rccb-v0.1.1-macos-arm64.tar.gz`
+  - `rccb-v0.1.1-linux-x86_64.tar.gz`
   - `SHA256SUMS.txt`
 
 建议配合 `CHANGELOG.md` 一起阅读本版本的能力范围与已知边界。
+
+`v0.1.1` 是针对 `v0.1.0` 的热修版本，重点修复 Linux / bash 环境下的启动兼容问题，并在 provider CLI 缺失时改为中文前置检查与优雅退出。
 
 ## 项目初始化
 
@@ -500,10 +502,10 @@ cargo build --release
 
 ## 发布产物说明
 
-`v0.1.0` 当前提供两类正式二进制包：
+`v0.1.1` 当前提供两类正式二进制包：
 
-- macOS Apple Silicon：`rccb-v0.1.0-macos-arm64.tar.gz`
-- Linux x86_64（musl 静态链接）：`rccb-v0.1.0-linux-x86_64.tar.gz`
+- macOS Apple Silicon：`rccb-v0.1.1-macos-arm64.tar.gz`
+- Linux x86_64（musl 静态链接）：`rccb-v0.1.1-linux-x86_64.tar.gz`
 
 校验文件：
 

@@ -5972,7 +5972,7 @@ mod tests {
 
         assert!(claude.starts_with("#!/usr/bin/env sh"));
         assert!(claude.contains("role=\"${RCCB_PROVIDER_ROLE:-executor}\""));
-        assert!(claude.contains("--allowedTools \"Read Grep Glob LS Bash(rccb:*)"));
+        assert!(claude.contains("--allowedTools \"Read Grep Glob LS Task Bash(rccb:*)"));
         assert!(claude.contains("--disallowedTools \"Edit MultiEdit Write NotebookEdit\""));
         assert!(claude.contains("--permission-mode bypassPermissions"));
         assert!(claude.contains("--dangerously-skip-permissions"));

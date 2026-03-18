@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## v0.1.1 - 2026-03-18
+
+`v0.1.1` 是针对 `v0.1.0` 的热修版本，聚焦 Linux / bash 环境下的启动稳定性，不引入新的编排能力。
+
+### Fixed
+
+- 修复 provider wrapper 写死 `zsh` 导致 Linux / bash 环境启动失败的问题，统一改为 POSIX `sh` 兼容脚本
+- 修复 shell 路径回退逻辑：优先使用有效 `SHELL`，否则依次回退到 `/bin/bash`、`/bin/sh` 与 `sh`
+- 新增 provider CLI 前置环境检查，缺失依赖时改为中文一次性提示并优雅退出，避免满屏报错
+- 新增旧版 `.rccb/bin/*` wrapper 自动刷新机制，升级二进制后会自动修复历史遗留的 zsh 包装脚本
+
+### Tests
+
+- 新增旧版 zsh wrapper 刷新测试
+- 新增 provider CLI 缺失时的前置检查测试
+- 新增无效 `SHELL` 环境变量下的 shell 回退测试
+
 ## v0.1.0 - 2026-03-17
 
 首个正式发布版本，重点完成 RCCB 的项目级运行时、pane 编排、静默结果消费和实时状态观察链路。
