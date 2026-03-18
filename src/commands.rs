@@ -772,7 +772,7 @@ fn build_rule_file_specs(project_dir: &Path, providers: &[String]) -> Vec<RuleFi
                 "默认编排者，只负责思考、拆解、委派、验收与汇总。",
                 &[
                     "不要自己执行 bash、修改文件或运行测试。",
-                    "执行任务优先通过对应的 Claude 委派子代理派出，不要让主编排者直接下场执行。",
+                    "执行任务必须通过对应的 Claude 委派子代理派出，不要让主编排者直接下场执行。",
                     "实现优先派给 opencode，调研优先派给 gemini，文档优先派给 droid，审计优先派给 codex。",
                     "涉及外部事实时，先让 gemini 做至少两轮调研，再让 codex 复核关键结论。",
                 ],
@@ -807,7 +807,7 @@ fn build_rule_file_specs(project_dir: &Path, providers: &[String]) -> Vec<RuleFi
                 "委派编码任务给 opencode",
                 "使用 RCCB 把实现、改代码、运行测试、联调修复等任务委派给 `opencode`。\n\
 任务内容：$ARGUMENTS\n\n\
-优先通过 `delegate-coder` 子代理完成派单，主编排者不要直接下场执行。\n\
+必须通过 `delegate-coder` 子代理完成派单，主编排者不要直接下场执行。\n\
 请直接异步委派，前台只保留最小提交信息，不要自己轮询状态：\n\
 `RCCB_ASK_ASYNC_STDOUT=minimal rccb --project-dir . ask --instance default --provider opencode --caller claude --async \"$ARGUMENTS\"`\n\n\
 提交成功后，不要自己执行 WebSearch / Read / 通用 Bash，也不要下场做这个任务。\n\
@@ -829,7 +829,7 @@ fn build_rule_file_specs(project_dir: &Path, providers: &[String]) -> Vec<RuleFi
                 "使用 RCCB 先把调研任务委派给 `gemini`，要求它至少做两轮检索与交叉验证，优先官方/一手来源。\n\
 任务内容：$ARGUMENTS\n\n\
 在 gemini 返回后，不要直接采纳结论；继续把关键结论、风险点和冲突信息委派给 `codex` 做复核。\n\
-整个过程中优先通过 `delegate-researcher` 子代理异步委派，主编排者不要直接下场执行。\n\n\
+整个过程中必须通过 `delegate-researcher` 子代理异步委派，主编排者不要直接下场执行。\n\n\
 推荐派单：\n\
 `RCCB_ASK_ASYNC_STDOUT=minimal rccb --project-dir . ask --instance default --provider gemini --caller claude --async \"$ARGUMENTS\"`\n\n\
 提交成功后，不要自己执行 WebSearch / Read / 通用 Bash，也不要自己完成这项调研。\n\
@@ -849,7 +849,7 @@ fn build_rule_file_specs(project_dir: &Path, providers: &[String]) -> Vec<RuleFi
                 "委派代码审计任务给 codex",
                 "使用 RCCB 把代码审计、风险评估、边界条件检查、回归分析和调研复核任务委派给 `codex`。\n\
 任务内容：$ARGUMENTS\n\n\
-优先通过 `delegate-auditor` 子代理完成派单，主编排者不要直接下场执行。\n\
+必须通过 `delegate-auditor` 子代理完成派单，主编排者不要直接下场执行。\n\
 请直接异步委派，前台只保留最小提交信息，不要自己轮询状态：\n\
 `RCCB_ASK_ASYNC_STDOUT=minimal rccb --project-dir . ask --instance default --provider codex --caller claude --async \"$ARGUMENTS\"`\n\n\
 提交成功后，不要自己执行 WebSearch / Read / 通用 Bash，也不要自己做审计。\n\
@@ -869,7 +869,7 @@ fn build_rule_file_specs(project_dir: &Path, providers: &[String]) -> Vec<RuleFi
                 "委派文档记录任务给 droid",
                 "使用 RCCB 把文档整理、纪要、变更说明、操作手册和复盘归档任务委派给 `droid`。\n\
 任务内容：$ARGUMENTS\n\n\
-优先通过 `delegate-scribe` 子代理完成派单，主编排者不要直接下场执行。\n\
+必须通过 `delegate-scribe` 子代理完成派单，主编排者不要直接下场执行。\n\
 请直接异步委派，前台只保留最小提交信息，不要自己轮询状态：\n\
 `RCCB_ASK_ASYNC_STDOUT=minimal rccb --project-dir . ask --instance default --provider droid --caller claude --async \"$ARGUMENTS\"`\n\n\
 提交成功后，不要自己执行 WebSearch / Read / 通用 Bash，也不要自己做文档交付。\n\
@@ -1044,7 +1044,7 @@ fn build_agents_rules_markdown(providers: &[String]) -> String {
 ## 编排原则\n\
 - 默认把第一个 provider 当作编排者，其余 provider 当作执行者。\n\
 - 编排者不要自己执行 bash、不要自己改文件、不要自己跑测试。\n\
-- 主编排者优先调用对应委派子代理派单，不要直接下场执行执行者任务。\n\
+- 主编排者必须调用对应委派子代理派单，不要直接下场执行执行者任务。\n\
 - 所有执行任务统一通过 `rccb --project-dir . ask --instance default --provider <执行者> --caller <编排者> \"<任务>\"` 下发。\n\
 - 选择执行者时优先匹配其默认职责；只有确有必要时才跨职责派单。\n\n\
 ## 调研核验链路\n\
@@ -1097,7 +1097,7 @@ fn build_claude_rules_markdown(providers: &[String]) -> String {
     format!(
         "# Claude 编排规则\n\n\
 你在本项目中的默认角色是编排者。除非用户明确改派，否则不要自己执行 bash、修改文件或运行测试。\n\
-所有执行型任务优先通过对应的 Claude 委派子代理派出，不要让主编排者直接下场执行。\n\n\
+所有执行型任务必须通过对应的 Claude 委派子代理派出，不要让主编排者直接下场执行。\n\n\
 ## 默认派单分工\n\
 {}\n\n\
 ## 调研强约束\n\
@@ -5555,9 +5555,6 @@ fn enforce_orchestrator_dispatch_guard(
     if !env_bool("RCCB_ORCHESTRATOR_WAIT_GUARD", true) {
         return Ok(());
     }
-    if env_bool("RCCB_ORCHESTRATOR_ALLOW_PARALLEL", false) {
-        return Ok(());
-    }
     if !env::var("RCCB_PROVIDER_ROLE")
         .ok()
         .map(|v| v.trim().eq_ignore_ascii_case("orchestrator"))
@@ -5572,6 +5569,14 @@ fn enforce_orchestrator_dispatch_guard(
         return Ok(());
     }
     if !is_orchestrator_executor_call(state, provider, caller) {
+        return Ok(());
+    }
+    if !env_bool("RCCB_ORCHESTRATOR_ALLOW_DIRECT_ASK", false) {
+        bail!(
+            "主编排者禁止直接执行 `rccb ask` 派发执行任务。请改用 Claude 的 `delegate-*` 子代理完成派单：调研用 `delegate-researcher`，编码用 `delegate-coder`，审计用 `delegate-auditor`，文档用 `delegate-scribe`。如确需临时放开，可显式设置 `RCCB_ORCHESTRATOR_ALLOW_DIRECT_ASK=1`。"
+        );
+    }
+    if env_bool("RCCB_ORCHESTRATOR_ALLOW_PARALLEL", false) {
         return Ok(());
     }
 
@@ -6295,7 +6300,51 @@ mod tests {
         let err =
             enforce_orchestrator_dispatch_guard(&project, instance, &state, "gemini", "claude")
                 .unwrap_err();
-        assert!(err.to_string().contains("主编排者等待态已生效"));
+        assert!(err.to_string().contains("主编排者禁止直接执行 `rccb ask`"));
+
+        unsafe {
+            std::env::remove_var("RCCB_PROVIDER_ROLE");
+            std::env::remove_var("RCCB_PROVIDER_AGENT");
+        }
+        let _ = fs::remove_dir_all(&project);
+    }
+
+    #[test]
+    fn orchestrator_dispatch_guard_blocks_main_orchestrator_even_without_inflight() {
+        let _guard = env_lock().lock().unwrap();
+        let project = std::env::temp_dir().join(format!("rccb-ask-guard-direct-{}", now_unix_ms()));
+        let instance = "default";
+        ensure_project_layout(&project).unwrap();
+        let state = InstanceState {
+            schema_version: 1,
+            instance_id: instance.to_string(),
+            project_dir: project.display().to_string(),
+            pid: 1,
+            status: "running".to_string(),
+            started_at_unix: 1,
+            last_heartbeat_unix: 1,
+            stopped_at_unix: None,
+            providers: vec!["claude".to_string(), "gemini".to_string()],
+            orchestrator: Some("claude".to_string()),
+            executors: vec!["gemini".to_string()],
+            session_file: None,
+            last_task_id: None,
+            daemon_host: None,
+            daemon_port: None,
+            daemon_token: None,
+            debug_enabled: false,
+        };
+        write_state(&state_path(&project, instance), &state).unwrap();
+
+        unsafe {
+            std::env::set_var("RCCB_PROVIDER_ROLE", "orchestrator");
+            std::env::set_var("RCCB_PROVIDER_AGENT", "orchestrator");
+            std::env::remove_var("RCCB_ORCHESTRATOR_ALLOW_DIRECT_ASK");
+        }
+        let err =
+            enforce_orchestrator_dispatch_guard(&project, instance, &state, "gemini", "claude")
+                .unwrap_err();
+        assert!(err.to_string().contains("主编排者禁止直接执行 `rccb ask`"));
 
         unsafe {
             std::env::remove_var("RCCB_PROVIDER_ROLE");
