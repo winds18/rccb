@@ -10,11 +10,12 @@ mod orchestrator_callback;
 mod protocol;
 mod provider;
 mod types;
+mod updater;
 
 use anyhow::Result;
 use clap::Parser;
 
-use crate::cli::{Cli, Command};
+use crate::cli::{Cli, Command, UpdateCommand};
 use crate::commands::{
     cmd_ask, cmd_cancel, cmd_debug, cmd_external_provider_launch, cmd_inbox, cmd_init, cmd_mounted,
     cmd_ping, cmd_send, cmd_shortcut_restore, cmd_start, cmd_status, cmd_stop, cmd_tasks,
@@ -23,6 +24,7 @@ use crate::commands::{
 use crate::io_utils::{cleanup_project_retention, resolve_project_dir};
 use crate::orchestrator_callback::cmd_orchestrator_notify;
 use crate::provider::cmd_pane_feed;
+use crate::updater::{cmd_update_apply, cmd_update_check, maybe_auto_update_notice};
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -30,6 +32,7 @@ fn main() -> Result<()> {
     if let Err(err) = cleanup_project_retention(&project_dir) {
         eprintln!("warn: skip .rccb retention cleanup: {}", err);
     }
+    maybe_auto_update_notice(&project_dir, cli.command.as_ref());
 
     match cli.command {
         None => cmd_shortcut_restore(&project_dir),
@@ -135,6 +138,19 @@ fn main() -> Result<()> {
         ),
         Some(Command::Send { channel }) => cmd_send(channel),
         Some(Command::Debug { action }) => cmd_debug(&project_dir, action),
+        Some(Command::Update { action }) => match action {
+            UpdateCommand::Check { as_json } => cmd_update_check(&project_dir, as_json),
+            UpdateCommand::Apply {
+                version,
+                install_path,
+                force,
+            } => cmd_update_apply(
+                &project_dir,
+                version.as_deref(),
+                install_path.as_deref(),
+                force,
+            ),
+        },
         Some(Command::NotifyOrchestrator {
             instance,
             orchestrator,

@@ -33,7 +33,12 @@ const HELP_EXAMPLES: &str = r#"示例：
      rccb --project-dir . tasks --instance team-a --limit 50 --as-json
      rccb --project-dir . inbox --instance team-a --orchestrator claude --limit 20
 
-  9) 兼容旧命令（统一入口）：
+  9) 自动更新：
+     rccb --project-dir . update check
+     rccb --project-dir . update apply
+     rccb --project-dir . update apply --install-path /usr/local/bin/rccb
+
+  10) 兼容旧命令（统一入口）：
      rccb cask "..."
      rccb cping
      rccb cpend
@@ -100,6 +105,15 @@ pub enum Command {
             help = "Provider 启动顺序（第一个为编排者）"
         )]
         providers: Vec<String>,
+    },
+
+    #[command(
+        about = "检查或执行自更新",
+        long_about = "面向发布版二进制的自动更新能力：可检查 GitHub Release 最新版本，并下载校验后安装到指定路径。"
+    )]
+    Update {
+        #[command(subcommand)]
+        action: UpdateCommand,
     },
 
     #[command(
@@ -348,6 +362,27 @@ pub enum Command {
         long_about = "兼容旧习惯调用：\n- provider 启动：rccb claude codex ...\n- 别名命令：rccb cask/cping/cpend ..."
     )]
     External(Vec<String>),
+}
+
+#[derive(Subcommand, Debug)]
+pub enum UpdateCommand {
+    #[command(about = "检查当前平台是否有新版本")]
+    Check {
+        #[arg(long, default_value_t = false, help = "以 JSON 输出")]
+        as_json: bool,
+    },
+
+    #[command(about = "下载、校验并安装最新版本")]
+    Apply {
+        #[arg(long, help = "指定目标版本，例如 v0.1.1；省略时安装最新版本")]
+        version: Option<String>,
+
+        #[arg(long, help = "安装到指定路径；省略时默认尝试覆盖当前可执行文件")]
+        install_path: Option<PathBuf>,
+
+        #[arg(long, default_value_t = false, help = "即使已是同版本也强制重新安装")]
+        force: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]

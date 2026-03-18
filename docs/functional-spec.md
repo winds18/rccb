@@ -13,6 +13,7 @@
 5. 会话/任务/临时目录全部落在 `.rccb/`
 6. 源码多文件工程化，交付单文件二进制
 7. 可动态启停调试开关并捕获完整调试日志
+8. 面向发布版二进制的自动更新能力
 
 ## 2. 项目目录模型
 
@@ -24,6 +25,7 @@
 - `tasks/<instance>/artifacts/`: 基于 `req_id` 的请求/结果交换文件
 - `tmp/`: provider 临时目录
 - `logs/`: daemon/provider 日志
+- `update/`: 自动更新检查缓存
 
 保洁策略：
 
@@ -45,6 +47,31 @@
 4. `tasks/<instance>/artifacts/<req_id>.request.md`
 5. `tasks/<instance>/artifacts/<req_id>.reply.md`
 6. `tmp/<instance>/<provider>/`
+7. `update/last_check.json`
+
+## 3.2 自动更新
+
+目标：
+
+1. 支持检查 GitHub Release 最新版本
+2. 支持按当前平台自动选择发布产物
+3. 下载后先校验 `SHA256SUMS.txt`，再替换安装
+4. 默认只做轻量自动检查提示，不自动覆盖升级
+
+命令：
+
+1. `rccb update check [--as-json]`
+2. `rccb update apply [--version <tag>] [--install-path <path>] [--force]`
+
+约束：
+
+1. 当前只支持已发布产物的平台自动更新：
+   - macOS arm64
+   - Linux x86_64 musl
+2. 若当前运行的是开发态二进制（如 `target/debug/rccb`），默认拒绝直接覆盖，需显式传入 `--install-path`
+3. 启动时默认进行轻量更新检查，并将结果缓存到 `.rccb/update/last_check.json`
+4. `RCCB_AUTO_UPDATE_CHECK=0` 可关闭自动检查
+5. `RCCB_UPDATE_INCLUDE_PRERELEASE=0` 可只看正式版
 
 ## 3.1 Provider 执行模型
 

@@ -23,6 +23,38 @@
 
 `v0.1.1` 是针对 `v0.1.0` 的热修版本，重点修复 Linux / bash 环境下的启动兼容问题，并在 provider CLI 缺失时改为中文前置检查与优雅退出。
 
+## 自动更新
+
+RCCB 现已提供第一版自更新机制：
+
+```bash
+rccb --project-dir . update check
+rccb --project-dir . update apply
+```
+
+能力范围：
+
+- 自动检查 GitHub Release 上适配当前平台的最新产物
+- 下载对应 `tar.gz` 与 `SHA256SUMS.txt`
+- 校验 SHA256 后再安装
+- 默认尝试覆盖当前可执行文件
+
+说明：
+
+- 当前自动更新只支持已发布产物的平台：
+  - macOS arm64
+  - Linux x86_64 musl
+- 如果你当前运行的是开发态二进制（如 `./target/debug/rccb`），`update apply` 默认不会直接覆盖，需显式指定 `--install-path`
+- 启动时默认会做轻量更新检查；可用 `RCCB_AUTO_UPDATE_CHECK=0` 关闭
+- 默认包含开发预览版检查；可用 `RCCB_UPDATE_INCLUDE_PRERELEASE=0` 只看正式版
+
+常用命令：
+
+```bash
+rccb --project-dir . update check --as-json
+rccb --project-dir . update apply --install-path /usr/local/bin/rccb
+```
+
 ## 项目初始化
 
 ```bash
@@ -483,6 +515,13 @@ hook 进程可读取上下文环境变量：
 - `RCCB_COMPLETION_STATUS`
 
 reply 文本通过 `stdin` 传给 hook 命令。
+
+更新相关环境变量：
+
+- `RCCB_AUTO_UPDATE_CHECK=0`：关闭启动时自动更新检查
+- `RCCB_UPDATE_INCLUDE_PRERELEASE=0`：自动更新只看正式版，不包含预发布版
+- `RCCB_UPDATE_CHECK_INTERVAL_HOURS=<N>`：自动检查间隔，默认 24 小时
+- `RCCB_UPDATE_REPO=<owner/repo>`：覆盖默认更新源，默认 `winds18/rccb`
 
 ## 编译与单文件运行
 
