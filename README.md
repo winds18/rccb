@@ -77,6 +77,7 @@ rccb --project-dir . init
 - `./AGENTS.md`（跨 provider 共享协作规则，含托管区块与用户区块）
 - `./CLAUDE.md`
 - `./GEMINI.md`
+- `./.claude/settings.local.json`（为 Claude 编排者补齐项目级 RCCB 命令白名单）
 - `./.agents/skills/rccb-delegate/SKILL.md`（Codex 技能）
 - `./.agents/skills/rccb-audit/SKILL.md`
 - `./.agents/skills/rccb-research-verify/SKILL.md`
@@ -93,6 +94,7 @@ rccb --project-dir . init
 规则文件策略：
 
 - 普通模式：只补缺失文件，不覆盖已有项目级规则
+- 普通模式下若已存在 `.claude/settings.local.json`，会补齐 RCCB 命令白名单，但保留你已有的自定义项
 - `debug` 模式：刷新 RCCB 生成模板，包括 `.rccb/config.example.json`、`providers/*.example.json` 与项目级托管规则
 - 启动包装脚本也属于 RCCB 生成模板，`debug` 模式会一并刷新
 - `AGENTS.md` / `CLAUDE.md` / `GEMINI.md` 会保留用户区块，方便写项目个性化规则

@@ -243,9 +243,11 @@
    - `.rccb/providers/*.example.json`（native profile 模板）
    - `.rccb/bin/*`（provider 启动包装脚本）
    - `AGENTS.md`、`CLAUDE.md`、`GEMINI.md`
+   - `.claude/settings.local.json`（为 Claude 编排者补齐项目级 RCCB 命令白名单）
    - 以及和当前 provider 集合匹配的 skills / commands / agents / rules
 3. 覆盖策略：
    - 普通模式仅补缺失文件
+   - 若已存在 `.claude/settings.local.json`，普通模式会补齐 RCCB 白名单但保留已有自定义字段
    - `--force` 会刷新所有 RCCB 生成模板
    - `debug` 启动会刷新 RCCB 生成模板，包括 `.rccb/config.example.json`、`providers/*.example.json`、`.rccb/bin/*` 与托管规则
    - `AGENTS.md` / `CLAUDE.md` / `GEMINI.md` 通过托管区块 + 用户区块的方式保留用户自定义内容

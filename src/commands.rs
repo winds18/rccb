@@ -152,6 +152,13 @@ fn write_provider_support_files(
     fs::create_dir_all(&provider_dir)?;
 
     let mut written = Vec::new();
+    let claude_settings_path = project_dir.join(".claude").join("settings.local.json");
+    if providers.iter().any(|p| p == "claude") || claude_settings_path.exists() {
+        if write_claude_settings_file(project_dir, &claude_settings_path, mode)? {
+            written.push(claude_settings_path);
+        }
+    }
+
     if providers.iter().any(|p| p == "gemini") {
         let gemini_trusted_folders_path = provider_dir.join("gemini.trustedFolders.json");
         if !(gemini_trusted_folders_path.exists() && matches!(mode, BootstrapMode::MissingOnly)) {
@@ -175,6 +182,135 @@ fn write_provider_support_files(
     }
 
     Ok(written)
+}
+
+fn write_claude_settings_file(
+    project_dir: &Path,
+    path: &Path,
+    mode: BootstrapMode,
+) -> Result<bool> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let desired = build_claude_settings_local(project_dir);
+    let output = if path.exists() && matches!(mode, BootstrapMode::MissingOnly) {
+        merge_claude_settings_local(path, &desired)?
+    } else {
+        desired
+    };
+
+    let should_write = match fs::read_to_string(path) {
+        Ok(raw) => match serde_json::from_str::<Value>(&raw) {
+            Ok(existing) => existing != output,
+            Err(_) => true,
+        },
+        Err(_) => true,
+    };
+
+    if should_write {
+        write_json_pretty(path, &output)?;
+    }
+
+    Ok(should_write)
+}
+
+fn build_claude_settings_local(project_dir: &Path) -> Value {
+    json!({
+        "permissions": {
+            "allow": claude_rccb_allowed_tools(project_dir)
+        }
+    })
+}
+
+fn merge_claude_settings_local(path: &Path, desired: &Value) -> Result<Value> {
+    let raw = fs::read_to_string(path)
+        .with_context(|| format!("读取 Claude 项目设置失败：{}", path.display()))?;
+    let mut current: Value = match serde_json::from_str::<Value>(&raw) {
+        Ok(v) if v.is_object() => v,
+        _ => return Ok(desired.clone()),
+    };
+
+    let allow_values = desired
+        .get("permissions")
+        .and_then(|v| v.get("allow"))
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+
+    let root = match current.as_object_mut() {
+        Some(v) => v,
+        None => return Ok(desired.clone()),
+    };
+    let permissions = root
+        .entry("permissions".to_string())
+        .or_insert_with(|| json!({}));
+    if !permissions.is_object() {
+        *permissions = json!({});
+    }
+
+    let permissions_obj = permissions
+        .as_object_mut()
+        .ok_or_else(|| anyhow!("Claude permissions 节点不是对象"))?;
+    let allow = permissions_obj
+        .entry("allow".to_string())
+        .or_insert_with(|| json!([]));
+    if !allow.is_array() {
+        *allow = json!([]);
+    }
+
+    let allow_array = allow
+        .as_array_mut()
+        .ok_or_else(|| anyhow!("Claude permissions.allow 节点不是数组"))?;
+    let mut seen: HashSet<String> = allow_array
+        .iter()
+        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+        .collect();
+    for item in allow_values {
+        if let Some(text) = item.as_str() {
+            if seen.insert(text.to_string()) {
+                allow_array.push(Value::String(text.to_string()));
+            }
+        }
+    }
+
+    Ok(current)
+}
+
+fn claude_rccb_allowed_tools(project_dir: &Path) -> Vec<String> {
+    let debug_abs = project_dir.join("target").join("debug").join("rccb");
+    let release_abs = project_dir.join("target").join("release").join("rccb");
+    let binaries = vec![
+        "rccb".to_string(),
+        "./target/debug/rccb".to_string(),
+        "'./target/debug/rccb'".to_string(),
+        "./target/release/rccb".to_string(),
+        "'./target/release/rccb'".to_string(),
+        debug_abs.display().to_string(),
+        format!("'{}'", debug_abs.display()),
+        release_abs.display().to_string(),
+        format!("'{}'", release_abs.display()),
+    ];
+    let prefixes = vec![
+        String::new(),
+        "RCCB_ASK_ASYNC_STDOUT=minimal ".to_string(),
+        "RCCB_ASK_ASYNC_STDOUT=full ".to_string(),
+        "RCCB_ASK_ASYNC_STDOUT=* ".to_string(),
+    ];
+    let mut allow = vec!["WebSearch".to_string()];
+    let mut seen = HashSet::new();
+    seen.insert("WebSearch".to_string());
+
+    for prefix in prefixes {
+        for bin in &binaries {
+            let pattern = format!("Bash({}{}:*)", prefix, bin);
+            if seen.insert(pattern.clone()) {
+                allow.push(pattern);
+            }
+        }
+    }
+
+    allow
 }
 
 fn write_config_template(
@@ -6128,6 +6264,7 @@ mod tests {
         assert!(project.join(".factory/rules/rccb-core.md").exists());
         assert!(project.join(".factory/droids/researcher.md").exists());
         assert!(project.join(".factory/settings.local.json").exists());
+        assert!(project.join(".claude/settings.local.json").exists());
         assert!(project.join(".claude/commands/rccb-research.md").exists());
         assert!(project.join(".rccb/providers/codex.example.json").exists());
         assert!(project
@@ -6192,11 +6329,47 @@ mod tests {
             fs::read_to_string(project.join(".rccb/providers/gemini.trustedFolders.json")).unwrap();
         let droid_settings =
             fs::read_to_string(project.join(".factory/settings.local.json")).unwrap();
+        let claude_settings =
+            fs::read_to_string(project.join(".claude/settings.local.json")).unwrap();
         assert!(config.contains("default_specialties"));
         assert!(profile.contains("\"RCCB_TASK_ID\""));
         assert!(trusted.contains("\"TRUST_FOLDER\""));
         assert!(trusted.contains(&project.display().to_string()));
         assert!(droid_settings.contains("\"autonomyMode\": \"auto-high\""));
+        assert!(claude_settings.contains("Bash(rccb:*)"));
+        assert!(claude_settings.contains("RCCB_ASK_ASYNC_STDOUT=minimal"));
+
+        let _ = fs::remove_dir_all(&project);
+    }
+
+    #[test]
+    fn bootstrap_missing_only_merges_claude_settings_allowlist() {
+        let project =
+            std::env::temp_dir().join(format!("rccb-bootstrap-claude-settings-{}", now_unix_ms()));
+        ensure_project_layout(&project).unwrap();
+        let settings_path = project.join(".claude/settings.local.json");
+        fs::create_dir_all(settings_path.parent().unwrap()).unwrap();
+        fs::write(
+            &settings_path,
+            r#"{
+  "permissions": {
+    "allow": ["WebFetch", "Bash(custom-tool:*)"]
+  },
+  "custom": true
+}
+"#,
+        )
+        .unwrap();
+
+        ensure_project_bootstrap(&project, BootstrapMode::MissingOnly, &all_test_providers())
+            .unwrap();
+
+        let merged = fs::read_to_string(&settings_path).unwrap();
+        assert!(merged.contains("\"WebFetch\""));
+        assert!(merged.contains("\"Bash(custom-tool:*)\""));
+        assert!(merged.contains("\"Bash(rccb:*)\""));
+        assert!(merged.contains("RCCB_ASK_ASYNC_STDOUT=minimal"));
+        assert!(merged.contains("\"custom\": true"));
 
         let _ = fs::remove_dir_all(&project);
     }
