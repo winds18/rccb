@@ -5434,7 +5434,14 @@ pub fn cmd_ask(
         bail!("message is empty");
     }
 
-    enforce_orchestrator_dispatch_guard(project_dir, instance, &state, &provider, caller)?;
+    enforce_orchestrator_dispatch_guard(
+        project_dir,
+        instance,
+        &state,
+        &provider,
+        caller,
+        async_submit,
+    )?;
 
     let req = json!({
         "type": format!("{}.request", PROTOCOL_PREFIX),
@@ -5551,6 +5558,7 @@ fn enforce_orchestrator_dispatch_guard(
     state: &InstanceState,
     provider: &str,
     caller: &str,
+    async_submit: bool,
 ) -> Result<()> {
     if !env_bool("RCCB_ORCHESTRATOR_WAIT_GUARD", true) {
         return Ok(());
@@ -5570,6 +5578,11 @@ fn enforce_orchestrator_dispatch_guard(
     }
     if !is_orchestrator_executor_call(state, provider, caller) {
         return Ok(());
+    }
+    if async_submit {
+        bail!(
+            "非子代理模式严禁异步编排下发任务。主编排者不能直接使用 `rccb ask --async`；如需异步派单，必须改用 `delegate-*` 子代理。"
+        );
     }
     if !env_bool("RCCB_ORCHESTRATOR_ALLOW_DIRECT_ASK", false) {
         bail!(
@@ -6297,9 +6310,10 @@ mod tests {
             std::env::set_var("RCCB_PROVIDER_AGENT", "orchestrator");
             std::env::remove_var("RCCB_ORCHESTRATOR_ALLOW_PARALLEL");
         }
-        let err =
-            enforce_orchestrator_dispatch_guard(&project, instance, &state, "gemini", "claude")
-                .unwrap_err();
+        let err = enforce_orchestrator_dispatch_guard(
+            &project, instance, &state, "gemini", "claude", false,
+        )
+        .unwrap_err();
         assert!(err.to_string().contains("主编排者禁止直接执行 `rccb ask`"));
 
         unsafe {
@@ -6341,9 +6355,10 @@ mod tests {
             std::env::set_var("RCCB_PROVIDER_AGENT", "orchestrator");
             std::env::remove_var("RCCB_ORCHESTRATOR_ALLOW_DIRECT_ASK");
         }
-        let err =
-            enforce_orchestrator_dispatch_guard(&project, instance, &state, "gemini", "claude")
-                .unwrap_err();
+        let err = enforce_orchestrator_dispatch_guard(
+            &project, instance, &state, "gemini", "claude", false,
+        )
+        .unwrap_err();
         assert!(err.to_string().contains("主编排者禁止直接执行 `rccb ask`"));
 
         unsafe {
@@ -6387,12 +6402,59 @@ mod tests {
             std::env::set_var("RCCB_PROVIDER_AGENT", "delegate-researcher");
             std::env::remove_var("RCCB_ORCHESTRATOR_ALLOW_PARALLEL");
         }
-        enforce_orchestrator_dispatch_guard(&project, instance, &state, "gemini", "claude")
+        enforce_orchestrator_dispatch_guard(&project, instance, &state, "gemini", "claude", true)
             .unwrap();
 
         unsafe {
             std::env::remove_var("RCCB_PROVIDER_ROLE");
             std::env::remove_var("RCCB_PROVIDER_AGENT");
+        }
+        let _ = fs::remove_dir_all(&project);
+    }
+
+    #[test]
+    fn orchestrator_dispatch_guard_blocks_main_orchestrator_async_even_if_direct_ask_allowed() {
+        let _guard = env_lock().lock().unwrap();
+        let project =
+            std::env::temp_dir().join(format!("rccb-ask-guard-async-main-{}", now_unix_ms()));
+        let instance = "default";
+        ensure_project_layout(&project).unwrap();
+        let state = InstanceState {
+            schema_version: 1,
+            instance_id: instance.to_string(),
+            project_dir: project.display().to_string(),
+            pid: 1,
+            status: "running".to_string(),
+            started_at_unix: 1,
+            last_heartbeat_unix: 1,
+            stopped_at_unix: None,
+            providers: vec!["claude".to_string(), "gemini".to_string()],
+            orchestrator: Some("claude".to_string()),
+            executors: vec!["gemini".to_string()],
+            session_file: None,
+            last_task_id: None,
+            daemon_host: None,
+            daemon_port: None,
+            daemon_token: None,
+            debug_enabled: false,
+        };
+        write_state(&state_path(&project, instance), &state).unwrap();
+
+        unsafe {
+            std::env::set_var("RCCB_PROVIDER_ROLE", "orchestrator");
+            std::env::set_var("RCCB_PROVIDER_AGENT", "orchestrator");
+            std::env::set_var("RCCB_ORCHESTRATOR_ALLOW_DIRECT_ASK", "1");
+        }
+        let err = enforce_orchestrator_dispatch_guard(
+            &project, instance, &state, "gemini", "claude", true,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("严禁异步编排下发任务"));
+
+        unsafe {
+            std::env::remove_var("RCCB_PROVIDER_ROLE");
+            std::env::remove_var("RCCB_PROVIDER_AGENT");
+            std::env::remove_var("RCCB_ORCHESTRATOR_ALLOW_DIRECT_ASK");
         }
         let _ = fs::remove_dir_all(&project);
     }
