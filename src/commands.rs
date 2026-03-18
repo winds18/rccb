@@ -5334,18 +5334,13 @@ pub fn cmd_ask(
         if async_submit {
             let req_id_print = parsed.req_id.unwrap_or_else(|| "-".to_string());
             let provider_print = parsed.provider.unwrap_or_else(|| provider.to_string());
-            println!(
-                "已提交：req_id={} provider={} instance={}",
-                req_id_print, provider_print, instance
+            print_async_submit_notice(
+                project_dir,
+                instance,
+                &provider_print,
+                &req_id_print,
+                "submitted",
             );
-            if req_id_print != "-" {
-                println!(
-                    "watch: rccb --project-dir {} watch --instance {} --req-id {} --with-provider-log",
-                    project_dir.display(),
-                    instance,
-                    req_id_print
-                );
-            }
             return Ok(());
         }
         if should_suppress_sync_reply_for_orchestrator(&state, &provider, caller) {
@@ -5355,6 +5350,23 @@ pub fn cmd_ask(
             println!("{}", parsed_reply);
         }
         return Ok(());
+    }
+
+    if let Some(req_id) = parsed.req_id.as_deref() {
+        if should_degrade_timeout_to_pending(
+            project_dir,
+            instance,
+            &state,
+            &provider,
+            caller,
+            parsed.exit_code,
+            parsed.meta.as_ref(),
+            req_id,
+        )? {
+            let provider_print = parsed.provider.unwrap_or_else(|| provider.to_string());
+            print_async_submit_notice(project_dir, instance, &provider_print, req_id, "running");
+            return Ok(());
+        }
     }
 
     bail!(
@@ -5376,7 +5388,39 @@ fn should_suppress_sync_reply_for_orchestrator(
     if !env_bool("RCCB_ORCHESTRATOR_RESULT_CALLBACK", false) {
         return false;
     }
+    is_orchestrator_executor_call(state, provider, caller)
+}
 
+fn should_degrade_timeout_to_pending(
+    project_dir: &Path,
+    instance: &str,
+    state: &InstanceState,
+    provider: &str,
+    caller: &str,
+    exit_code: i32,
+    meta: Option<&Value>,
+    req_id: &str,
+) -> Result<bool> {
+    if exit_code != 2 {
+        return Ok(false);
+    }
+    if !is_orchestrator_executor_call(state, provider, caller) {
+        return Ok(false);
+    }
+    let status = meta
+        .and_then(|m| m.get("status"))
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    if !status.eq_ignore_ascii_case("timeout") {
+        return Ok(false);
+    }
+    let Some(task) = load_task_by_req_id(project_dir, instance, req_id)? else {
+        return Ok(false);
+    };
+    Ok(is_in_flight_status(&task.status))
+}
+
+fn is_orchestrator_executor_call(state: &InstanceState, provider: &str, caller: &str) -> bool {
     let Some(orchestrator) = state
         .orchestrator
         .as_deref()
@@ -5396,6 +5440,51 @@ fn should_suppress_sync_reply_for_orchestrator(
         .executors
         .iter()
         .any(|executor| executor.trim().eq_ignore_ascii_case(&provider))
+}
+
+fn print_async_submit_notice(
+    project_dir: &Path,
+    instance: &str,
+    provider: &str,
+    req_id: &str,
+    status: &str,
+) {
+    match async_submit_stdout_mode().as_str() {
+        "minimal" => {
+            println!(
+                "provider={} req_id={} status={} instance={}",
+                provider, req_id, status, instance
+            );
+        }
+        _ => {
+            println!(
+                "已提交：req_id={} provider={} instance={} status={}",
+                req_id, provider, instance, status
+            );
+            if req_id != "-" {
+                println!(
+                    "inbox: rccb --project-dir {} inbox --instance {} --req-id {} --latest --limit 5",
+                    project_dir.display(),
+                    instance,
+                    req_id
+                );
+                println!(
+                    "watch: rccb --project-dir {} watch --instance {} --req-id {} --with-provider-log --timeout-s 3",
+                    project_dir.display(),
+                    instance,
+                    req_id
+                );
+            }
+        }
+    }
+}
+
+fn async_submit_stdout_mode() -> String {
+    env::var("RCCB_ASK_ASYNC_STDOUT")
+        .ok()
+        .map(|v| v.trim().to_ascii_lowercase())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| "full".to_string())
 }
 
 fn resolve_response_reply(
@@ -5614,16 +5703,18 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        build_debug_watch_command, cleanup_inflight_tasks, cleanup_instance_runtime,
-        compact_watch_line, debug_watch_pane_percent, ensure_project_bootstrap,
-        ensure_project_rule_bootstrap, is_ignorable_pane_command_error, is_in_flight_status,
-        is_terminal_bus_task_event, is_terminal_task_status, load_orchestrator_inbox_entries,
-        load_task_by_req_id, orchestrator_guardrail_prompt, orchestrator_strict_mode_enabled,
-        provider_start_cmd, render_project_bootstrap_content, resolve_debug_watch_provider,
+        async_submit_stdout_mode, build_debug_watch_command, cleanup_inflight_tasks,
+        cleanup_instance_runtime, compact_watch_line, debug_watch_pane_percent,
+        ensure_project_bootstrap, ensure_project_rule_bootstrap, is_ignorable_pane_command_error,
+        is_in_flight_status, is_orchestrator_executor_call, is_terminal_bus_task_event,
+        is_terminal_task_status, load_orchestrator_inbox_entries, load_task_by_req_id,
+        orchestrator_guardrail_prompt, orchestrator_strict_mode_enabled, provider_start_cmd,
+        render_project_bootstrap_content, resolve_debug_watch_provider,
         resolve_shortcut_restore_providers, run_simple, select_watch_req_for_provider,
-        select_watch_req_for_provider_follow, split_layout_groups, split_percent_for_equal_stack,
-        task_file_for_req_id, watch_bus_enabled, BootstrapMode, RCCB_MANAGED_BEGIN,
-        RCCB_MANAGED_END, RCCB_USER_BEGIN, RCCB_USER_END,
+        select_watch_req_for_provider_follow, should_degrade_timeout_to_pending,
+        split_layout_groups, split_percent_for_equal_stack, task_file_for_req_id,
+        watch_bus_enabled, BootstrapMode, RCCB_MANAGED_BEGIN, RCCB_MANAGED_END, RCCB_USER_BEGIN,
+        RCCB_USER_END,
     };
     use crate::io_utils::{
         now_unix, now_unix_ms, update_task_status, write_json_pretty, write_state,
@@ -5822,6 +5913,110 @@ mod tests {
         assert!(!super::should_suppress_sync_reply_for_orchestrator(
             &state, "gemini", "manual"
         ));
+    }
+
+    #[test]
+    fn async_submit_stdout_mode_defaults_to_full_and_supports_minimal() {
+        let _guard = env_lock().lock().unwrap();
+        let old = std::env::var("RCCB_ASK_ASYNC_STDOUT").ok();
+        unsafe {
+            std::env::remove_var("RCCB_ASK_ASYNC_STDOUT");
+        }
+        assert_eq!(async_submit_stdout_mode(), "full");
+        unsafe {
+            std::env::set_var("RCCB_ASK_ASYNC_STDOUT", "minimal");
+        }
+        assert_eq!(async_submit_stdout_mode(), "minimal");
+        if let Some(v) = old {
+            unsafe {
+                std::env::set_var("RCCB_ASK_ASYNC_STDOUT", v);
+            }
+        } else {
+            unsafe {
+                std::env::remove_var("RCCB_ASK_ASYNC_STDOUT");
+            }
+        }
+    }
+
+    #[test]
+    fn is_orchestrator_executor_call_matches_expected_roles() {
+        let state = InstanceState {
+            schema_version: 1,
+            instance_id: "default".to_string(),
+            project_dir: ".".to_string(),
+            pid: 1,
+            status: "running".to_string(),
+            started_at_unix: 1,
+            last_heartbeat_unix: 1,
+            stopped_at_unix: None,
+            providers: vec!["claude".to_string(), "gemini".to_string()],
+            orchestrator: Some("claude".to_string()),
+            executors: vec!["gemini".to_string()],
+            session_file: None,
+            last_task_id: None,
+            daemon_host: None,
+            daemon_port: None,
+            daemon_token: None,
+            debug_enabled: false,
+        };
+        assert!(is_orchestrator_executor_call(&state, "gemini", "claude"));
+        assert!(!is_orchestrator_executor_call(&state, "claude", "claude"));
+        assert!(!is_orchestrator_executor_call(&state, "gemini", "manual"));
+    }
+
+    #[test]
+    fn should_degrade_timeout_to_pending_when_orchestrator_task_is_still_running() {
+        let project =
+            std::env::temp_dir().join(format!("rccb-ask-timeout-pending-{}", now_unix_ms()));
+        let instance = "default";
+        ensure_project_layout(&project).unwrap();
+        let task_dir = tasks_instance_dir(&project, instance);
+        fs::create_dir_all(&task_dir).unwrap();
+        write_json_pretty(
+            &task_dir.join("task-1.json"),
+            &json!({
+                "task_id":"task-1",
+                "req_id":"req-1",
+                "provider":"gemini",
+                "status":"running",
+                "created_at_unix": 1
+            }),
+        )
+        .unwrap();
+
+        let state = InstanceState {
+            schema_version: 1,
+            instance_id: instance.to_string(),
+            project_dir: project.display().to_string(),
+            pid: 1,
+            status: "running".to_string(),
+            started_at_unix: 1,
+            last_heartbeat_unix: 1,
+            stopped_at_unix: None,
+            providers: vec!["claude".to_string(), "gemini".to_string()],
+            orchestrator: Some("claude".to_string()),
+            executors: vec!["gemini".to_string()],
+            session_file: None,
+            last_task_id: None,
+            daemon_host: None,
+            daemon_port: None,
+            daemon_token: None,
+            debug_enabled: false,
+        };
+
+        assert!(should_degrade_timeout_to_pending(
+            &project,
+            instance,
+            &state,
+            "gemini",
+            "claude",
+            2,
+            Some(&json!({"status":"timeout"})),
+            "req-1"
+        )
+        .unwrap());
+
+        let _ = fs::remove_dir_all(&project);
     }
 
     #[test]
