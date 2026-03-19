@@ -23,6 +23,7 @@ const HELP_EXAMPLES: &str = r#"示例：
 
   7) 异步请求 + 追踪：
      rccb --project-dir . ask --instance team-a --provider opencode --caller claude --async --req-id req-1 "后台执行"
+     rccb --project-dir . await --instance team-a --req-id req-1
      rccb --project-dir . watch --instance team-a --req-id req-1 --with-provider-log --with-debug-log
      rccb --project-dir . watch --instance team-a --provider opencode --with-provider-log
      rccb --project-dir . watch --instance team-a --provider opencode --with-provider-log --follow
@@ -309,6 +310,13 @@ pub enum Command {
         )]
         async_submit: bool,
 
+        #[arg(
+            long,
+            default_value_t = false,
+            help = "异步提交后继续阻塞等待该 req_id 进入终态"
+        )]
+        await_terminal: bool,
+
         #[arg(long, help = "自定义 req_id（可选）")]
         req_id: Option<String>,
 
@@ -318,6 +326,24 @@ pub enum Command {
             help = "消息文本；留空时从 stdin 读取"
         )]
         message: Vec<String>,
+    },
+
+    #[command(
+        about = "等待请求进入终态",
+        long_about = "按 req_id 阻塞等待任务进入 completed/failed/timeout/canceled/incomplete 等终态。适合子代理在派单后安静等待最终结果。"
+    )]
+    Await {
+        #[arg(long, default_value = "default", help = "实例 ID")]
+        instance: String,
+
+        #[arg(long, help = "要等待的 req_id")]
+        req_id: String,
+
+        #[arg(long, default_value_t = 0.0, help = "等待超时（秒，<=0 表示不超时）")]
+        timeout_s: f64,
+
+        #[arg(long, default_value_t = false, help = "以 JSON 输出")]
+        as_json: bool,
     },
 
     #[command(about = "发送 IM 消息", long_about = "发送通知到飞书或 Telegram。")]

@@ -30,6 +30,8 @@
 7. provider pane 超时时尽量保留部分输出，避免只剩“请求超时”
 8. `inbox/status` 已增加 TUI 噪声清洗，减少进度回显污染
 9. 人工指定复核执行者已可覆盖默认分工；`复审让 opencode 做，不要找 codex` 已能正确落到 `opencode`
+10. `rccb await` 与 `ask --async --await-terminal` 已落地，调研/复核/文档子代理默认改为等待真实终态后再返回
+11. `droid` 等执行者的长任务提示回显/占位输出不再被误判为最终 `completed` 结果，并已补单测
 
 ## 待收口
 
@@ -56,11 +58,12 @@
 
 3. 实时状态与超时恢复一致
    - 目标：执行者真实在跑时，编排者不会被误导为“任务已失败”
-   - 当前状态：已补上传输异常恢复窗口与 timeout 待定窗口，降低任务落盘略慢时的误判；仍需继续做真实编排链路实测
+   - 当前状态：已补上传输异常恢复窗口、timeout 待定窗口、`await-terminal` 终态等待链路，以及长任务 prompt echo / 占位输出去误判；仍需继续做真实编排链路实测
    - 验收标准：
      - 同步 `ask` 超时后，能稳定恢复真实 `req_id` 与任务状态
      - `inbox/watch/reply.md` 三条链路结论一致
      - 编排者不会在执行者仍在运行时错误要求用户裁决
+     - 不会再出现 `droid` 等执行者仅回显长任务提示/占位内容，就被误判为 `completed` 并写入 result inbox 的情况
 
 4. 首启与 pane 注入稳定
    - 目标：首次启动时编排提示注入稳定，不需要手动回车
@@ -97,6 +100,7 @@
 2. provider-specific native adapter 深化
    - 逐 provider 对齐原生命令、权限与行为差异
    - 优先：`gemini`、`opencode`、`droid`
+   - 修复 `droid` 长任务 prompt echo / pane 占位内容被误判为最终结果的问题
 
 3. completion hook 与回调链路增强
    - 完善终态回调和编排者结果消费的一致性
@@ -104,6 +108,10 @@
 4. 退出/清理进一步静默化
    - pane 清理报错继续收敛
    - 停止流程更安静、更可诊断
+
+5. 子代理阻塞等待的真实链路实测
+   - 重点验证 `delegate-researcher` / `delegate-auditor` / `delegate-scribe` 在 tmux / wezterm 下都能稳定等到 `RCCB_AWAIT_DONE`
+   - 验证超时、失败、incomplete、取消场景的编排者前台表现是否仍然克制且不乱派单
 
 ### P2 后续规划
 

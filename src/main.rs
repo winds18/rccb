@@ -18,9 +18,9 @@ use clap::Parser;
 
 use crate::cli::{Cli, Command, UpdateCommand};
 use crate::commands::{
-    cmd_ask, cmd_cancel, cmd_debug, cmd_external_provider_launch, cmd_inbox, cmd_init, cmd_mounted,
-    cmd_ping, cmd_send, cmd_shortcut_restore, cmd_start, cmd_status, cmd_stop, cmd_tasks,
-    cmd_watch,
+    cmd_ask, cmd_await, cmd_cancel, cmd_debug, cmd_external_provider_launch, cmd_inbox, cmd_init,
+    cmd_mounted, cmd_ping, cmd_send, cmd_shortcut_restore, cmd_start, cmd_status, cmd_stop,
+    cmd_tasks, cmd_watch,
 };
 use crate::io_utils::{cleanup_project_retention, resolve_project_dir};
 use crate::orchestrator_callback::cmd_orchestrator_notify;
@@ -129,6 +129,7 @@ fn main() -> Result<()> {
             quiet,
             stream,
             async_submit,
+            await_terminal,
             req_id,
             message,
         }) => cmd_ask(
@@ -140,9 +141,16 @@ fn main() -> Result<()> {
             quiet,
             stream,
             async_submit,
+            await_terminal,
             req_id,
             message,
         ),
+        Some(Command::Await {
+            instance,
+            req_id,
+            timeout_s,
+            as_json,
+        }) => cmd_await(&project_dir, &instance, &req_id, timeout_s, as_json),
         Some(Command::Send { channel }) => cmd_send(channel),
         Some(Command::Debug { action }) => cmd_debug(&project_dir, action),
         Some(Command::Update { action }) => match action {

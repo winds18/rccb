@@ -190,6 +190,7 @@ rccb claude codex gemini opencode droid
 9. `debug` 开启时会自动创建一个调试日志 pane（位于编排者 pane 上方），默认跟踪首个执行者并持续 `watch --follow`，所有旁路日志仅在这个实时调试日志 pane 显示
 10. 默认启用 `orchestrator strict mode`：当存在执行者时，Claude 编排者优先依赖项目级自动加载规则工作；若检测到 Claude 项目级规则缺失或你显式强制开启，才会向编排者 pane 注入兜底 guardrail。执行者完成后，若 `caller` 指向编排者，最终结果默认只写入后台 inbox 与 `.rccb/tasks/<instance>/artifacts/<req_id>.reply.md`；只有显式设置 `RCCB_ORCHESTRATOR_RESULT_CALLBACK=1` 才会前台回注到编排者 pane
    - 人工指定执行者优先级最高；如果用户明确说“复审让 opencode 来做，不要找 codex”，编排者传给 `delegate-auditor` 的任务首部必须显式带上 `复核执行者：opencode` 与 `禁止执行者：codex`
+   - 子代理默认分两类：`delegate-coder` 继续采用“提交即返回 req_id”的异步模式；`delegate-researcher` / `delegate-auditor` / `delegate-scribe` 默认使用 `rccb ask --async --await-terminal`，在子代理内部安静等待真实终态后再返回给主编排者
 11. `debug` 不是粘滞状态：上一次即使开过 debug，这一次若未显式指定 `--debug` 或 `RCCB_DEBUG=1`，也不会自动拉起 debug pane
 12. `debug` 模式下每次重启都会额外重置当前实例的调试运行态：清空旧的 `logs/<instance>/`、`sessions/<instance>/`、`tmp/<instance>/`、`run/<instance>.*` 残留，并把本次刷新/清理动作写入新的 `debug.log`
 13. 可选开关：
@@ -208,6 +209,7 @@ rccb claude codex gemini opencode droid
 静默后台消费排查：
 
 ```bash
+rccb --project-dir . await --instance default --req-id <req_id> --timeout-s 900
 rccb --project-dir . inbox --instance default --req-id <req_id> --latest --limit 5
 rccb --project-dir . inbox --instance default --orchestrator claude --limit 20
 rccb --project-dir . inbox --instance default --req-id <req_id> --kind result --as-json
@@ -216,6 +218,13 @@ rccb --project-dir . inbox --instance default --req-id <req_id> --kind result --
 - 编排者前台默认最多确认一次“已委派，等待后台结果”
 - 调研/复核类长任务默认更耐心：只要没有新的实质结论、异常或超时，编排者不应反复刷屏或频繁向用户抛选择题
 - 默认不要在编排者前台循环执行 `sleep`、`cat .rccb/tasks/<instance>/artifacts/<req_id>.reply.md`、`watch --follow`
+- 若子代理使用 `--await-terminal`，RCCB 会输出结构化终态头：
+  - `RCCB_AWAIT_DONE`
+  - `req_id=...`
+  - `provider=...`
+  - `status=completed`
+  - `exit_code=0`
+  - 后续正文为真实 reply 内容
 - 如需安静查看最新状态，优先使用 `inbox --latest`
 - 只有任务超时、异常或用户明确要求实时跟踪时，再使用一次性 `watch --req-id ... --with-provider-log --timeout-s 3 --pane-ui`
 
@@ -642,6 +651,7 @@ cargo build --release
 
 1. 编排者前台结果消费进一步去重，减少重复派单
 2. provider-specific native adapter 深化（逐 provider 能力对齐）
+   - 修复 `droid` 长任务提示/占位内容被误判为最终结果的问题
 3. completion hook 与回调兼容增强
 4. 退出清理时的 pane 提示进一步静默化/优雅化
 

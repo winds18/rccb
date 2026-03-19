@@ -343,10 +343,12 @@
    - Claude 编排者优先依赖项目级自动加载规则；仅当项目级 Claude 规则缺失，或显式设置 `RCCB_ORCHESTRATOR_PRIME_MODE=always` 时，才向 pane 注入 strict guardrail 提示
    - 若用户明确指定复核执行者，主编排者传给 `delegate-auditor` 的任务首部必须显式包含 `复核执行者：<provider>`；若用户明确排除某执行者，还必须显式包含 `禁止执行者：<provider>`
    - 若 `ask.request.caller == orchestrator` 且目标 provider 为执行者，则任务状态与最终结果都会写入 `.rccb/tmp/<instance>/orchestrator/<orchestrator>.jsonl` 作为 inbox 记录
+   - `delegate-coder` 默认仍使用 `rccb ask --async`，便于并行编码；`delegate-researcher`、`delegate-auditor`、`delegate-scribe` 默认使用 `rccb ask --async --await-terminal`，在子代理内部阻塞等待真实终态
    - 默认不向编排者 pane 回注任何 started/progress/result；最终结果优先通过 `inbox --latest` 与 `.rccb/tasks/<instance>/artifacts/<req_id>.reply.md` 静默消费
    - 编排者前台默认最多确认一次“已委派，等待后台结果”，后续状态优先通过 `inbox --latest` 静默消费
    - 调研/复核/长阅读类任务默认保持耐心；没有新的实质结论、异常或超时时，不应反复刷屏或频繁向用户抛“继续等待/重试/改派”等选择题
    - `watch --follow` 只用于 debug pane 或用户明确要求持续跟踪的场景，不作为默认前台轮询手段
+   - `rccb await --req-id <req_id>` 与 `ask --async --await-terminal` 共享同一终态等待实现；正常完成时输出 `RCCB_AWAIT_DONE` 头和真实 reply，失败/超时时返回明确终态错误
 4. 开关：
    - `RCCB_ORCHESTRATOR_STRICT=0` 可关闭
    - `RCCB_ORCHESTRATOR_PRIME_MODE=<auto|always|off>` 控制 Claude 编排者 pane 首条 guardrail 注入；默认 `auto`

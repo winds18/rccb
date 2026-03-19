@@ -1284,18 +1284,31 @@ fn build_exec_result(
         reply = sanitize_stderr_for_reply(&reply_from_stderr);
     }
 
+    let wrapped_prompt_output = looks_like_wrapped_prompt_session(&outcome.stdout, req_id)
+        || looks_like_wrapped_prompt_session(&outcome.stderr, req_id);
+    let prompt_echo_only = looks_like_pane_prompt_echo(&outcome.stdout, req_id)
+        || looks_like_pane_prompt_echo(&outcome.stderr, req_id);
+    let missing_final_reply = reply.trim().is_empty()
+        && (prompt_echo_only || (wrapped_prompt_output && !done_seen_marker));
+
     let (exit_code, done_seen, status) = match mode {
         ExecMode::Bridge => {
-            let done = outcome.exit_code == 0 || done_seen_marker;
-            let status = if outcome.exit_code == 0 {
-                "completed"
+            if outcome.exit_code == 0 && missing_final_reply {
+                (3, false, "incomplete")
             } else {
-                "failed"
-            };
-            (outcome.exit_code, done, status)
+                let done = outcome.exit_code == 0 || done_seen_marker;
+                let status = if outcome.exit_code == 0 {
+                    "completed"
+                } else {
+                    "failed"
+                };
+                (outcome.exit_code, done, status)
+            }
         }
         ExecMode::Native => {
-            if outcome.exit_code == 0 {
+            if outcome.exit_code == 0 && missing_final_reply {
+                (3, false, "incomplete")
+            } else if outcome.exit_code == 0 {
                 (0, done_seen_marker, "completed")
             } else {
                 (outcome.exit_code, done_seen_marker, "failed")
@@ -1303,6 +1316,10 @@ fn build_exec_result(
         }
         ExecMode::Stub => (0, true, "completed"),
     };
+
+    if missing_final_reply {
+        reply = "执行进程已退出，但未检测到最终结果；当前输出仍像提示回显或占位内容。".to_string();
+    }
 
     ProviderExecResult {
         exit_code,
@@ -1869,6 +1886,15 @@ fn looks_like_pane_prompt_echo(text: &str, req_id: &str) -> bool {
         && text.lines().any(is_reply_placeholder_line)
 }
 
+fn looks_like_wrapped_prompt_session(text: &str, req_id: &str) -> bool {
+    let req_marker = format!("{} {}", REQ_ID_PREFIX, req_id);
+    text.contains(&req_marker)
+        || text.contains(REPLY_FORMAT_PROMPT_LINE)
+        || text
+            .lines()
+            .any(|line| is_task_artifact_notice_line(&pane_semantic_line(line)))
+}
+
 fn should_fallback_to_strip_done(text: &str, req_id: &str) -> bool {
     count_begin_lines_for_req(text, req_id) == 0 && count_done_lines_for_req(text, req_id) == 0
 }
@@ -1893,6 +1919,9 @@ fn extract_reply_for_req(text: &str, req_id: &str) -> String {
         .collect();
 
     if target_idxs.is_empty() {
+        if looks_like_wrapped_prompt_session(text, req_id) {
+            return String::new();
+        }
         if !done_idxs.is_empty() {
             // If there are done markers but none for this req_id, avoid mixing stale replies.
             return String::new();
@@ -1947,6 +1976,10 @@ fn extract_reply_for_req_from_stream(text: &str, req_id: &str) -> String {
 }
 
 fn strip_done_text(text: &str, req_id: &str) -> String {
+    if looks_like_wrapped_prompt_session(text, req_id) {
+        return String::new();
+    }
+
     let marker = format!("{} {}", DONE_PREFIX, req_id);
     let mut lines: Vec<String> = text.lines().map(|s| s.to_string()).collect();
     while let Some(last) = lines.last() {
@@ -2004,10 +2037,18 @@ fn is_trailing_noise_line(line: &str) -> bool {
 }
 
 fn is_reply_placeholder_line(line: &str) -> bool {
+    let semantic = pane_semantic_line(line);
     matches!(
-        pane_semantic_line(line).as_str(),
+        semantic.as_str(),
         "<reply>" | "<回复内容>" | "你的真实回复内容写在这里" | "...你的实际回复内容..."
-    )
+    ) || is_task_artifact_notice_line(&semantic)
+}
+
+fn is_task_artifact_notice_line(line: &str) -> bool {
+    let trimmed = line.trim();
+    trimmed.starts_with("任务要求较长，已写入临时文件：")
+        || trimmed == "请先完整阅读该文件，再开始执行。"
+        || trimmed == "执行过程中必须以文件内容为准，不要遗漏其中的约束、步骤和验收要求。"
 }
 
 fn sanitize_reply_text(reply: &str) -> String {
@@ -2017,7 +2058,9 @@ fn sanitize_reply_text(reply: &str) -> String {
         let trimmed = semantic.trim();
         !(trimmed.starts_with(REQ_ID_PREFIX)
             || trimmed.starts_with(BEGIN_PREFIX)
-            || trimmed.starts_with(DONE_PREFIX))
+            || trimmed.starts_with(DONE_PREFIX)
+            || trimmed.starts_with(REPLY_FORMAT_PROMPT_LINE)
+            || is_task_artifact_notice_line(trimmed))
     });
     lines.retain(|line| !is_reply_placeholder_line(line));
     trim_blank_lines(&mut lines);
@@ -2642,6 +2685,27 @@ mod tests {
     }
 
     #[test]
+    fn native_mode_treats_long_task_prompt_echo_as_incomplete() {
+        let req = sample_request();
+        let req_id = "req-native-echo";
+        let outcome = ProcessOutcome {
+            stdout: format!(
+                "RCCB_REQ_ID: {req_id}\n任务要求较长，已写入临时文件：/tmp/{req_id}.request.md\n请先完整阅读该文件，再开始执行。\n执行过程中必须以文件内容为准，不要遗漏其中的约束、步骤和验收要求。\n请严格按照以下格式回复：\nRCCB_BEGIN: {req_id}\n<回复内容>\nRCCB_DONE: {req_id}\n"
+            ),
+            stderr: String::new(),
+            exit_code: 0,
+            timed_out: false,
+            canceled: false,
+            elapsed_ms: 12,
+        };
+        let result = build_exec_result(ExecMode::Native, req_id, outcome, req.timeout_s, req.quiet);
+        assert_eq!(result.exit_code, 3);
+        assert_eq!(result.status, "incomplete");
+        assert!(!result.done_seen);
+        assert!(result.reply.contains("未检测到最终结果"));
+    }
+
+    #[test]
     fn native_mode_accepts_done_marker_on_success_exit() {
         let req = sample_request();
         let req_id = "req-native-ok";
@@ -2739,6 +2803,16 @@ mod tests {
         let req_id = "req-pane-box";
         let raw = format!(
             "│ > RCCB_REQ_ID: {req_id}\n│\n│   调研一下 zeroclaw\n│\n│   请严格按照以下格式回复：\n│   RCCB_BEGIN: {req_id}\n│   <回复内容>\n│   RCCB_DONE: {req_id}\n"
+        );
+        let got = extract_reply_for_req(&raw, req_id);
+        assert!(got.is_empty());
+    }
+
+    #[test]
+    fn extract_reply_for_req_ignores_long_task_notice_without_final_reply() {
+        let req_id = "req-pane-long-task";
+        let raw = format!(
+            "RCCB_REQ_ID: {req_id}\n任务要求较长，已写入临时文件：/tmp/{req_id}.request.md\n请先完整阅读该文件，再开始执行。\n执行过程中必须以文件内容为准，不要遗漏其中的约束、步骤和验收要求。"
         );
         let got = extract_reply_for_req(&raw, req_id);
         assert!(got.is_empty());
