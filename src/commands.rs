@@ -6306,6 +6306,7 @@ pub fn cmd_ask(
                 caller,
                 async_submit,
                 &client_req_id,
+                timeout_s,
             )? {
                 return Ok(());
             }
@@ -6551,7 +6552,12 @@ fn should_degrade_timeout_to_pending(
     if !status.eq_ignore_ascii_case("timeout") {
         return Ok(false);
     }
-    let Some(task) = load_task_by_req_id(project_dir, instance, req_id)? else {
+    let Some(task) = wait_for_task_by_req_id(
+        project_dir,
+        instance,
+        req_id,
+        timeout_pending_recovery_wait(),
+    )? else {
         return Ok(false);
     };
     Ok(is_in_flight_status(&task.status))
@@ -6646,8 +6652,14 @@ fn recover_ask_after_transport_error(
     caller: &str,
     async_submit: bool,
     req_id: &str,
+    request_timeout_s: f64,
 ) -> Result<bool> {
-    let task = wait_for_task_by_req_id(project_dir, instance, req_id, Duration::from_millis(800))?;
+    let task = wait_for_task_by_req_id(
+        project_dir,
+        instance,
+        req_id,
+        ask_transport_recovery_wait(state, provider, caller, async_submit, request_timeout_s),
+    )?;
     let Some(task) = task else {
         return Ok(false);
     };
@@ -6695,6 +6707,40 @@ fn recover_ask_after_transport_error(
         print_sync_req_id_notice(instance, &provider_print, req_id, &task.status);
     }
     Ok(true)
+}
+
+fn ask_transport_recovery_wait(
+    state: &InstanceState,
+    provider: &str,
+    caller: &str,
+    async_submit: bool,
+    request_timeout_s: f64,
+) -> Duration {
+    let env_override = env::var("RCCB_ASK_RECOVER_WAIT_MS")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .map(|ms| ms.clamp(200, 15_000));
+    if let Some(ms) = env_override {
+        return Duration::from_millis(ms);
+    }
+
+    if async_submit {
+        return Duration::from_millis(2500);
+    }
+    if is_orchestrator_executor_call(state, provider, caller) {
+        let scaled = (request_timeout_s.max(1.0) * 100.0).round() as u64;
+        return Duration::from_millis(scaled.clamp(1500, 5000));
+    }
+    Duration::from_millis(800)
+}
+
+fn timeout_pending_recovery_wait() -> Duration {
+    env::var("RCCB_TIMEOUT_PENDING_WAIT_MS")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .map(|ms| ms.clamp(200, 10_000))
+        .map(Duration::from_millis)
+        .unwrap_or_else(|| Duration::from_millis(2200))
 }
 
 fn wait_for_task_by_req_id(
@@ -7365,6 +7411,7 @@ mod tests {
             "claude",
             false,
             "req-running",
+            30.0,
         )
         .unwrap();
         assert!(recovered);
@@ -7428,6 +7475,7 @@ mod tests {
             "claude",
             false,
             "req-done",
+            30.0,
         )
         .unwrap();
         assert!(recovered);
@@ -7485,10 +7533,133 @@ mod tests {
             "claude",
             false,
             "req-fail",
+            30.0,
         )
         .unwrap_err();
         assert!(err.to_string().contains("ask failed after transport loss"));
         assert!(err.to_string().contains("req-fail"));
+
+        let _ = fs::remove_dir_all(&project);
+    }
+
+    #[test]
+    fn recover_ask_after_transport_error_waits_for_late_task_materialization() {
+        let project =
+            std::env::temp_dir().join(format!("rccb-recover-late-{}", now_unix_ms()));
+        let instance = "default";
+        ensure_project_layout(&project).unwrap();
+        let task_dir = tasks_instance_dir(&project, instance);
+        fs::create_dir_all(&task_dir).unwrap();
+
+        let project_clone = project.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(900));
+            let path = task_file_for_req_id(&project_clone, instance, "req-late");
+            let _ = write_json_pretty(
+                &path,
+                &json!({
+                    "task_id":"task-req-late",
+                    "req_id":"req-late",
+                    "provider":"gemini",
+                    "status":"running",
+                    "created_at_unix": 1
+                }),
+            );
+        });
+
+        let state = InstanceState {
+            schema_version: 1,
+            instance_id: instance.to_string(),
+            project_dir: project.display().to_string(),
+            pid: 1,
+            status: "running".to_string(),
+            started_at_unix: 1,
+            last_heartbeat_unix: 1,
+            stopped_at_unix: None,
+            providers: vec!["claude".to_string(), "gemini".to_string()],
+            orchestrator: Some("claude".to_string()),
+            executors: vec!["gemini".to_string()],
+            session_file: None,
+            last_task_id: None,
+            daemon_host: None,
+            daemon_port: None,
+            daemon_token: None,
+            debug_enabled: false,
+        };
+
+        let recovered = super::recover_ask_after_transport_error(
+            &project,
+            instance,
+            &state,
+            "gemini",
+            "claude",
+            false,
+            "req-late",
+            30.0,
+        )
+        .unwrap();
+        assert!(recovered);
+
+        let _ = fs::remove_dir_all(&project);
+    }
+
+    #[test]
+    fn timeout_pending_recovery_waits_for_late_running_task() {
+        let project =
+            std::env::temp_dir().join(format!("rccb-timeout-pending-{}", now_unix_ms()));
+        let instance = "default";
+        ensure_project_layout(&project).unwrap();
+        let task_dir = tasks_instance_dir(&project, instance);
+        fs::create_dir_all(&task_dir).unwrap();
+
+        let project_clone = project.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(900));
+            let path = task_file_for_req_id(&project_clone, instance, "req-timeout-late");
+            let _ = write_json_pretty(
+                &path,
+                &json!({
+                    "task_id":"task-req-timeout-late",
+                    "req_id":"req-timeout-late",
+                    "provider":"gemini",
+                    "status":"running",
+                    "created_at_unix": 1
+                }),
+            );
+        });
+
+        let state = InstanceState {
+            schema_version: 1,
+            instance_id: instance.to_string(),
+            project_dir: project.display().to_string(),
+            pid: 1,
+            status: "running".to_string(),
+            started_at_unix: 1,
+            last_heartbeat_unix: 1,
+            stopped_at_unix: None,
+            providers: vec!["claude".to_string(), "gemini".to_string()],
+            orchestrator: Some("claude".to_string()),
+            executors: vec!["gemini".to_string()],
+            session_file: None,
+            last_task_id: None,
+            daemon_host: None,
+            daemon_port: None,
+            daemon_token: None,
+            debug_enabled: false,
+        };
+
+        let should = super::should_degrade_timeout_to_pending(
+            &project,
+            instance,
+            &state,
+            "gemini",
+            "claude",
+            2,
+            Some(&json!({"status":"timeout"})),
+            "req-timeout-late",
+        )
+        .unwrap();
+        assert!(should);
 
         let _ = fs::remove_dir_all(&project);
     }
