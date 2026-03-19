@@ -1,40 +1,139 @@
-# RCCB Rust 全量重构路线图
+# RCCB v0.2.0 主线 TODO
 
-## 阶段 0: 文档冻结
+这份文档是当前版本开发的唯一主线清单。
 
-1. 冻结功能范围和兼容边界
-2. 冻结 CLI 契约（参数、返回码、输出格式）
-3. 冻结状态目录和协议字段
+- 目标版本：`v0.2.0`
+- 当前已发布稳定版：`v0.1.1`
+- 维护规则：
+  - 所有新需求、临时插入项、线上 bug、体验问题，先记入本清单，再开始开发。
+  - 这份文档与 `README.md` 的“目前状态”必须双向同步；这里是详细版，README 保留摘要版。
+  - 只有进入“已收口”且完成必要实测/验证的项，才能视为 `v0.2.0` 候选内容。
 
-## 阶段 1: 基础运行内核（已完成）
+## 收口标准
 
-1. 项目级绑定目录 `.rccb/`
-2. 多实例锁与状态心跳
-3. IM 通道（飞书、Telegram）
-4. 单二进制运行
+`v0.2.0` 发布前，至少满足以下条件：
 
-## 阶段 2: 统一 daemon 协议（进行中）
+1. 编排者稳定
+2. 子代理派单稳定
+3. 实时状态与超时恢复稳定
+4. 项目级规则 / skills / wrappers 行为一致
+5. 文档、日志、实际行为三方一致
 
-1. `ask.request / ask.response` Rust 化
-2. `ask.event` 流式链路（`start/delta/done/error`）
-3. `ask.debug` 调试开关与完整日志链路
-4. 超时、取消、重试策略 Rust 化
+## 已收口
 
-## 阶段 3: Provider Adapter 迁移（进行中）
+1. `.rccb/` 目录成为统一项目级运行目录
+2. 任务结果工件统一写入 `.rccb/tasks/<instance>/artifacts/<req_id>.reply.md`
+3. 调试模式支持启动画面、调试日志 pane、`debug.log` 与运行态重置
+4. 快捷启动支持按实际 provider 子集生成项目级 wrapper / rules / skills
+5. Linux / bash 启动兼容问题已在 `v0.1.1` 修复
+6. 子代理必须通过 RCCB 派单，主编排者直接 `ask` 已被 guard 拦截
+7. provider pane 超时时尽量保留部分输出，避免只剩“请求超时”
+8. `inbox/status` 已增加 TUI 噪声清洗，减少进度回显污染
 
-1. 已接入 CCB wrapper adapter（`lask/cask/gask/oask/dask`）
-2. 继续迁移为纯 Rust 原生 adapter（逐 provider）
-3. Gemini / OpenCode / Droid / Copilot / Qwen / CodeBuddy
-4. 会话恢复与日志跟踪
+## 待收口
 
-## 阶段 4: 管理面迁移
+### P0 发布阻塞
 
-1. mail daemon
-2. web 管理接口（可选）
-3. 监控指标与健康检查
+1. 人工指定执行者优先级彻底压过默认分工
+   - 目标：用户说“复审让 opencode 做，不要找 codex”时，必须走复核链路，且执行者实际为 `opencode`
+   - 当前状态：规则模板已加硬，但真实编排中仍出现 `delegate-auditor` 回落到默认 `codex` 的情况，需继续修正子代理选择逻辑
+   - 验收标准：
+     - 不回落到 `codex`
+     - 不误走 `delegate-coder`
+     - 编排日志与最终执行者一致
 
-## 阶段 5: 兼容和发布
+2. 子代理派单免审批稳定
+   - 目标：`delegate-*` 执行 RCCB 派单时，不再因为 `RCCB_*=` 前缀命令触发审批
+   - 当前状态：Claude wrapper 已加 `delegate-* -> bypassPermissions` 分支，但主编排者进程仍存在审批噪声；需继续收口 orchestrator 侧的无审批受限工具模式
+   - 验收标准：
+     - `delegate-researcher`
+     - `delegate-auditor`
+     - `delegate-coder`
+     - `delegate-scribe`
+     - 这四类派单都不再弹批准框
+     - 不再出现大段 Bash 审批弹窗污染前台 pane
 
-1. 回归测试矩阵（Linux/macOS/Windows）
-2. 兼容旧配置迁移工具
-3. 发布单文件二进制（按平台）
+3. 编排者不自己下场执行任务
+   - 目标：主编排者只做理解、拆解、委派、验收、汇总
+   - 当前状态：规则与 guard 已加，主编排者仍需继续锁死零写权限与受限 Bash 边界
+   - 验收标准：
+     - 不再改用通用 Agent / WebSearch / Read file 自己完成执行者任务
+     - 派单后默认静默等待，不主动刷屏
+     - 主编排者不具备任何写文件工具权限
+
+4. 实时状态与超时恢复一致
+   - 目标：执行者真实在跑时，编排者不会被误导为“任务已失败”
+   - 当前状态：已有部分恢复逻辑与超时保留输出，但还要继续实测复杂链路
+   - 验收标准：
+     - 同步 `ask` 超时后，能稳定恢复真实 `req_id` 与任务状态
+     - `inbox/watch/reply.md` 三条链路结论一致
+     - 编排者不会在执行者仍在运行时错误要求用户裁决
+
+5. 首启与 pane 注入稳定
+   - 目标：首次启动时编排提示注入稳定，不需要手动回车
+   - 当前状态：已改为“发送后确认，不成功补发 Enter”
+   - 验收标准：
+     - `tmux` 稳定
+     - `wezterm` 稳定
+     - 不重复注入整段提示
+
+6. Claude 编排者改为“规则/skills 自动加载优先，pane 注入兜底”
+   - 目标：首启后优先依赖项目级规则、agents、commands、skills 完成编排行为收敛，不再把 pane 首次提示注入当成关键路径
+   - 当前状态：已改为生成 `.claude/rules/rccb-core.md` 与 `.claude/rules/rccb-runtime.md`，并让启动阶段在规则齐全时跳过首启注入；仍需继续实测 tmux / wezterm 首启行为
+   - 验收标准：
+     - 即使首启注入失败，Claude 仍能按编排者规则工作
+     - pane 注入降级为补充提示或 debug 能力，而非主约束来源
+     - 项目级规则文件缺失/过旧时，`debug` 模式可自动重建并记录到调试日志
+
+### P1 高优先级
+
+1. 编排者前台进一步去重与降噪
+   - 减少“已委派、等待结果”之外的重复描述
+   - 长任务前台避免连续状态播报
+
+2. provider-specific native adapter 深化
+   - 逐 provider 对齐原生命令、权限与行为差异
+   - 优先：`gemini`、`opencode`、`droid`
+
+3. completion hook 与回调链路增强
+   - 完善终态回调和编排者结果消费的一致性
+
+4. 退出/清理进一步静默化
+   - pane 清理报错继续收敛
+   - 停止流程更安静、更可诊断
+
+### P2 后续规划
+
+1. mail daemon / web 管理面
+2. 监控指标与健康检查
+3. 更完整的跨平台回归矩阵
+4. 自动更新体验继续打磨
+
+## 近期变更记录
+
+### 最近已完成
+
+1. 子代理派单命令显式注入 `RCCB_PROVIDER_ROLE=orchestrator` 与 `RCCB_PROVIDER_AGENT=delegate-*`
+2. `delegate-*` 的 Claude wrapper 单独走 `bypassPermissions` 分支
+3. 主编排者 strict prompt 与项目级规则进一步加硬
+4. pane 注入改为确认式发送
+5. 进度回调增加 TUI 噪声清洗
+6. 超时结果尽量保留部分输出
+7. Claude 编排规则已拆为项目级自动加载入口 + `.claude/rules/rccb-core.md` + `.claude/rules/rccb-runtime.md`
+8. 当 Claude 项目级自动加载规则齐全时，首启 pane 注入会自动降级为兜底路径
+
+### 最近新增待办
+
+1. 真实验证“人工指定复审执行者 > 默认分工”的最终行为
+2. 真实验证子代理无审批派单
+3. 真实验证 `tmux / wezterm` 首启注入稳定性
+4. 收敛 Claude 子代理 Bash 派单的审批 UI 噪声
+5. 强化主编排者“零写权限”硬约束与测试覆盖
+
+## 使用约定
+
+后续开发请遵守：
+
+1. 先更新本清单，再改代码
+2. 改完代码后，若状态变化，及时把条目从“待收口”移动到“已收口”或补充风险
+3. 发版前，以本清单为准生成 `CHANGELOG` / release notes

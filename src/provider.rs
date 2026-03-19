@@ -437,9 +437,11 @@ fn execute_native_via_pane(
             Err(_) => {
                 if let Some(limit) = timeout {
                     if last_activity.elapsed() >= limit {
+                        let timeout_reply =
+                            timeout_reply_with_partial(req_id, &[transcript.as_str(), previous_window.as_str()]);
                         return Ok(ProviderExecResult {
                             exit_code: 2,
-                            reply: "请求超时".to_string(),
+                            reply: timeout_reply,
                             done_seen: false,
                             done_ms: None,
                             anchor_seen: true,
@@ -504,9 +506,11 @@ fn execute_native_via_pane(
         if !final_reply_seen {
             if let Some(limit) = timeout {
                 if last_activity.elapsed() >= limit {
+                    let timeout_reply =
+                        timeout_reply_with_partial(req_id, &[transcript.as_str(), previous_window.as_str()]);
                     return Ok(ProviderExecResult {
                         exit_code: 2,
-                        reply: "请求超时".to_string(),
+                        reply: timeout_reply,
                         done_seen: false,
                         done_ms: None,
                         anchor_seen: true,
@@ -644,9 +648,13 @@ fn execute_native_via_tmux_feed(
                 }
                 if let Some(limit) = timeout {
                     if last_activity.elapsed() >= limit {
+                        let timeout_reply = timeout_reply_with_partial(
+                            req_id,
+                            &[feed_reply.as_str(), feed_window.as_str(), previous_window.as_str()],
+                        );
                         return Ok(ProviderExecResult {
                             exit_code: 2,
-                            reply: "请求超时".to_string(),
+                            reply: timeout_reply,
                             done_seen: false,
                             done_ms: None,
                             anchor_seen: true,
@@ -698,9 +706,13 @@ fn execute_native_via_tmux_feed(
         if !final_reply_seen {
             if let Some(limit) = timeout {
                 if last_activity.elapsed() >= limit {
+                    let timeout_reply = timeout_reply_with_partial(
+                        req_id,
+                        &[feed_reply.as_str(), feed_window.as_str(), previous_window.as_str()],
+                    );
                     return Ok(ProviderExecResult {
                         exit_code: 2,
-                        reply: "请求超时".to_string(),
+                        reply: timeout_reply,
                         done_seen: false,
                         done_ms: None,
                         anchor_seen: true,
@@ -902,14 +914,7 @@ pub fn dispatch_text_to_pane(target: &PaneDispatchTarget, text: &str) -> Result<
             if enter_delay_ms > 0 {
                 thread::sleep(Duration::from_millis(enter_delay_ms));
             }
-            let enter_status = Command::new("tmux")
-                .args(["send-keys", "-t", target.pane_id.trim(), "Enter"])
-                .status()
-                .context("tmux send-keys enter failed")?;
-            if !enter_status.success() {
-                bail!("tmux send-keys enter failed: status={}", enter_status);
-            }
-            Ok(())
+            send_pane_enter(target)
         }
         PaneBackend::Wezterm { bin } => {
             let mut send = Command::new(bin)
@@ -930,8 +935,33 @@ pub fn dispatch_text_to_pane(target: &PaneDispatchTarget, text: &str) -> Result<
             if paste_delay_ms > 0 {
                 thread::sleep(Duration::from_millis(paste_delay_ms));
             }
-            send_wezterm_enter(bin, target.pane_id.trim())
+            send_pane_enter(target)
         }
+    }
+}
+
+pub fn dispatch_text_to_pane_with_confirm(
+    target: &PaneDispatchTarget,
+    text: &str,
+    confirm_snippet: &str,
+) -> Result<()> {
+    dispatch_text_to_pane(target, text)?;
+    confirm_pane_text_visible(target, confirm_snippet)
+}
+
+fn send_pane_enter(target: &PaneDispatchTarget) -> Result<()> {
+    match &target.backend {
+        PaneBackend::Tmux => {
+            let enter_status = Command::new("tmux")
+                .args(["send-keys", "-t", target.pane_id.trim(), "Enter"])
+                .status()
+                .context("tmux send-keys enter failed")?;
+            if !enter_status.success() {
+                bail!("tmux send-keys enter failed: status={}", enter_status);
+            }
+            Ok(())
+        }
+        PaneBackend::Wezterm { bin } => send_wezterm_enter(bin, target.pane_id.trim()),
     }
 }
 
@@ -979,10 +1009,58 @@ fn send_wezterm_enter(bin: &str, pane_id: &str) -> Result<()> {
     Ok(())
 }
 
+fn confirm_pane_text_visible(target: &PaneDispatchTarget, confirm_snippet: &str) -> Result<()> {
+    let needle = confirm_snippet.trim();
+    if needle.is_empty() {
+        return Ok(());
+    }
+    let retries = pane_confirm_retries();
+    let delay_ms = pane_confirm_delay_ms();
+    let capture_lines = pane_confirm_capture_lines();
+
+    for attempt in 0..retries {
+        if attempt > 0 && delay_ms > 0 {
+            thread::sleep(Duration::from_millis(delay_ms));
+        }
+        if let Ok(snapshot) = capture_pane_text(target, capture_lines) {
+            if snapshot.contains(needle) {
+                return Ok(());
+            }
+        }
+        if attempt + 1 < retries {
+            let _ = send_pane_enter(target);
+        }
+    }
+
+    bail!(
+        "pane 注入确认失败：pane={} snippet={}",
+        target.pane_id.trim(),
+        needle
+    )
+}
+
 fn pane_enter_delay_ms(name: &str, default_ms: u64) -> u64 {
     match env::var(name) {
         Ok(raw) => raw.trim().parse::<u64>().unwrap_or(default_ms).min(5000),
         Err(_) => default_ms,
+    }
+}
+
+fn pane_confirm_retries() -> usize {
+    match env::var("RCCB_PANE_CONFIRM_RETRIES") {
+        Ok(raw) => raw.trim().parse::<usize>().unwrap_or(4).clamp(1, 8),
+        Err(_) => 4,
+    }
+}
+
+fn pane_confirm_delay_ms() -> u64 {
+    pane_enter_delay_ms("RCCB_PANE_CONFIRM_DELAY_MS", 350)
+}
+
+fn pane_confirm_capture_lines() -> i32 {
+    match env::var("RCCB_PANE_CONFIRM_CAPTURE_LINES") {
+        Ok(raw) => raw.trim().parse::<i32>().unwrap_or(160).clamp(40, 800),
+        Err(_) => 160,
     }
 }
 
@@ -1167,7 +1245,7 @@ fn build_exec_result(
     if outcome.timed_out {
         return ProviderExecResult {
             exit_code: 2,
-            reply: "请求超时".to_string(),
+            reply: timeout_reply_with_partial(req_id, &[outcome.stdout.as_str(), outcome.stderr.as_str()]),
             done_seen: false,
             done_ms: None,
             anchor_seen: true,
@@ -1228,6 +1306,28 @@ fn build_exec_result(
         effective_timeout_s,
         effective_quiet,
     }
+}
+
+fn timeout_reply_with_partial(req_id: &str, sources: &[&str]) -> String {
+    for source in sources {
+        let source = source.trim();
+        if source.is_empty() {
+            continue;
+        }
+        let mut partial = extract_reply_for_req(source, req_id);
+        if partial.trim().is_empty() {
+            partial = extract_reply_for_req_from_stream(source, req_id);
+        }
+        if partial.trim().is_empty() {
+            partial = sanitize_reply_text(source);
+        }
+        let partial = partial.trim();
+        if partial.is_empty() || partial == "请求超时" {
+            continue;
+        }
+        return format!("请求超时（已保留部分输出）\n\n{}", partial);
+    }
+    "请求超时".to_string()
 }
 
 fn spawn_pipe_reader(
@@ -2543,6 +2643,34 @@ mod tests {
         assert!(result.done_seen);
         assert_eq!(result.status, "completed");
         assert_eq!(result.reply, "answer");
+    }
+
+    #[test]
+    fn native_timeout_preserves_partial_reply_from_stdout() {
+        let req = sample_request();
+        let req_id = "req-timeout-partial";
+        let outcome = ProcessOutcome {
+            stdout: format!(
+                "noise\n{} {}\n第一条结论\n第二条结论\n",
+                BEGIN_PREFIX, req_id
+            ),
+            stderr: String::new(),
+            exit_code: 2,
+            timed_out: true,
+            canceled: false,
+            elapsed_ms: 30,
+        };
+        let result = build_exec_result(ExecMode::Native, req_id, outcome, req.timeout_s, req.quiet);
+        assert_eq!(result.exit_code, 2);
+        assert_eq!(result.status, "timeout");
+        assert!(result.reply.contains("请求超时（已保留部分输出）"));
+        assert!(result.reply.contains("第一条结论"));
+    }
+
+    #[test]
+    fn timeout_reply_with_partial_falls_back_to_plain_timeout_when_empty() {
+        let reply = timeout_reply_with_partial("req-empty-timeout", &["", "  "]);
+        assert_eq!(reply, "请求超时");
     }
 
     #[test]

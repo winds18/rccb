@@ -395,12 +395,8 @@ pub fn start_instance(
                         &token_cloned,
                         &shutdown_cloned,
                     ) {
-                        let _ = write_line(
-                            logs_instance_dir(
-                                &context_cloned.project_dir,
-                                &context_cloned.instance_id,
-                            )
-                            .join("daemon.log"),
+                        append_daemon_log(
+                            &context_cloned,
                             &format!("[ERROR] connection handler failed: {}", err),
                         );
                     }
@@ -410,10 +406,7 @@ pub fn start_instance(
                 thread::sleep(Duration::from_millis(50));
             }
             Err(err) => {
-                let _ = write_line(
-                    logs_instance_dir(project_dir, &context.instance_id).join("daemon.log"),
-                    &format!("[ERROR] accept failed: {}", err),
-                );
+                append_daemon_log(&context, &format!("[ERROR] accept failed: {}", err));
                 thread::sleep(Duration::from_millis(100));
             }
         }
@@ -1928,28 +1921,71 @@ fn relay_task_progress(
 
 fn relay_progress_lines(chunk: &str) -> Vec<String> {
     let max_lines = relay_progress_max_lines();
-    let max_chars = relay_progress_max_chars();
     let mut lines = Vec::new();
 
     for raw in chunk.replace('\r', "").lines() {
-        let trimmed = raw.trim();
-        if trimmed.is_empty() || is_relay_progress_noise(trimmed) {
+        let Some(cleaned) = sanitize_relay_progress_line(raw) else {
             continue;
-        }
-        lines.push(clamp_bus_text(trimmed, max_chars));
+        };
+        lines.push(cleaned);
         if lines.len() >= max_lines {
             break;
         }
     }
 
     if lines.is_empty() {
-        let trimmed = chunk.trim();
-        if !trimmed.is_empty() && !is_relay_progress_noise(trimmed) {
-            lines.push(clamp_bus_text(trimmed, max_chars));
+        if let Some(cleaned) = sanitize_relay_progress_line(chunk) {
+            lines.push(cleaned);
         }
     }
 
     lines
+}
+
+fn sanitize_relay_progress_line(raw: &str) -> Option<String> {
+    let max_chars = relay_progress_max_chars();
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || is_relay_progress_noise(trimmed) {
+        return None;
+    }
+
+    let mut line = trimmed
+        .trim_matches(|c: char| matches!(c, '│' | '┃' | '┆' | '╎' | ' '))
+        .to_string();
+
+    for marker in [
+        "Restart MCP servers",
+        "Enable or disable telemetry collection",
+        "Toggle background shells",
+        "Type your message",
+        "Ask anything",
+        "(esc to cancel",
+        "esc to cancel",
+        "YOLO",
+        "ctrl+y",
+        "Ctrl+Y",
+        "/mcp refresh",
+        "/model",
+        "LSPs will activate",
+        "Context left",
+    ] {
+        if let Some(idx) = line.find(marker) {
+            line.truncate(idx);
+        }
+    }
+
+    line = line
+        .trim_end_matches(|c: char| {
+            matches!(c, '│' | '┃' | '┆' | '╎' | ' ' | '⠋' | '⠙' | '⠹' | '⠸' | '⠼' | '⠴' | '⠦' | '⠧' | '⠇' | '⠏')
+        })
+        .trim()
+        .to_string();
+
+    if line.is_empty() || is_relay_progress_noise(&line) {
+        return None;
+    }
+
+    Some(clamp_bus_text(&line, max_chars))
 }
 
 fn is_relay_progress_noise(line: &str) -> bool {
@@ -1970,6 +2006,10 @@ fn is_relay_progress_noise(line: &str) -> bool {
         || trimmed.starts_with("Type your message")
         || trimmed.starts_with("Press Ctrl+O")
         || trimmed.starts_with("You can also use Ctrl+P")
+        || trimmed.starts_with("Restart MCP servers")
+        || trimmed.starts_with("Enable or disable telemetry collection")
+        || trimmed.starts_with("Toggle background shells")
+        || trimmed.starts_with("Ask anything")
     {
         return true;
     }
@@ -2157,13 +2197,12 @@ fn dispatch_orchestrator_notice_async(
             logs_instance_dir(&context.project_dir, &context.instance_id).join("daemon.log");
         if let Err(err) = append_orchestrator_inbox(&context, &orchestrator_provider, &inbox_entry)
         {
-            let _ = write_line(
-                daemon_log.clone(),
-                &format!(
-                    "[WARN] orchestrator inbox append failed provider={} req_id={} err={}",
-                    orchestrator_provider, req_id, err
-                ),
+            let line = format!(
+                "[WARN] orchestrator inbox append failed provider={} req_id={} err={}",
+                orchestrator_provider, req_id, err
             );
+            let _ = write_line(daemon_log.clone(), &line);
+            debug_log(&context, &line);
         }
 
         if let Some(prompt) = prompt {
@@ -2174,16 +2213,15 @@ fn dispatch_orchestrator_notice_async(
                 kind,
                 &prompt,
             ) {
-                let _ = write_line(
-                    daemon_log,
-                    &format!(
-                        "[WARN] orchestrator callback worker failed provider={} req_id={} kind={} err={}",
-                        orchestrator_provider,
-                        req_id,
-                        kind.as_str(),
-                        err
-                    ),
+                let line = format!(
+                    "[WARN] orchestrator callback worker failed provider={} req_id={} kind={} err={}",
+                    orchestrator_provider,
+                    req_id,
+                    kind.as_str(),
+                    err
                 );
+                let _ = write_line(daemon_log, &line);
+                debug_log(&context, &line);
             }
         }
     });
@@ -2271,7 +2309,7 @@ fn run_orchestrator_callback_worker(
 
 fn build_orchestrator_started_prompt(req_id: &str, executor: &str, timeout_s: f64) -> String {
     format!(
-        "RCCB_STATUS\nreq_id={req_id}\n执行者={executor}\n状态=running\n\n执行者已开始处理，超时预算 {:.0} 秒。\n你现在进入等待态：\n- 不要重复派单\n- 不要自己执行 WebSearch / Read / 通用 Bash\n- 不要自己下场完成这个任务\n- 如需查看状态，只允许使用 RCCB 状态接口（`rccb inbox` / `rccb watch`）\n\n继续等待 RCCB_RESULT；如果长时间没有最终结果，只向用户报告当前异常并等待裁决。",
+        "RCCB_STATUS\nreq_id={req_id}\n执行者={executor}\n状态=running\n\n执行者已开始处理，超时预算 {:.0} 秒。\n你现在进入静默等待态：\n- 不要重复派单\n- 不要自己执行 WebSearch / Read / 通用 Bash\n- 不要自己下场完成这个任务\n- 不要主动轮询状态\n- 不要主动向用户提“继续等待 / 稍后查看”\n- 只有用户明确要求、同步 ask 超时、或已经超过超时预算时，才允许使用 RCCB 状态接口（`rccb inbox` / `rccb watch`）\n\n默认继续等待 RCCB_RESULT；如果长时间没有最终结果，只向用户报告当前异常并等待裁决。",
         timeout_s.max(0.0)
     )
 }
@@ -2279,7 +2317,7 @@ fn build_orchestrator_started_prompt(req_id: &str, executor: &str, timeout_s: f6
 fn build_orchestrator_progress_prompt(req_id: &str, executor: &str, message: &str) -> String {
     let progress = clamp_bus_text(message.trim(), orchestrator_progress_callback_max_chars());
     format!(
-        "RCCB_STATUS\nreq_id={req_id}\n执行者={executor}\n状态=running\n\n执行者仍在处理，最新进展：\n{progress}\n\n这不是最终结果。继续保持等待态：不要重复派单，不要自己执行 WebSearch / Read / 通用 Bash，也不要自己下场完成任务。若确需查看状态，只允许使用 `rccb inbox` / `rccb watch`。若后续长时间仍无最终结果，只向用户报告异常并等待裁决。"
+        "RCCB_STATUS\nreq_id={req_id}\n执行者={executor}\n状态=running\n\n执行者仍在处理，最新进展：\n{progress}\n\n这不是最终结果。继续保持静默等待态：不要重复派单，不要自己执行 WebSearch / Read / 通用 Bash，也不要自己下场完成任务；不要主动轮询状态，不要主动向用户提“继续等待 / 稍后查看”。只有用户明确要求、同步 ask 超时、或已经超过超时预算时，才允许使用 `rccb inbox` / `rccb watch`。若后续长时间仍无最终结果，只向用户报告异常并等待裁决。"
     )
 }
 
@@ -2314,7 +2352,7 @@ fn orchestrator_progress_callback_enabled() -> bool {
 }
 
 fn orchestrator_result_callback_enabled() -> bool {
-    env_bool("RCCB_ORCHESTRATOR_RESULT_CALLBACK", false)
+    env_bool("RCCB_ORCHESTRATOR_RESULT_CALLBACK", true)
 }
 
 fn orchestrator_callback_max_chars() -> usize {
@@ -2399,6 +2437,16 @@ fn debug_log(context: &DaemonContext, line: &str) {
         return;
     }
     let _ = write_line(debug_log_path(context), line);
+}
+
+fn append_daemon_log(context: &DaemonContext, line: &str) {
+    let _ = write_line(
+        logs_instance_dir(&context.project_dir, &context.instance_id).join("daemon.log"),
+        line,
+    );
+    if line.contains("[ERROR]") || line.contains("[WARN]") {
+        debug_log(context, line);
+    }
 }
 
 fn redact_token(mut value: Value) -> Value {
@@ -2499,6 +2547,17 @@ mod tests {
     }
 
     #[test]
+    fn relay_progress_lines_strips_tui_suffix_noise() {
+        let lines = relay_progress_lines(
+            "│ ⊶ GoogleSearch Searching the web for: \"most popular openclaw skills 2026 stars usage\" │ ⠋ Restart MCP servers with /mcp refresh… (esc to cancel, 36s) YOLO ctrl+y\n",
+        );
+        assert_eq!(
+            lines,
+            vec!["⊶ GoogleSearch Searching the web for: \"most popular openclaw skills 2026 stars usage\"".to_string()]
+        );
+    }
+
+    #[test]
     fn orchestrator_result_prompt_enforces_delegate_only_follow_up() {
         let prompt =
             build_orchestrator_result_prompt("req-1", "codex", "completed", 0, "step 1\nstep 2");
@@ -2516,6 +2575,8 @@ mod tests {
         assert!(prompt.contains("执行者=gemini"));
         assert!(prompt.contains("超时预算 300 秒"));
         assert!(prompt.contains("不要重复派单"));
+        assert!(prompt.contains("静默等待态"));
+        assert!(prompt.contains("不要主动轮询状态"));
     }
 
     #[test]
@@ -2525,17 +2586,19 @@ mod tests {
         assert!(prompt.contains("执行者=droid"));
         assert!(prompt.contains("正在搜索 zeroclaw 资料"));
         assert!(prompt.contains("这不是最终结果"));
+        assert!(prompt.contains("静默等待态"));
+        assert!(prompt.contains("不要主动向用户提“继续等待 / 稍后查看”"));
     }
 
     #[test]
-    fn orchestrator_result_callback_defaults_to_silent() {
+    fn orchestrator_result_callback_defaults_to_enabled() {
         let _guard = env_lock().lock().unwrap();
         let old = std::env::var("RCCB_ORCHESTRATOR_RESULT_CALLBACK").ok();
         unsafe {
             std::env::remove_var("RCCB_ORCHESTRATOR_RESULT_CALLBACK");
         }
 
-        assert!(!orchestrator_result_callback_enabled());
+        assert!(orchestrator_result_callback_enabled());
 
         if let Some(v) = old {
             unsafe {

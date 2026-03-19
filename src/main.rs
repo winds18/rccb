@@ -33,7 +33,13 @@ fn main() -> Result<()> {
     if let Err(err) = cleanup_project_retention(&project_dir) {
         eprintln!("warn: skip .rccb retention cleanup: {}", err);
     }
-    maybe_auto_update_notice(&project_dir, cli.command.as_ref());
+    let defer_auto_update_notice = matches!(
+        cli.command.as_ref(),
+        None | Some(Command::Start { .. }) | Some(Command::External(_))
+    );
+    if !defer_auto_update_notice {
+        maybe_auto_update_notice(&project_dir, cli.command.as_ref());
+    }
 
     match cli.command {
         None => cmd_shortcut_restore(&project_dir),

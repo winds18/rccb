@@ -215,6 +215,8 @@
 8. provider 进程执行带超时控制，超时返回 `exit_code=2`
 9. 可选 completion hook：任务终态后异步触发，不阻塞主请求路径
 10. 事件总线 `seq` 缓冲，支持断线后按 `from_seq` 续读
+11. `cmd_ask` 客户端侧先生成并固定 `req_id`；若回包阶段出现传输异常，可按该 `req_id` 恢复真实任务状态
+12. 对编排者同步派单，可在阻塞等待前先输出 `RCCB_ACCEPTED` 与真实 `req_id`，降低上层 shell 工具转后台时的跟踪丢失风险
 
 ### 4.8 Completion Hook（可选）
 
@@ -244,14 +246,18 @@
    - `.rccb/bin/*`（provider 启动包装脚本）
    - `AGENTS.md`、`CLAUDE.md`、`GEMINI.md`
    - `.claude/settings.local.json`（为 Claude 编排者补齐项目级 RCCB 命令白名单）
+   - `.claude/rules/rccb-core.md`（Claude 编排核心规则，自动加载）
+   - `.claude/rules/rccb-runtime.md`（Claude 运行时动态规则，随实例与 provider 集合刷新）
    - 以及和当前 provider 集合匹配的 skills / commands / agents / rules
 3. 覆盖策略：
    - 普通模式仅补缺失文件
    - 若已存在 `.claude/settings.local.json`，普通模式会补齐 RCCB 白名单但保留已有自定义字段
    - `--force` 会刷新所有 RCCB 生成模板
-   - `debug` 启动会刷新 RCCB 生成模板，包括 `.rccb/config.example.json`、`providers/*.example.json`、`.rccb/bin/*` 与托管规则
+   - `debug` 启动会刷新 RCCB 生成模板，包括 `.rccb/config.example.json`、`providers/*.example.json`、`.rccb/bin/*`、provider 支持文件与托管规则
+   - `debug` 启动前会重置当前实例的调试运行态：清理旧 `logs/<instance>/`、`sessions/<instance>/`、`tmp/<instance>/`、`run/<instance>.*` 残留，并为新会话重建 `debug.log`
    - `AGENTS.md` / `CLAUDE.md` / `GEMINI.md` 通过托管区块 + 用户区块的方式保留用户自定义内容
-   - Codex 额外生成审计/调研复核技能；Gemini 的项目级规则默认包含两轮调研与交叉验证工作流
+   - `.claude/rules/rccb-runtime.md` 属于 RCCB 全托管动态文件，普通启动也会按当前实例与 provider 集合刷新
+   - Codex 额外生成审计/调研复核技能；Gemini 的项目级规则默认包含详细、结构化调研工作流
 
 ### 5.1 启动
 
@@ -267,8 +273,11 @@
    - 按本次实际 provider 集合裁剪生成项目级 wrapper / rules / skills / provider 支持文件
    - 在 `tmux/wezterm` 环境自动拉起 provider CLI pane
    - 启动前自动补齐项目级规则文件；若 `debug` 开启则刷新托管规则
+   - Claude 编排者优先依赖项目级自动加载规则：`CLAUDE.md`、`.claude/rules/rccb-core.md`、`.claude/rules/rccb-runtime.md`、`.claude/agents/*.md`、`.claude/commands/*.md`
+   - Claude 主编排者采用“无审批但强限制工具集”模式：允许读/搜/委派，不允许写文件工具
    - 默认不向 provider pane 注入旁路 feed；pane 保持真实 CLI 执行视图，实时状态优先放在 debug 日志 pane
-   - 若 debug 开启，自动在编排者 pane 上方增加日志 pane（默认追踪首个执行者，`watch --follow`）
+   - Claude 的 pane 首条 guardrail 注入不再是主路径；默认仅在项目级 Claude 规则缺失时兜底，或显式设置 `RCCB_ORCHESTRATOR_PRIME_MODE=always` 时强制注入
+   - 若 debug 开启，自动在编排者 pane 上方增加调试日志 pane（默认追踪首个执行者，`watch --follow`）
    - 默认静默后台通信，不向 pane 输入区注入任务文本/通知
    - opencode 在存在 pane 元数据时默认走 pane 执行（自动回车），无 pane 时回退后台 native 执行
    - pane 规则：`<=4` 左侧仅 orchestrator；`=5` 左侧分上下，其余在右侧且右侧等分
@@ -276,7 +285,7 @@
    - 退出或 `stop` 时，强清理 `run/`、`sessions/<instance>/`、`tmp/<instance>/`；保留 `tasks/` 与 `logs/`
    - 非 `tmux/wezterm` 环境仅确保 daemon 在线并提示如何继续
    - 默认职责：`opencode=编码者`、`gemini=调研者`、`droid=文档记录者`、`codex=代码审计者`
-   - 默认调研链路：先 `gemini` 至少两轮调研，再 `codex` 复核关键结论
+   - 默认调研链路：先 `gemini` 做详细、结构化调研，再 `codex` 复核关键结论
 
 ### 5.2 通信
 
@@ -307,10 +316,12 @@
    - 轮询路径文本模式下日志默认节流（`RCCB_WATCH_MAX_LOG_LINES`，默认 10）
    - `RCCB_WATCH_BUS=0` 可关闭总线 watch，强制轮询
    - `RCCB_EVENT_BUFFER_SIZE=<64-20000>` 可调整 daemon 事件缓冲（默认 2048）
+   - 若传入的 `--req-id` 看起来像上层工具的后台任务号（例如 `bg...` / `bu...` / `task ...`），应直接报错并提示改用真实 RCCB `req_id` 或 `--provider`
+   - 提示中可附带当前实例最近几个真实 `req_id` 候选，帮助快速恢复追踪
    - debug 自动日志 pane 可通过以下环境变量控制：
      `RCCB_DEBUG_WATCH_PANE`、`RCCB_DEBUG_WATCH_PROVIDER`、`RCCB_DEBUG_WATCH_PANE_PERCENT`
    - debug 仅对本次启动生效；若未显式传入 `--debug` 或 `RCCB_DEBUG=1`，不会继承上一次实例的 debug 状态
-   - provider/orchestrator pane 不显示旁路日志；旁路状态与流式信息只在 debug 日志 pane 展示
+   - provider/orchestrator pane 不显示旁路日志；旁路状态与实时调试日志流信息只在 debug 日志 pane 展示
    - 当开启 orchestrator strict mode 时，执行者完成后的最终结果会后台回注给编排者 pane（仅最终结果，不回注过程日志）
 
 6. `rccb inbox --instance <id> [--orchestrator <provider>] [--req-id <id>] [--kind <status|progress|result>] [--limit <n>]`
@@ -318,6 +329,8 @@
    - 省略 `--orchestrator` 时，优先从实例状态里的 orchestrator 推断
    - 适合排查“pane 不刷屏，但后台是否已收到状态/结果”
    - `--latest` 会按 `req_id` 折叠，只保留最新状态与最新结果，适合编排者安静消费
+   - 若 `--req-id` 像上层工具后台任务号，应给出明确提示，不再静默返回“未找到”
+   - 可同时给出最近真实任务候选，减少人工翻日志成本
 
 ### 5.3.1 Orchestrator Strict Mode
 
@@ -326,14 +339,16 @@
    - 编排者只负责思考、拆解、委派、验收、总结
    - 实际执行统一由执行者完成
 3. 行为：
-   - 编排者 pane 启动后自动收到 strict guardrail 提示
+   - Claude 编排者优先依赖项目级自动加载规则；仅当项目级 Claude 规则缺失，或显式设置 `RCCB_ORCHESTRATOR_PRIME_MODE=always` 时，才向 pane 注入 strict guardrail 提示
+   - 若用户明确指定复核执行者，主编排者传给 `delegate-auditor` 的任务首部必须显式包含 `复核执行者：<provider>`；若用户明确排除某执行者，还必须显式包含 `禁止执行者：<provider>`
    - 若 `ask.request.caller == orchestrator` 且目标 provider 为执行者，则任务状态与最终结果都会写入 `.rccb/tmp/<instance>/orchestrator/<orchestrator>.jsonl` 作为 inbox 记录
-   - 默认不向编排者 pane 注入最终结果；只有显式启用结果回调时才会回注到前台
+   - 默认只向编排者 pane 回注最终结果，不回注 started/progress，避免刷屏
    - 编排者前台默认最多确认一次“已委派，等待后台结果”，后续状态优先通过 `inbox --latest` 静默消费
    - `watch --follow` 只用于 debug pane 或用户明确要求持续跟踪的场景，不作为默认前台轮询手段
 4. 开关：
    - `RCCB_ORCHESTRATOR_STRICT=0` 可关闭
-   - `RCCB_ORCHESTRATOR_RESULT_CALLBACK=1` 可启用最终结果前台回注
+   - `RCCB_ORCHESTRATOR_PRIME_MODE=<auto|always|off>` 控制 Claude 编排者 pane 首条 guardrail 注入；默认 `auto`
+   - `RCCB_ORCHESTRATOR_RESULT_CALLBACK=0` 可关闭最终结果前台回注
    - `RCCB_ORCHESTRATOR_CALLBACK_MAX_CHARS=<400-32000>` 可限制回注结果长度
 6. `status --as-json` 额外返回 `in_flight_count` 与 `in_flight_req_ids`
 
