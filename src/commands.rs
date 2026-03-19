@@ -339,14 +339,15 @@ fn write_config_template(
     if providers.iter().any(|p| p == "codex") {
         specialties.insert("codex".to_string(), json!("代码审计者"));
     }
-    let research_validation_rule =
-        if providers.iter().any(|p| p == "gemini") && providers.iter().any(|p| p == "codex") {
-            "涉及外部事实时先由 gemini 调研，再由 codex 复核关键结论后再采纳"
-        } else if providers.iter().any(|p| p == "gemini") {
-            "涉及外部事实时先由 gemini 做详细、结构化调研；若未启用 codex，请在采纳前人工复核关键事实"
-        } else {
-            "当前 provider 集合未启用专门调研链路，请按需补充调研与复核执行者"
-        };
+    let research_validation_rule = if providers.iter().any(|p| p == "gemini")
+        && providers.iter().any(|p| p == "codex")
+    {
+        "涉及外部事实时先由 gemini 调研，再由 codex 复核关键结论后再采纳"
+    } else if providers.iter().any(|p| p == "gemini") {
+        "涉及外部事实时先由 gemini 做详细、结构化调研；若未启用 codex，请在采纳前人工复核关键事实"
+    } else {
+        "当前 provider 集合未启用专门调研链路，请按需补充调研与复核执行者"
+    };
 
     let template = json!({
         "project": project_dir.display().to_string(),
@@ -733,7 +734,11 @@ fn project_rccb_command(project_dir: &Path) -> String {
     )
 }
 
-fn build_rule_file_specs(project_dir: &Path, instance: &str, providers: &[String]) -> Vec<RuleFileSpec> {
+fn build_rule_file_specs(
+    project_dir: &Path,
+    instance: &str,
+    providers: &[String],
+) -> Vec<RuleFileSpec> {
     let mut specs = vec![RuleFileSpec {
         path: project_dir.join("AGENTS.md"),
         contents: build_agents_rules_markdown(providers),
@@ -1275,8 +1280,9 @@ fn should_refresh_legacy_plain_rule(path: &Path, existing: &str) -> bool {
     }
 
     if path_str.ends_with(".claude/agents/delegate-researcher.md")
-        && (!normalized.contains("你唯一的任务是：整理任务 -> 通过 RCCB 把任务派给指定执行者 -> 返回真实 `req_id`")
-            || !normalized.contains("tools: ['Bash']")
+        && (!normalized.contains(
+            "你唯一的任务是：整理任务 -> 通过 RCCB 把任务派给指定执行者 -> 返回真实 `req_id`",
+        ) || !normalized.contains("tools: ['Bash']")
             || !normalized.contains("RCCB_PROVIDER_AGENT=delegate-researcher"))
     {
         return true;
@@ -1484,10 +1490,7 @@ fn build_claude_runtime_rule_markdown(
     } else {
         instance
     };
-    let orchestrator = providers
-        .first()
-        .map(|v| v.as_str())
-        .unwrap_or("claude");
+    let orchestrator = providers.first().map(|v| v.as_str()).unwrap_or("claude");
     let executors = if providers.len() > 1 {
         providers[1..].join(", ")
     } else {
@@ -2063,10 +2066,7 @@ fn render_startup_banner(
     debug: bool,
     mode: &str,
 ) -> String {
-    let orchestrator = providers
-        .first()
-        .map(|v| v.as_str())
-        .unwrap_or("-");
+    let orchestrator = providers.first().map(|v| v.as_str()).unwrap_or("-");
     let provider_list = if providers.is_empty() {
         "-".to_string()
     } else {
@@ -2116,7 +2116,10 @@ fn show_startup_banner(
     if !io::stdout().is_terminal() {
         return false;
     }
-    print!("\x1b[2J\x1b[H{}", render_startup_banner(project_dir, instance, providers, debug, mode));
+    print!(
+        "\x1b[2J\x1b[H{}",
+        render_startup_banner(project_dir, instance, providers, debug, mode)
+    );
     let _ = io::stdout().flush();
     true
 }
@@ -3352,7 +3355,10 @@ fn orchestrator_prime_mode() -> OrchestratorPrimeMode {
 
 fn claude_project_autoload_ready(project_dir: &Path) -> bool {
     let claude_root = project_dir.join("CLAUDE.md");
-    let claude_core = project_dir.join(".claude").join("rules").join("rccb-core.md");
+    let claude_core = project_dir
+        .join(".claude")
+        .join("rules")
+        .join("rccb-core.md");
     let claude_runtime = project_dir
         .join(".claude")
         .join("rules")
@@ -4107,7 +4113,11 @@ pub fn cmd_inbox(
     let req_id_hint = req_id
         .map(str::trim)
         .filter(|v| !v.is_empty())
-        .and_then(|v| build_foreign_background_task_id_hint(project_dir, instance, v).ok().flatten());
+        .and_then(|v| {
+            build_foreign_background_task_id_hint(project_dir, instance, v)
+                .ok()
+                .flatten()
+        });
     let orchestrator = resolve_inbox_orchestrator(project_dir, instance, orchestrator)?;
     let mut items = load_orchestrator_inbox_entries(project_dir, instance, &orchestrator)?;
 
@@ -4552,7 +4562,9 @@ pub fn cmd_watch(
 
     if let Some(req_id) = fixed_req_id.as_deref() {
         if load_task_by_req_id(project_dir, instance, req_id)?.is_none() {
-            if let Some(hint) = build_foreign_background_task_id_hint(project_dir, instance, req_id)? {
+            if let Some(hint) =
+                build_foreign_background_task_id_hint(project_dir, instance, req_id)?
+            {
                 bail!(hint);
             }
         }
@@ -6282,7 +6294,14 @@ pub fn cmd_ask(
         "instance_id": instance,
     });
 
-    maybe_print_sync_req_id_hint(instance, &state, &provider, caller, async_submit, &client_req_id);
+    maybe_print_sync_req_id_hint(
+        instance,
+        &state,
+        &provider,
+        caller,
+        async_submit,
+        &client_req_id,
+    );
 
     if stream {
         return cmd_ask_stream(
@@ -6557,7 +6576,8 @@ fn should_degrade_timeout_to_pending(
         instance,
         req_id,
         timeout_pending_recovery_wait(),
-    )? else {
+    )?
+    else {
         return Ok(false);
     };
     Ok(is_in_flight_status(&task.status))
@@ -6664,13 +6684,22 @@ fn recover_ask_after_transport_error(
         return Ok(false);
     };
 
-    let provider_print = task.provider.clone().unwrap_or_else(|| provider.to_string());
+    let provider_print = task
+        .provider
+        .clone()
+        .unwrap_or_else(|| provider.to_string());
     if is_terminal_task_status(&task.status) {
         let reply = task.reply.unwrap_or_default();
         let exit_code = task.exit_code.unwrap_or(1);
         if exit_code == 0 {
             if async_submit {
-                print_async_submit_notice(project_dir, instance, &provider_print, req_id, &task.status);
+                print_async_submit_notice(
+                    project_dir,
+                    instance,
+                    &provider_print,
+                    req_id,
+                    &task.status,
+                );
                 return Ok(true);
             }
             if should_suppress_sync_reply_for_orchestrator(state, provider, caller) {
@@ -6771,7 +6800,9 @@ fn looks_like_foreign_background_task_id(req_id: &str) -> bool {
     }
     (rid.starts_with("bg") || rid.starts_with("bu"))
         && rid.len() >= 6
-        && rid.chars().all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit())
+        && rid
+            .chars()
+            .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit())
 }
 
 fn build_foreign_background_task_id_hint(
@@ -7050,8 +7081,8 @@ mod tests {
     use std::collections::HashSet;
     use std::fs;
     use std::path::Path;
-    use std::time::Duration;
     use std::sync::{Mutex, OnceLock};
+    use std::time::Duration;
 
     use serde_json::json;
 
@@ -7365,8 +7396,7 @@ mod tests {
 
     #[test]
     fn recover_ask_after_transport_error_marks_inflight_for_running_sync_task() {
-        let project =
-            std::env::temp_dir().join(format!("rccb-recover-running-{}", now_unix_ms()));
+        let project = std::env::temp_dir().join(format!("rccb-recover-running-{}", now_unix_ms()));
         let instance = "default";
         ensure_project_layout(&project).unwrap();
         let task_dir = tasks_instance_dir(&project, instance);
@@ -7416,8 +7446,8 @@ mod tests {
         .unwrap();
         assert!(recovered);
 
-        let inflight = crate::orchestrator_lock::load_inflight(&project, instance, "claude")
-            .unwrap();
+        let inflight =
+            crate::orchestrator_lock::load_inflight(&project, instance, "claude").unwrap();
         assert_eq!(inflight.len(), 1);
         assert_eq!(inflight[0].req_id, "req-running");
         assert_eq!(inflight[0].executor, "gemini");
@@ -7427,8 +7457,7 @@ mod tests {
 
     #[test]
     fn recover_ask_after_transport_error_succeeds_for_completed_task() {
-        let project =
-            std::env::temp_dir().join(format!("rccb-recover-done-{}", now_unix_ms()));
+        let project = std::env::temp_dir().join(format!("rccb-recover-done-{}", now_unix_ms()));
         let instance = "default";
         ensure_project_layout(&project).unwrap();
         let task_dir = tasks_instance_dir(&project, instance);
@@ -7468,14 +7497,7 @@ mod tests {
         };
 
         let recovered = super::recover_ask_after_transport_error(
-            &project,
-            instance,
-            &state,
-            "gemini",
-            "claude",
-            false,
-            "req-done",
-            30.0,
+            &project, instance, &state, "gemini", "claude", false, "req-done", 30.0,
         )
         .unwrap();
         assert!(recovered);
@@ -7485,8 +7507,7 @@ mod tests {
 
     #[test]
     fn recover_ask_after_transport_error_reports_completed_failure() {
-        let project =
-            std::env::temp_dir().join(format!("rccb-recover-fail-{}", now_unix_ms()));
+        let project = std::env::temp_dir().join(format!("rccb-recover-fail-{}", now_unix_ms()));
         let instance = "default";
         ensure_project_layout(&project).unwrap();
         let task_dir = tasks_instance_dir(&project, instance);
@@ -7526,14 +7547,7 @@ mod tests {
         };
 
         let err = super::recover_ask_after_transport_error(
-            &project,
-            instance,
-            &state,
-            "gemini",
-            "claude",
-            false,
-            "req-fail",
-            30.0,
+            &project, instance, &state, "gemini", "claude", false, "req-fail", 30.0,
         )
         .unwrap_err();
         assert!(err.to_string().contains("ask failed after transport loss"));
@@ -7544,8 +7558,7 @@ mod tests {
 
     #[test]
     fn recover_ask_after_transport_error_waits_for_late_task_materialization() {
-        let project =
-            std::env::temp_dir().join(format!("rccb-recover-late-{}", now_unix_ms()));
+        let project = std::env::temp_dir().join(format!("rccb-recover-late-{}", now_unix_ms()));
         let instance = "default";
         ensure_project_layout(&project).unwrap();
         let task_dir = tasks_instance_dir(&project, instance);
@@ -7588,14 +7601,7 @@ mod tests {
         };
 
         let recovered = super::recover_ask_after_transport_error(
-            &project,
-            instance,
-            &state,
-            "gemini",
-            "claude",
-            false,
-            "req-late",
-            30.0,
+            &project, instance, &state, "gemini", "claude", false, "req-late", 30.0,
         )
         .unwrap();
         assert!(recovered);
@@ -7605,8 +7611,7 @@ mod tests {
 
     #[test]
     fn timeout_pending_recovery_waits_for_late_running_task() {
-        let project =
-            std::env::temp_dir().join(format!("rccb-timeout-pending-{}", now_unix_ms()));
+        let project = std::env::temp_dir().join(format!("rccb-timeout-pending-{}", now_unix_ms()));
         let instance = "default";
         ensure_project_layout(&project).unwrap();
         let task_dir = tasks_instance_dir(&project, instance);
@@ -8080,14 +8085,13 @@ mod tests {
         let project = std::env::temp_dir().join(format!("rccb-rules-{}", now_unix_ms()));
         ensure_project_layout(&project).unwrap();
 
-        let written =
-            ensure_project_bootstrap(
-                &project,
-                BootstrapMode::MissingOnly,
-                TEST_INSTANCE,
-                &all_test_providers(),
-            )
-            .unwrap();
+        let written = ensure_project_bootstrap(
+            &project,
+            BootstrapMode::MissingOnly,
+            TEST_INSTANCE,
+            &all_test_providers(),
+        )
+        .unwrap();
 
         assert!(written
             .rule_templates
@@ -8164,8 +8168,7 @@ mod tests {
             fs::read_to_string(project.join(".claude/commands/rccb-research.md")).unwrap();
         assert!(research_cmd.contains("复审让 opencode 来做"));
         assert!(research_cmd.contains("不要把任务改判成编码链路"));
-        let audit_cmd =
-            fs::read_to_string(project.join(".claude/commands/rccb-audit.md")).unwrap();
+        let audit_cmd = fs::read_to_string(project.join(".claude/commands/rccb-audit.md")).unwrap();
         assert!(audit_cmd.contains("任务类型由工作性质决定，不由执行者是谁决定"));
         assert!(audit_cmd.contains("不要改走 `delegate-coder`"));
         assert!(audit_cmd.contains("复核执行者：<provider>"));
@@ -8348,24 +8351,14 @@ mod tests {
         ensure_project_layout(&project).unwrap();
         let providers = vec!["claude".to_string(), "gemini".to_string()];
 
-        ensure_project_bootstrap(
-            &project,
-            BootstrapMode::MissingOnly,
-            "default",
-            &providers,
-        )
-        .unwrap();
+        ensure_project_bootstrap(&project, BootstrapMode::MissingOnly, "default", &providers)
+            .unwrap();
         let runtime_path = project.join(".claude/rules/rccb-runtime.md");
         let first = fs::read_to_string(&runtime_path).unwrap();
         assert!(first.contains("当前实例：`default`"));
 
-        ensure_project_bootstrap(
-            &project,
-            BootstrapMode::MissingOnly,
-            "team-a",
-            &providers,
-        )
-        .unwrap();
+        ensure_project_bootstrap(&project, BootstrapMode::MissingOnly, "team-a", &providers)
+            .unwrap();
         let second = fs::read_to_string(&runtime_path).unwrap();
         assert!(second.contains("当前实例：`team-a`"));
         assert!(!second.contains("当前实例：`default`"));
@@ -8379,7 +8372,11 @@ mod tests {
         let banner = super::render_startup_banner(
             project,
             "default",
-            &["claude".to_string(), "gemini".to_string(), "opencode".to_string()],
+            &[
+                "claude".to_string(),
+                "gemini".to_string(),
+                "opencode".to_string(),
+            ],
             false,
             "shortcut",
         );
@@ -8808,7 +8805,8 @@ mod tests {
 
     #[test]
     fn legacy_droid_skip_permissions_wrapper_is_marked_for_refresh() {
-        let project = std::env::temp_dir().join(format!("rccb-droid-wrapper-refresh-{}", now_unix_ms()));
+        let project =
+            std::env::temp_dir().join(format!("rccb-droid-wrapper-refresh-{}", now_unix_ms()));
         ensure_project_layout(&project).unwrap();
         let wrapper = project.join(".rccb").join("bin").join("droid");
         fs::create_dir_all(wrapper.parent().unwrap()).unwrap();

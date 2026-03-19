@@ -1976,7 +1976,23 @@ fn sanitize_relay_progress_line(raw: &str) -> Option<String> {
 
     line = line
         .trim_end_matches(|c: char| {
-            matches!(c, '│' | '┃' | '┆' | '╎' | ' ' | '⠋' | '⠙' | '⠹' | '⠸' | '⠼' | '⠴' | '⠦' | '⠧' | '⠇' | '⠏')
+            matches!(
+                c,
+                '│' | '┃'
+                    | '┆'
+                    | '╎'
+                    | ' '
+                    | '⠋'
+                    | '⠙'
+                    | '⠹'
+                    | '⠸'
+                    | '⠼'
+                    | '⠴'
+                    | '⠦'
+                    | '⠧'
+                    | '⠇'
+                    | '⠏'
+            )
         })
         .trim()
         .to_string();
@@ -2352,7 +2368,7 @@ fn orchestrator_progress_callback_enabled() -> bool {
 }
 
 fn orchestrator_result_callback_enabled() -> bool {
-    env_bool("RCCB_ORCHESTRATOR_RESULT_CALLBACK", true)
+    env_bool("RCCB_ORCHESTRATOR_RESULT_CALLBACK", false)
 }
 
 fn orchestrator_callback_max_chars() -> usize {
@@ -2591,11 +2607,28 @@ mod tests {
     }
 
     #[test]
-    fn orchestrator_result_callback_defaults_to_enabled() {
+    fn orchestrator_result_callback_defaults_to_silent() {
         let _guard = env_lock().lock().unwrap();
         let old = std::env::var("RCCB_ORCHESTRATOR_RESULT_CALLBACK").ok();
         unsafe {
             std::env::remove_var("RCCB_ORCHESTRATOR_RESULT_CALLBACK");
+        }
+
+        assert!(!orchestrator_result_callback_enabled());
+
+        if let Some(v) = old {
+            unsafe {
+                std::env::set_var("RCCB_ORCHESTRATOR_RESULT_CALLBACK", v);
+            }
+        }
+    }
+
+    #[test]
+    fn orchestrator_result_callback_can_be_enabled_explicitly() {
+        let _guard = env_lock().lock().unwrap();
+        let old = std::env::var("RCCB_ORCHESTRATOR_RESULT_CALLBACK").ok();
+        unsafe {
+            std::env::set_var("RCCB_ORCHESTRATOR_RESULT_CALLBACK", "1");
         }
 
         assert!(orchestrator_result_callback_enabled());
@@ -2603,6 +2636,10 @@ mod tests {
         if let Some(v) = old {
             unsafe {
                 std::env::set_var("RCCB_ORCHESTRATOR_RESULT_CALLBACK", v);
+            }
+        } else {
+            unsafe {
+                std::env::remove_var("RCCB_ORCHESTRATOR_RESULT_CALLBACK");
             }
         }
     }

@@ -70,7 +70,16 @@
      - `wezterm` 稳定
      - 不重复注入整段提示
 
-5. Claude 编排者改为“规则/skills 自动加载优先，pane 注入兜底”
+5. 执行结果默认静默回传
+   - 目标：执行者完成后，最终结果默认只写入编排者 inbox 与 `.rccb/tasks/<instance>/artifacts/<req_id>.reply.md`，不再默认前台注入编排者 pane
+   - 当前状态：已发现 daemon 侧仍保留“最终结果前台回注默认开启”的旧默认值，和现有文档口径不一致
+   - 验收标准：
+     - 默认情况下，执行者完成不会再向编排者 pane 前台注入 `RCCB_RESULT`
+     - 编排者仍可通过 `inbox --latest` 与 `reply.md` 静默消费结果
+     - 仅在显式设置 `RCCB_ORCHESTRATOR_RESULT_CALLBACK=1` 时才启用最终结果前台回注
+     - 文档、测试、运行行为三方一致
+
+6. Claude 编排者改为“规则/skills 自动加载优先，pane 注入兜底”
    - 目标：首启后优先依赖项目级规则、agents、commands、skills 完成编排行为收敛，不再把 pane 首次提示注入当成关键路径
    - 当前状态：已改为生成 `.claude/rules/rccb-core.md` 与 `.claude/rules/rccb-runtime.md`，并让启动阶段在规则齐全时跳过首启注入；仍需继续实测 tmux / wezterm 首启行为
    - 验收标准：
@@ -116,6 +125,7 @@
 8. 当 Claude 项目级自动加载规则齐全时，首启 pane 注入会自动降级为兜底路径
 9. 人工指定复核执行者已通过结构化强标记压过默认 `codex` 分工
 10. 同步 `ask` 的传输异常恢复窗口与 timeout 待定窗口已加固，减少执行者仍在运行时的误判失败
+11. 已确认并记录一个口径不一致问题：daemon 仍默认开启最终结果前台回注，需统一切回“默认静默消费”
 
 ### 最近新增待办
 
@@ -123,6 +133,7 @@
 2. 真实验证 `tmux / wezterm` 首启注入稳定性
 3. 收敛 Claude 子代理 Bash 派单的审批 UI 噪声
 4. 强化主编排者“零写权限”硬约束与测试覆盖
+5. 统一“最终结果默认静默回传”的代码默认值、测试与文档口径
 
 ## 使用约定
 

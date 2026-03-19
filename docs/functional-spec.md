@@ -323,7 +323,7 @@
      `RCCB_DEBUG_WATCH_PANE`、`RCCB_DEBUG_WATCH_PROVIDER`、`RCCB_DEBUG_WATCH_PANE_PERCENT`
    - debug 仅对本次启动生效；若未显式传入 `--debug` 或 `RCCB_DEBUG=1`，不会继承上一次实例的 debug 状态
    - provider/orchestrator pane 不显示旁路日志；旁路状态与实时调试日志流信息只在 debug 日志 pane 展示
-   - 当开启 orchestrator strict mode 时，执行者完成后的最终结果会后台回注给编排者 pane（仅最终结果，不回注过程日志）
+   - 当开启 orchestrator strict mode 时，执行者完成后的最终结果默认只写入编排者 inbox 与任务结果工件，不回注 pane；仅在显式开启 `RCCB_ORCHESTRATOR_RESULT_CALLBACK=1` 时才向编排者 pane 前台回注最终结果
 
 6. `rccb inbox --instance <id> [--orchestrator <provider>] [--req-id <id>] [--kind <status|progress|result>] [--limit <n>]`
    - 查看静默模式下写入编排者后台 inbox 的 notice
@@ -343,13 +343,13 @@
    - Claude 编排者优先依赖项目级自动加载规则；仅当项目级 Claude 规则缺失，或显式设置 `RCCB_ORCHESTRATOR_PRIME_MODE=always` 时，才向 pane 注入 strict guardrail 提示
    - 若用户明确指定复核执行者，主编排者传给 `delegate-auditor` 的任务首部必须显式包含 `复核执行者：<provider>`；若用户明确排除某执行者，还必须显式包含 `禁止执行者：<provider>`
    - 若 `ask.request.caller == orchestrator` 且目标 provider 为执行者，则任务状态与最终结果都会写入 `.rccb/tmp/<instance>/orchestrator/<orchestrator>.jsonl` 作为 inbox 记录
-   - 默认只向编排者 pane 回注最终结果，不回注 started/progress，避免刷屏
+   - 默认不向编排者 pane 回注任何 started/progress/result；最终结果优先通过 `inbox --latest` 与 `.rccb/tasks/<instance>/artifacts/<req_id>.reply.md` 静默消费
    - 编排者前台默认最多确认一次“已委派，等待后台结果”，后续状态优先通过 `inbox --latest` 静默消费
    - `watch --follow` 只用于 debug pane 或用户明确要求持续跟踪的场景，不作为默认前台轮询手段
 4. 开关：
    - `RCCB_ORCHESTRATOR_STRICT=0` 可关闭
    - `RCCB_ORCHESTRATOR_PRIME_MODE=<auto|always|off>` 控制 Claude 编排者 pane 首条 guardrail 注入；默认 `auto`
-   - `RCCB_ORCHESTRATOR_RESULT_CALLBACK=0` 可关闭最终结果前台回注
+   - `RCCB_ORCHESTRATOR_RESULT_CALLBACK=1` 可显式开启最终结果前台回注（默认关闭）
    - `RCCB_ORCHESTRATOR_CALLBACK_MAX_CHARS=<400-32000>` 可限制回注结果长度
 6. `status --as-json` 额外返回 `in_flight_count` 与 `in_flight_req_ids`
 

@@ -437,8 +437,10 @@ fn execute_native_via_pane(
             Err(_) => {
                 if let Some(limit) = timeout {
                     if last_activity.elapsed() >= limit {
-                        let timeout_reply =
-                            timeout_reply_with_partial(req_id, &[transcript.as_str(), previous_window.as_str()]);
+                        let timeout_reply = timeout_reply_with_partial(
+                            req_id,
+                            &[transcript.as_str(), previous_window.as_str()],
+                        );
                         return Ok(ProviderExecResult {
                             exit_code: 2,
                             reply: timeout_reply,
@@ -506,8 +508,10 @@ fn execute_native_via_pane(
         if !final_reply_seen {
             if let Some(limit) = timeout {
                 if last_activity.elapsed() >= limit {
-                    let timeout_reply =
-                        timeout_reply_with_partial(req_id, &[transcript.as_str(), previous_window.as_str()]);
+                    let timeout_reply = timeout_reply_with_partial(
+                        req_id,
+                        &[transcript.as_str(), previous_window.as_str()],
+                    );
                     return Ok(ProviderExecResult {
                         exit_code: 2,
                         reply: timeout_reply,
@@ -650,7 +654,11 @@ fn execute_native_via_tmux_feed(
                     if last_activity.elapsed() >= limit {
                         let timeout_reply = timeout_reply_with_partial(
                             req_id,
-                            &[feed_reply.as_str(), feed_window.as_str(), previous_window.as_str()],
+                            &[
+                                feed_reply.as_str(),
+                                feed_window.as_str(),
+                                previous_window.as_str(),
+                            ],
                         );
                         return Ok(ProviderExecResult {
                             exit_code: 2,
@@ -708,7 +716,11 @@ fn execute_native_via_tmux_feed(
                 if last_activity.elapsed() >= limit {
                     let timeout_reply = timeout_reply_with_partial(
                         req_id,
-                        &[feed_reply.as_str(), feed_window.as_str(), previous_window.as_str()],
+                        &[
+                            feed_reply.as_str(),
+                            feed_window.as_str(),
+                            previous_window.as_str(),
+                        ],
                     );
                     return Ok(ProviderExecResult {
                         exit_code: 2,
@@ -1245,7 +1257,10 @@ fn build_exec_result(
     if outcome.timed_out {
         return ProviderExecResult {
             exit_code: 2,
-            reply: timeout_reply_with_partial(req_id, &[outcome.stdout.as_str(), outcome.stderr.as_str()]),
+            reply: timeout_reply_with_partial(
+                req_id,
+                &[outcome.stdout.as_str(), outcome.stderr.as_str()],
+            ),
             done_seen: false,
             done_ms: None,
             anchor_seen: true,
