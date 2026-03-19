@@ -345,6 +345,7 @@
    - 若 `ask.request.caller == orchestrator` 且目标 provider 为执行者，则任务状态与最终结果都会写入 `.rccb/tmp/<instance>/orchestrator/<orchestrator>.jsonl` 作为 inbox 记录
    - 默认不向编排者 pane 回注任何 started/progress/result；最终结果优先通过 `inbox --latest` 与 `.rccb/tasks/<instance>/artifacts/<req_id>.reply.md` 静默消费
    - 编排者前台默认最多确认一次“已委派，等待后台结果”，后续状态优先通过 `inbox --latest` 静默消费
+   - 调研/复核/长阅读类任务默认保持耐心；没有新的实质结论、异常或超时时，不应反复刷屏或频繁向用户抛“继续等待/重试/改派”等选择题
    - `watch --follow` 只用于 debug pane 或用户明确要求持续跟踪的场景，不作为默认前台轮询手段
 4. 开关：
    - `RCCB_ORCHESTRATOR_STRICT=0` 可关闭

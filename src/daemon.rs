@@ -2325,7 +2325,7 @@ fn run_orchestrator_callback_worker(
 
 fn build_orchestrator_started_prompt(req_id: &str, executor: &str, timeout_s: f64) -> String {
     format!(
-        "RCCB_STATUS\nreq_id={req_id}\n执行者={executor}\n状态=running\n\n执行者已开始处理，超时预算 {:.0} 秒。\n你现在进入静默等待态：\n- 不要重复派单\n- 不要自己执行 WebSearch / Read / 通用 Bash\n- 不要自己下场完成这个任务\n- 不要主动轮询状态\n- 不要主动向用户提“继续等待 / 稍后查看”\n- 只有用户明确要求、同步 ask 超时、或已经超过超时预算时，才允许使用 RCCB 状态接口（`rccb inbox` / `rccb watch`）\n\n默认继续等待 RCCB_RESULT；如果长时间没有最终结果，只向用户报告当前异常并等待裁决。",
+        "RCCB_STATUS\nreq_id={req_id}\n执行者={executor}\n状态=running\n\n执行者已开始处理，超时预算 {:.0} 秒。\n你现在进入静默等待态：\n- 不要重复派单\n- 不要自己执行 WebSearch / Read / 通用 Bash\n- 不要自己下场完成这个任务\n- 不要主动轮询状态\n- 不要主动向用户提“继续等待 / 稍后查看”\n- 如果这是调研、复核或长阅读任务，只要没有新的实质结果、异常或超时，就保持耐心，不要反复发言\n- 只有用户明确要求、同步 ask 超时、或已经超过超时预算时，才允许使用 RCCB 状态接口（`rccb inbox` / `rccb watch`）\n\n默认继续等待 RCCB_RESULT；如果长时间没有最终结果，只向用户报告当前异常并等待裁决。",
         timeout_s.max(0.0)
     )
 }
@@ -2333,7 +2333,7 @@ fn build_orchestrator_started_prompt(req_id: &str, executor: &str, timeout_s: f6
 fn build_orchestrator_progress_prompt(req_id: &str, executor: &str, message: &str) -> String {
     let progress = clamp_bus_text(message.trim(), orchestrator_progress_callback_max_chars());
     format!(
-        "RCCB_STATUS\nreq_id={req_id}\n执行者={executor}\n状态=running\n\n执行者仍在处理，最新进展：\n{progress}\n\n这不是最终结果。继续保持静默等待态：不要重复派单，不要自己执行 WebSearch / Read / 通用 Bash，也不要自己下场完成任务；不要主动轮询状态，不要主动向用户提“继续等待 / 稍后查看”。只有用户明确要求、同步 ask 超时、或已经超过超时预算时，才允许使用 `rccb inbox` / `rccb watch`。若后续长时间仍无最终结果，只向用户报告异常并等待裁决。"
+        "RCCB_STATUS\nreq_id={req_id}\n执行者={executor}\n状态=running\n\n执行者仍在处理，最新进展：\n{progress}\n\n这不是最终结果。继续保持静默等待态：不要重复派单，不要自己执行 WebSearch / Read / 通用 Bash，也不要自己下场完成任务；不要主动轮询状态，不要主动向用户提“继续等待 / 稍后查看”。如果这是调研、复核或长阅读任务，只要没有新的实质结果、异常或超时，就保持耐心，不要反复发言。只有用户明确要求、同步 ask 超时、或已经超过超时预算时，才允许使用 `rccb inbox` / `rccb watch`。若后续长时间仍无最终结果，只向用户报告异常并等待裁决。"
     )
 }
 
@@ -2593,6 +2593,7 @@ mod tests {
         assert!(prompt.contains("不要重复派单"));
         assert!(prompt.contains("静默等待态"));
         assert!(prompt.contains("不要主动轮询状态"));
+        assert!(prompt.contains("调研、复核或长阅读任务"));
     }
 
     #[test]
@@ -2604,6 +2605,7 @@ mod tests {
         assert!(prompt.contains("这不是最终结果"));
         assert!(prompt.contains("静默等待态"));
         assert!(prompt.contains("不要主动向用户提“继续等待 / 稍后查看”"));
+        assert!(prompt.contains("保持耐心"));
     }
 
     #[test]

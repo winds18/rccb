@@ -1046,6 +1046,7 @@ fn build_rule_file_specs(
 如果没拿到真正的 `req_id`，应直接说明“本次派单不可追踪，需重新派单”，不要继续用错误 ID 查 `inbox/watch`。\n\n\
 提交成功后，不要自己执行 WebSearch / Read / 通用 Bash，也不要自己完成这项调研。\n\
 提交成功后默认静默等待，不要主动向用户提“继续等待 / 稍后查看”。\n\
+调研类任务天然更慢；只要没有新的实质进展、异常或超时，不要为了显得在跟进而反复刷屏、反复提问用户。\n\
 如需安静查看状态，只允许用：\n\
 `rccb --project-dir . inbox --instance default --req-id <req_id> --latest --limit 5`。",
             ),
@@ -1073,6 +1074,7 @@ fn build_rule_file_specs(
 如果没拿到真正的 `req_id`，应直接说明“本次派单不可追踪，需重新派单”，不要继续用错误 ID 查 `inbox/watch`。\n\n\
 提交成功后，不要自己执行 WebSearch / Read / 通用 Bash，也不要自己做审计。\n\
 提交成功后默认静默等待，不要主动向用户提“继续等待 / 稍后查看”。\n\
+复核类任务往往需要较长阅读和核验时间；只要没有新的实质结论、异常或超时，不要反复刷屏或频繁向用户追问。\n\
 如需安静查看状态，只允许用：\n\
 `rccb --project-dir . inbox --instance default --req-id <req_id> --latest --limit 5`",
             ),
@@ -1242,7 +1244,8 @@ fn should_refresh_legacy_plain_rule(path: &Path, existing: &str) -> bool {
         && (!normalized.contains("执行任务必须通过对应的 Claude 委派子代理派出")
             || !normalized.contains("绝对不要先尝试 `Bash(rccb ask ...)`")
             || !normalized.contains("复核执行者：<provider>")
-            || !normalized.contains("禁止执行者：codex"))
+            || !normalized.contains("禁止执行者：codex")
+            || !normalized.contains("调研、复核、长阅读任务默认需要更多耐心"))
     {
         return true;
     }
@@ -1250,6 +1253,7 @@ fn should_refresh_legacy_plain_rule(path: &Path, existing: &str) -> bool {
     if path_str.ends_with(".claude/commands/rccb-research.md")
         && (!normalized.contains("delegate-researcher")
             || !normalized.contains("RCCB_PROVIDER_AGENT=delegate-researcher")
+            || !normalized.contains("调研类任务天然更慢")
             || normalized.contains("至少两轮调研")
             || normalized.contains("先让 gemini 调研，再让 codex 复核"))
     {
@@ -1260,7 +1264,8 @@ fn should_refresh_legacy_plain_rule(path: &Path, existing: &str) -> bool {
         && (!normalized.contains("delegate-auditor")
             || !normalized.contains("RCCB_PROVIDER_AGENT=delegate-auditor")
             || !normalized.contains("复核执行者：<provider>")
-            || !normalized.contains("禁止执行者：codex"))
+            || !normalized.contains("禁止执行者：codex")
+            || !normalized.contains("复核类任务往往需要较长阅读和核验时间"))
     {
         return true;
     }
@@ -1283,7 +1288,8 @@ fn should_refresh_legacy_plain_rule(path: &Path, existing: &str) -> bool {
         && (!normalized.contains(
             "你唯一的任务是：整理任务 -> 通过 RCCB 把任务派给指定执行者 -> 返回真实 `req_id`",
         ) || !normalized.contains("tools: ['Bash']")
-            || !normalized.contains("RCCB_PROVIDER_AGENT=delegate-researcher"))
+            || !normalized.contains("RCCB_PROVIDER_AGENT=delegate-researcher")
+            || !normalized.contains("不要为了显得积极而反复发言或重复追问用户"))
     {
         return true;
     }
@@ -1298,7 +1304,8 @@ fn should_refresh_legacy_plain_rule(path: &Path, existing: &str) -> bool {
 
     if path_str.ends_with(".claude/agents/delegate-auditor.md")
         && (!normalized.contains("复核执行者：<provider>")
-            || !normalized.contains("禁止执行者：<provider>"))
+            || !normalized.contains("禁止执行者：<provider>")
+            || !normalized.contains("不要频繁催用户裁决"))
     {
         return true;
     }
@@ -1371,8 +1378,10 @@ fn build_agents_rules_markdown(providers: &[String]) -> String {
 ## 实时状态与结果\n\
 - 静默模式下，最终结果以 `.rccb/tasks/<instance>/artifacts/<req_id>.reply.md` 为准。\n\
 - 长任务前台最多确认一次“已委派，等待后台结果”，随后进入静默等待；不要循环播报等待、重复贴命令或频繁自查。\n\
+- 调研、复核、长阅读类任务通常更慢；只要没有新的实质结果、异常或超时，就默认耐心等待，不要为了显得在跟进而反复发言。\n\
 - 派单后不要自己执行 WebSearch / Read / 通用 Bash，也不要自己下场完成该任务。\n\
 - 默认不要主动向用户提“继续等待 / 稍后查看”这类选择题；继续等待就是默认行为。\n\
+- 默认不要反复向用户抛“是否继续等待 / 是否重试 / 是否改派”这类选择题；只有真正出现异常、超时或需要人工裁决时才提。\n\
 - 只有在以下情况才允许主动查状态：用户明确要求、同步 `ask` 超时、或已经超过任务超时预算。\n\
 - 如需安静查看某个请求的最新状态与结果，优先执行 `rccb --project-dir . inbox --instance default --req-id <req_id> --latest --limit 5`。\n\
 - 如果同步 `ask` 超时，或 `inbox` 明显不足以判断真实状态，再用 `rccb watch --instance default --req-id <req_id> --with-provider-log --timeout-s 3 --pane-ui` 查看真实状态。\n\
@@ -1456,8 +1465,10 @@ fn build_claude_core_rule_markdown(providers: &[String]) -> String {
 {}\n\n\
 ## 查看真实状态\n\
 - 委派成功后，前台最多确认一次“已委派，等待后台结果”；随后默认静默等待，不要循环播报等待、不要频繁自查。\n\
+- 调研、复核、长阅读类任务往往需要更久；只要没有新的实质结论、异常或超时，就保持耐心，不要重复打断用户。\n\
 - 派单后不要自己执行 WebSearch / Read / 通用 Bash，也不要自己下场完成这个任务。\n\
 - 默认不要主动向用户提“继续等待 / 稍后查看”；继续等待就是默认行为。\n\
+- 默认不要反复抛出“是否继续等待 / 是否重试 / 是否改派”的选择题；除非确实发生异常、超时或需要人工裁决。\n\
 - 只有用户明确要求、同步 `ask` 超时、或已经超过任务超时预算时，才允许主动查状态。\n\
 - 如需安静查看最新状态与结果，只允许优先执行：\n\
 ```bash\n\
@@ -1916,6 +1927,7 @@ fn build_claude_delegate_agent_markdown(
 - 默认不要主动回贴 `watch` 命令；只有用户明确要求查看状态，或任务超时/异常时再给出。\n\
 - 默认不要反复播报“仍在等待”或“我再检查一下”；提交成功后安静退出，让主编排者继续编排。\n\
 - 默认不要主动向用户提“继续等待 / 稍后查看”；提交成功后静默等待就是默认动作。\n\
+- 若任务属于调研、复核、长阅读或多来源核验，只要没有新的实质结果、异常或超时，不要为了显得积极而反复发言或重复追问用户。\n\
 - 提交成功后，禁止自己再执行 `Read file`、`Bash sleep`、`cat .rccb/tasks/<instance>/artifacts/<req_id>.reply.md`、`watch --follow` 等主动轮询动作。\n".to_string(),
         format!("## 任务整理要求\n- 先把需求整理成适合 `{provider_label}` 执行的清晰中文任务。\n- 任务重点：{task_hint}\n- 中间派单默认只传增量上下文，不要把整段历史对话原样转发给执行者。\n"),
     ];
@@ -1964,6 +1976,7 @@ RCCB_PROVIDER_ROLE=orchestrator RCCB_PROVIDER_AGENT=delegate-auditor RCCB_ASK_AS
 - 默认不要主动回贴 `watch` 命令；只有用户明确要求查看状态，或任务超时/异常时再给出。\n\
 - 默认不要反复播报“仍在等待”或“我再检查一下”；提交成功后安静退出，让主编排者继续编排。\n\
 - 默认不要主动向用户提“继续等待 / 稍后查看”；提交成功后静默等待就是默认动作。\n\
+- 若任务属于调研复核、长阅读或事实核验，只要没有新的实质结果、异常或超时，不要反复发言、不要频繁催用户裁决。\n\
 - 提交成功后，禁止自己再执行 `Read file`、`Bash sleep`、`cat .rccb/tasks/<instance>/artifacts/<req_id>.reply.md`、`watch --follow` 等主动轮询动作。\n"
             .to_string(),
         "## 任务整理要求\n\
@@ -3380,7 +3393,7 @@ fn orchestrator_guardrail_prompt(
     render_project_bootstrap_content(
         project_dir,
         &format!(
-        "RCCB 编排模式已启用。\n\n当前编排者：{orchestrator}\n可用执行者：{executor_list}\n\n只做：规划、拆解、委派、验收、汇总。\n不要自己执行 bash、修改文件或运行测试。\n\n默认分工：opencode=编码，gemini=调研，droid=文档，codex=审计。\n优先级规则：用户/主编排者手动指定 > 当前任务明确约束 > 默认分工；默认分工优先级最低。\n调研规则：先 gemini 做详细、结构化调研，再安排复核执行者核验关键结论；若用户明确指定复核执行者，以明确指定为准。\n\n接到执行型任务时，第一步必须先选择对应的 `delegate-*` 子代理；绝对不要先尝试 `Bash(rccb ask ...)` 再回退。\n如果某次直派被 RCCB guard 拦下，说明编排行为违规；只能立即改回对应的 `delegate-*` 子代理，不得改用通用 Agent、WebSearch、Read file 或其他工具自己完成任务。\n任务类型由工作性质决定，不由执行者是谁决定：编码/修复/测试走 `delegate-coder`；调研走 `delegate-researcher`；文档走 `delegate-scribe`；审计/复核/评审/核验一律走 `delegate-auditor`。\n如果用户说“复审让 opencode 来做，不要找 codex”，这仍然是复核任务，必须走 `delegate-auditor`，再把执行者改成 `opencode`；不能回落到 `codex`，也不能改走 `delegate-coder`。\n\n委派格式：\n`RCCB_PROVIDER_ROLE=orchestrator RCCB_PROVIDER_AGENT=<delegate-agent> RCCB_ASK_ASYNC_STDOUT=minimal rccb --project-dir . ask --instance default --provider <执行者> --caller {orchestrator} --async --timeout-s <预算秒数> \"<任务>\"`\n\n派单成功后默认静默等待 RCCB_RESULT。\n前台最多确认一次“已委派，等待后台结果”；不要循环 `sleep`、`cat .rccb/tasks/<instance>/artifacts/<req_id>.reply.md`、`inbox`、`watch --follow` 自己轮询，也不要主动向用户提“继续等待 / 稍后查看”。\n最终结果以 `.rccb/tasks/<instance>/artifacts/<req_id>.reply.md` 为准，不要在项目根目录创建或读取 `.reply.md`。\n只有用户明确要求、ask 超时、或已经超过任务超时预算时，才允许主动查状态。\n如需安静查看最新状态，优先用 `rccb --project-dir . inbox --instance default --req-id <req_id> --latest --limit 5`。\n若 ask 超时，或 `inbox` 不足以判断真实状态，再用不跟随的一次性 `watch --req-id` 看真实状态，不要立刻重派。\n详细规则见 `AGENTS.md` 与 `CLAUDE.md`。"
+        "RCCB 编排模式已启用。\n\n当前编排者：{orchestrator}\n可用执行者：{executor_list}\n\n只做：规划、拆解、委派、验收、汇总。\n不要自己执行 bash、修改文件或运行测试。\n\n默认分工：opencode=编码，gemini=调研，droid=文档，codex=审计。\n优先级规则：用户/主编排者手动指定 > 当前任务明确约束 > 默认分工；默认分工优先级最低。\n调研规则：先 gemini 做详细、结构化调研，再安排复核执行者核验关键结论；若用户明确指定复核执行者，以明确指定为准。\n\n接到执行型任务时，第一步必须先选择对应的 `delegate-*` 子代理；绝对不要先尝试 `Bash(rccb ask ...)` 再回退。\n如果某次直派被 RCCB guard 拦下，说明编排行为违规；只能立即改回对应的 `delegate-*` 子代理，不得改用通用 Agent、WebSearch、Read file 或其他工具自己完成任务。\n任务类型由工作性质决定，不由执行者是谁决定：编码/修复/测试走 `delegate-coder`；调研走 `delegate-researcher`；文档走 `delegate-scribe`；审计/复核/评审/核验一律走 `delegate-auditor`。\n如果用户说“复审让 opencode 来做，不要找 codex”，这仍然是复核任务，必须走 `delegate-auditor`，再把执行者改成 `opencode`；不能回落到 `codex`，也不能改走 `delegate-coder`。\n\n委派格式：\n`RCCB_PROVIDER_ROLE=orchestrator RCCB_PROVIDER_AGENT=<delegate-agent> RCCB_ASK_ASYNC_STDOUT=minimal rccb --project-dir . ask --instance default --provider <执行者> --caller {orchestrator} --async --timeout-s <预算秒数> \"<任务>\"`\n\n派单成功后默认静默等待 RCCB_RESULT。\n前台最多确认一次“已委派，等待后台结果”；不要循环 `sleep`、`cat .rccb/tasks/<instance>/artifacts/<req_id>.reply.md`、`inbox`、`watch --follow` 自己轮询，也不要主动向用户提“继续等待 / 稍后查看”。\n调研、复核、长阅读任务默认需要更多耐心；只要没有新的实质结论、异常或超时，就不要再次发言，更不要为了显得在跟进而反复抛“是否继续等待 / 是否重试 / 是否改派”。\n最终结果以 `.rccb/tasks/<instance>/artifacts/<req_id>.reply.md` 为准，不要在项目根目录创建或读取 `.reply.md`。\n只有用户明确要求、ask 超时、或已经超过任务超时预算时，才允许主动查状态。\n如需安静查看最新状态，优先用 `rccb --project-dir . inbox --instance default --req-id <req_id> --latest --limit 5`。\n若 ask 超时，或 `inbox` 不足以判断真实状态，再用不跟随的一次性 `watch --req-id` 看真实状态，不要立刻重派。\n详细规则见 `AGENTS.md` 与 `CLAUDE.md`。"
         ),
     )
 }
@@ -8695,6 +8708,7 @@ mod tests {
         assert!(prompt.contains("复审让 opencode 来做，不要找 codex"));
         assert!(prompt.contains("默认静默等待 RCCB_RESULT"));
         assert!(prompt.contains("不要主动向用户提“继续等待 / 稍后查看”"));
+        assert!(prompt.contains("调研、复核、长阅读任务默认需要更多耐心"));
         assert!(prompt.contains("绝对不要先尝试 `Bash(rccb ask ...)`"));
         assert!(prompt.contains("RCCB_PROVIDER_AGENT=<delegate-agent>"));
     }

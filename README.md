@@ -214,6 +214,7 @@ rccb --project-dir . inbox --instance default --req-id <req_id> --kind result --
 ```
 
 - 编排者前台默认最多确认一次“已委派，等待后台结果”
+- 调研/复核类长任务默认更耐心：只要没有新的实质结论、异常或超时，编排者不应反复刷屏或频繁向用户抛选择题
 - 默认不要在编排者前台循环执行 `sleep`、`cat .rccb/tasks/<instance>/artifacts/<req_id>.reply.md`、`watch --follow`
 - 如需安静查看最新状态，优先使用 `inbox --latest`
 - 只有任务超时、异常或用户明确要求实时跟踪时，再使用一次性 `watch --req-id ... --with-provider-log --timeout-s 3 --pane-ui`
