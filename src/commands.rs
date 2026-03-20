@@ -2833,14 +2833,51 @@ fn maybe_prepare_tmux_mouse_support() {
 }
 
 fn ensure_tmux_mouse_support_runtime() -> Result<()> {
-    let args = [
-        "set-option".to_string(),
-        "-g".to_string(),
-        "mouse".to_string(),
-        "on".to_string(),
-    ];
-    let arg_refs = args.iter().map(|s| s.as_str()).collect::<Vec<_>>();
-    run_simple("tmux", &arg_refs)
+    run_simple("tmux", &["set-option", "-g", "mouse", "on"])
+        .context("执行 `tmux set-option -g mouse on` 失败")?;
+
+    let mut session_state = read_tmux_mouse_state(&["show-options", "-gv", "mouse"])
+        .context("回读 tmux session mouse 状态失败")?;
+    let mut window_state = read_tmux_mouse_state(&["show-window-options", "-gv", "mouse"])
+        .context("回读 tmux window mouse 状态失败")?;
+
+    if tmux_mouse_runtime_enabled(&session_state, &window_state) {
+        return Ok(());
+    }
+
+    run_simple("tmux", &["set-window-option", "-g", "mouse", "on"])
+        .context("执行 `tmux set-window-option -g mouse on` 失败")?;
+    session_state = read_tmux_mouse_state(&["show-options", "-gv", "mouse"])
+        .context("二次回读 tmux session mouse 状态失败")?;
+    window_state = read_tmux_mouse_state(&["show-window-options", "-gv", "mouse"])
+        .context("二次回读 tmux window mouse 状态失败")?;
+
+    if tmux_mouse_runtime_enabled(&session_state, &window_state) {
+        return Ok(());
+    }
+
+    bail!(
+        "tmux mouse 运行态启用后仍未生效：session=`{}` window=`{}`",
+        session_state,
+        window_state
+    );
+}
+
+fn read_tmux_mouse_state(args: &[&str]) -> Result<String> {
+    Ok(normalize_tmux_mouse_state(&run_capture(
+        "tmux",
+        args,
+        "读取 tmux mouse 状态失败",
+    )?))
+}
+
+fn normalize_tmux_mouse_state(raw: &str) -> String {
+    raw.trim().to_ascii_lowercase()
+}
+
+fn tmux_mouse_runtime_enabled(session_state: &str, window_state: &str) -> bool {
+    session_state.trim().eq_ignore_ascii_case("on")
+        || window_state.trim().eq_ignore_ascii_case("on")
 }
 
 fn run_interactive_layout(
@@ -8983,6 +9020,19 @@ mod tests {
         assert!(text.contains("status=exit status: 7"));
         assert!(text.contains("stdout=`noisy-out`"));
         assert!(text.contains("stderr=`pane-missing`"));
+    }
+
+    #[test]
+    fn normalize_tmux_mouse_state_trims_and_lowercases() {
+        assert_eq!(super::normalize_tmux_mouse_state(" On \n"), "on");
+    }
+
+    #[test]
+    fn tmux_mouse_runtime_enabled_accepts_session_or_window_on() {
+        assert!(super::tmux_mouse_runtime_enabled("on", "off"));
+        assert!(super::tmux_mouse_runtime_enabled("off", "on"));
+        assert!(super::tmux_mouse_runtime_enabled(" on ", "off"));
+        assert!(!super::tmux_mouse_runtime_enabled("off", "off"));
     }
 
     #[test]

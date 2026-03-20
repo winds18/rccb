@@ -67,12 +67,13 @@
 
 4. 首启与 pane 注入稳定
    - 目标：首次启动时编排提示注入稳定，不需要手动回车
-   - 当前状态：已改为“发送后确认，不成功补发 Enter”；tmux 场景已切到启动时直接对当前 tmux server 运行态开启 `mouse on`，待继续实测收口
+   - 当前状态：已改为“发送后确认，不成功补发 Enter”；tmux 场景已切到启动时直接对当前 tmux server 运行态开启 `mouse on`，并做 `show-options/show-window-options` 回读校验，待继续实测收口
    - 验收标准：
      - `tmux` 稳定
      - `wezterm` 稳定
      - 不重复注入整段提示
      - 通过 `tmux` 启动时，会自动为当前 tmux server 运行态执行 `set-option -g mouse on`
+     - 若首轮设置后仍未生效，会补做一次 window 级设置并给出明确错误
      - 不修改用户的 tmux 配置文件
 
 5. 执行结果默认静默回传
