@@ -2834,9 +2834,29 @@ fn maybe_prepare_tmux_mouse_support() {
 
 fn ensure_tmux_mouse_support() -> Result<()> {
     let config_path = resolve_tmux_config_path()?;
-    let _ = ensure_tmux_mouse_config_file(&config_path)?;
-    let _ = run_simple("tmux", &["set-option", "-g", "mouse", "on"]);
+    let changed = ensure_tmux_mouse_config_file(&config_path)?;
+    for args in tmux_mouse_runtime_actions(&config_path, changed) {
+        let arg_refs = args.iter().map(|s| s.as_str()).collect::<Vec<_>>();
+        let _ = run_simple("tmux", &arg_refs);
+    }
     Ok(())
+}
+
+fn tmux_mouse_runtime_actions(config_path: &Path, changed: bool) -> Vec<Vec<String>> {
+    let mut actions = Vec::new();
+    if changed {
+        actions.push(vec![
+            "source-file".to_string(),
+            config_path.display().to_string(),
+        ]);
+    }
+    actions.push(vec![
+        "set-option".to_string(),
+        "-g".to_string(),
+        "mouse".to_string(),
+        "on".to_string(),
+    ]);
+    actions
 }
 
 fn resolve_tmux_config_path() -> Result<PathBuf> {
@@ -9229,6 +9249,23 @@ mod tests {
             unsafe { std::env::remove_var("RCCB_TMUX_CONFIG_PATH") };
         }
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn tmux_mouse_runtime_actions_include_source_file_when_changed() {
+        let path = Path::new("/tmp/tmux.conf");
+        let actions = super::tmux_mouse_runtime_actions(path, true);
+        assert_eq!(actions.len(), 2);
+        assert_eq!(actions[0], vec!["source-file", "/tmp/tmux.conf"]);
+        assert_eq!(actions[1], vec!["set-option", "-g", "mouse", "on"]);
+    }
+
+    #[test]
+    fn tmux_mouse_runtime_actions_skip_source_file_when_unchanged() {
+        let path = Path::new("/tmp/tmux.conf");
+        let actions = super::tmux_mouse_runtime_actions(path, false);
+        assert_eq!(actions.len(), 1);
+        assert_eq!(actions[0], vec!["set-option", "-g", "mouse", "on"]);
     }
 
     #[test]
