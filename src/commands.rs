@@ -1074,7 +1074,8 @@ fn build_rule_file_specs(
 任务内容：$ARGUMENTS\n\n\
 请执行：\n\
 `rccb --project-dir . ask --instance default --provider opencode --caller claude \"$ARGUMENTS\"`\n\n\
-如果任务依赖外部事实，请先改用 `rccb-research`。",
+如果任务只是补充少量外部事实、天气、时间、简单状态等轻量查询，可以直接在当前任务中完成，不必强制改走多阶段链路。\n\
+只有当任务明确要求复杂联网调研或多阶段核验时，才改用 `rccb-research`。",
             ),
             kind: RuleFileKind::PlainMarkdown,
         });
@@ -1084,11 +1085,9 @@ fn build_rule_file_specs(
                 .join("commands")
                 .join("rccb-research.md"),
             contents: build_opencode_command_markdown(
-                "先让 gemini 调研，再让 codex 复核",
-                "当任务涉及联网调研、网页资料、版本差异或事实核验时：\n\
-1. 先委派给 `gemini` 做详细、结构化调研，优先官方/一手来源并给出清晰推导。\n\
-2. 再把关键结论委派给 `codex` 复核。\n\
-3. 复核完成前，不要把调研结论当作最终依据。\n\n\
+                "复杂调研任务可委派给专门调研者",
+                "只有当你承担编排工作，且任务明确要求复杂联网调研、网页资料核验、版本差异分析或多阶段事实验证时，才使用这条命令。\n\
+如果你已经被明确指派为当前任务的最终执行者，默认直接完成，不要把轻量查询自动升级成 `gemini -> codex` 链路。\n\n\
 任务内容：$ARGUMENTS",
             ),
             kind: RuleFileKind::PlainMarkdown,
@@ -1103,8 +1102,8 @@ fn build_rule_file_specs(
                 "默认编码者。优先承担实现、修复、重构、测试与联调。",
                 &[
                     "优先处理代码实现、缺陷修复、测试执行和工程联调。",
-                    "不要把自己当作编排者；如果需要其他执行者配合，应通过 RCCB 委派。",
-                    "如果任务依赖外部事实或资料，提醒编排者先走 gemini 调研和 codex 复核链路。",
+                    "默认直接完成被派到的任务，不要把自己当作编排者；只有任务文本显式要求再委派时，才通过 RCCB 委派其他执行者。",
+                    "对天气、时间、简单状态等轻量单次查询，直接完成，不要自动升级成 gemini/codex 多阶段链路。",
                 ],
             ),
             kind: RuleFileKind::PlainMarkdown,
@@ -1120,6 +1119,7 @@ fn build_rule_file_specs(
                 &[
                     "优先检查代码风险、边界条件、回归点和缺失测试。",
                     "对于 gemini 返回的调研结果，重点复核事实冲突、过期信息、落地风险和遗漏约束。",
+                    "如果你被明确指定为复核执行者，就直接完成复核；不要因为默认分工而把任务再转回其他执行者。",
                     "输出优先给出结论、风险等级和需要补充验证的点。",
                 ],
             ),
@@ -1143,10 +1143,11 @@ fn build_rule_file_specs(
                     "如果某次直派被 RCCB guard 拦下，那说明主编排动作违规；只能立即改回对应的 `delegate-*` 子代理，不得改用通用 Agent、WebSearch、Read file 或其他工具自己完成任务。",
                     "任务类型由工作性质决定，不由执行者是谁决定：编码/修复/测试走 `delegate-coder`；调研走 `delegate-researcher`；文档走 `delegate-scribe`；审计/复核/评审/核验一律走 `delegate-auditor`。",
                     "如果用户说“复审让 opencode 来做，不要找 codex”，这仍然是复核任务，必须走 `delegate-auditor`，再把执行者改成 `opencode`；不能回落到 `codex`，也不能改走 `delegate-coder`。",
+                    "如果用户手动指定了某类任务的执行者（例如“调研让 opencode 做”“审计让 droid 做”），该指定优先级高于默认分工；不要先按默认人选派单，再事后纠正。",
                     "当用户手动指定复核执行者时，传给 `delegate-auditor` 的任务首部必须显式写出 `复核执行者：<provider>`；若用户明确说“不要找 codex”，还必须追加 `禁止执行者：codex`。",
                     "默认分工：实现优先派给 opencode，调研优先派给 gemini，文档优先派给 droid，审计优先派给 codex。",
                     "执行者优先级固定为：用户/主编排者手动指定 > 当前任务明确约束 > 默认分工；默认分工优先级最低。",
-                    "涉及外部事实时，先让 gemini 做详细、结构化调研，再安排复核执行者核验关键结论；若用户明确指定复核执行者，以明确指定为准。",
+                    "对复杂外部事实任务，先让 gemini 做详细、结构化调研，再安排复核执行者核验关键结论；若用户明确指定执行者，以明确指定为准。对天气、时间、简单状态这类轻量单次查询，不要默认升级成多阶段链路。",
                     "派单成功后默认静默等待 RCCB_RESULT，不要主动轮询状态，也不要主动问用户“是否继续等待”。",
                 ],
             ),
@@ -1178,16 +1179,7 @@ fn build_rule_file_specs(
                     .join(".claude")
                     .join("agents")
                     .join("delegate-researcher.md"),
-                contents: build_claude_delegate_agent_markdown(
-                    "delegate-researcher",
-                    "把联网调研、事实核验和资料搜集任务委派给 gemini，并等待真实终态后返回给主编排者。",
-                    "gemini",
-                    "要明确要求调研详细、逻辑清晰，优先官方/一手来源，并显式标注日期、来源线索、推导过程和冲突点。",
-                    true,
-                    &[
-                        "## 附加约束\n- 你自己绝对不要执行 `WebSearch`、`WebFetch` 或任何网页读取工具去亲自完成调研。\n- 调研结果不能直接视为最终结论；如果项目启用了 codex，要提醒主编排者继续派给 `delegate-auditor` 做复核。",
-                    ],
-                ),
+                contents: build_claude_delegate_research_agent_markdown(providers),
                 kind: RuleFileKind::PlainMarkdown,
             });
         }
@@ -1268,15 +1260,17 @@ fn build_rule_file_specs(
                 .join("commands")
                 .join("rccb-research.md"),
             contents: build_claude_command_markdown(
-                "委派调研任务给 gemini，并安排复核执行者核验关键结论",
-                &format!("使用 RCCB 先把调研任务委派给 `gemini`，要求它做详细、结构化、有逻辑的调研，优先官方/一手来源，并明确标注日期、推导过程与冲突点。\n\
+                "委派调研任务给调研执行者，并按需安排复核",
+                &format!("使用 RCCB 把调研任务委派给调研执行者，默认优先 `gemini`；如果用户或主编排者明确指定改由 `opencode` 等其他执行者承担调研，必须服从明确指定。\n\
 任务内容：$ARGUMENTS\n\n\
-在 gemini 返回后，不要直接采纳结论；继续把关键结论、风险点和冲突信息委派给复核执行者做核验。\n\
+如果这是复杂外部事实、网页资料、版本差异或会影响实现/结论的调研任务，要求调研执行者做详细、结构化、有逻辑的调研，优先官方/一手来源，并明确标注日期、推导过程与冲突点。\n\
+如果这是一次性、低风险、单事实查询（如天气、时间、简单状态），且用户已明确指定执行者，可以只派一段直接查询任务，不强制升级成复核链路。\n\
+对复杂调研结果，不要直接采纳；继续把关键结论、风险点和冲突信息委派给复核执行者做核验。\n\
 默认复核执行者是 `codex`，但如果用户或主编排者明确指定改由 `opencode` 等其他执行者复核，必须服从明确指定。\n\
 如果用户明确说“复审让 opencode 来做”“不要找 codex”，那后续复核必须交给 `delegate-auditor`，并由 auditor 把执行者选成 `opencode`；不要把任务改判成编码链路。\n\
-整个过程中必须通过 `delegate-researcher` 子代理派单并等待 gemini 真实终态，主编排者不要直接下场执行。\n\n\
+整个过程中必须通过 `delegate-researcher` 子代理派单并等待真实终态，主编排者不要直接下场执行。\n\n\
 推荐派单：\n\
-`{} ask --instance default --provider gemini --caller claude --async --await-terminal --timeout-s 900 \"$ARGUMENTS\"`\n\n\
+`{} ask --instance default --provider <gemini|opencode|用户明确指定执行者> --caller claude --async --await-terminal --timeout-s 900 \"$ARGUMENTS\"`\n\n\
 只有真正拿到 RCCB 输出中的 `req_id=<数字或请求ID>`，才算派单成功。\n\
 绝对不要把 Claude Bash 工具自己的后台任务 ID（如 `bg...`、`bu...`、`task ...`）当成 RCCB 的 `req_id`。\n\
 如果没拿到真正的 `req_id`，应直接说明“本次派单不可追踪，需重新派单”，不要继续用错误 ID 查 `inbox/watch`。\n\n\
@@ -1348,7 +1342,8 @@ fn build_rule_file_specs(
             contents: build_factory_command_markdown(
                 "委派编码任务给 opencode",
                 "当任务需要改代码、修复实现、运行测试或联调时，优先通过 RCCB 把任务委派给 `opencode`。\n\
-任务内容：$ARGUMENTS",
+任务内容：$ARGUMENTS\n\n\
+如果只是轻量单次查询或一次性补充事实，不要自动升级成多阶段调研链路。",
             ),
             kind: RuleFileKind::PlainMarkdown,
         });
@@ -1358,8 +1353,9 @@ fn build_rule_file_specs(
                 .join("commands")
                 .join("rccb-research.md"),
             contents: build_factory_command_markdown(
-                "先让 gemini 调研，再让 codex 复核",
-                "当任务涉及联网调研、网页资料、版本差异或事实核验时，先把任务委派给 `gemini` 做详细、结构化调研，再委派给 `codex` 复核关键结论。\n\
+                "复杂调研任务可委派给专门调研者",
+                "只有当你承担编排工作，且任务明确要求复杂联网调研、网页资料、版本差异或多阶段事实核验时，才把任务委派给专门调研者。\n\
+如果你已经被明确指派为当前任务执行者，就默认直接完成，不要把轻量查询自动升级成多阶段链路。\n\
 任务内容：$ARGUMENTS",
             ),
             kind: RuleFileKind::PlainMarkdown,
@@ -1391,7 +1387,7 @@ fn build_rule_file_specs(
                 &[
                     "调研时优先官方/一手来源，并把关键结论、日期、风险、限制条件与推导过程写清楚。",
                     "遇到冲突信息时必须明确写出冲突点，不要自行抹平。",
-                    "输出要便于后续由 codex 进行复核。",
+                    "如果你被明确指定来做调研，就直接完成调研；只有任务文本显式要求多阶段验证时，才提醒上游继续派复核。",
                 ],
             ),
             kind: RuleFileKind::PlainMarkdown,
@@ -1406,8 +1402,8 @@ fn build_rule_file_specs(
                 "默认文档记录者，优先承担文档整理、纪要、操作手册和复盘归档。",
                 &[
                     "优先输出结构清晰、可审阅、可追溯的文档。",
-                    "如果文档结论依赖外部事实，应提醒编排者先完成 gemini 调研和 codex 复核。",
-                    "不要把自己当作编排者或代码审计者。",
+                    "如果你被明确指定承担文档或审计职责，就直接完成当前任务，不要因为默认分工再把任务改判回其他执行者。",
+                    "不要把自己当作编排者或代码审计者，除非任务文本显式要求你继续派单。",
                 ],
             ),
             kind: RuleFileKind::PlainMarkdown,
@@ -1418,22 +1414,28 @@ fn build_rule_file_specs(
 }
 
 fn ensure_managed_markdown_file(path: &Path, managed: &str, mode: BootstrapMode) -> Result<bool> {
-    if path.exists() && matches!(mode, BootstrapMode::MissingOnly) {
-        return Ok(false);
-    }
-
     let mut user_block = String::new();
+    let mut existing = None;
     if path.exists() {
-        let existing = fs::read_to_string(path)
+        let raw = fs::read_to_string(path)
             .with_context(|| format!("读取规则文件失败：{}", path.display()))?;
-        if let Some(block) = extract_between_markers(&existing, RCCB_USER_BEGIN, RCCB_USER_END) {
+        if matches!(mode, BootstrapMode::MissingOnly)
+            && (!raw.contains(RCCB_MANAGED_BEGIN) || !raw.contains(RCCB_MANAGED_END))
+        {
+            return Ok(false);
+        }
+        if let Some(block) = extract_between_markers(&raw, RCCB_USER_BEGIN, RCCB_USER_END) {
             user_block = block.trim().to_string();
         }
+        existing = Some(raw);
     }
 
     let next = format!(
         "{RCCB_MANAGED_BEGIN}\n{managed}\n{RCCB_MANAGED_END}\n\n{RCCB_USER_BEGIN}\n{user_block}\n{RCCB_USER_END}\n"
     );
+    if existing.as_deref() == Some(next.as_str()) {
+        return Ok(false);
+    }
     write_rule_file(path, &next)?;
     Ok(true)
 }
@@ -1491,6 +1493,7 @@ fn should_refresh_legacy_plain_rule(path: &Path, existing: &str) -> bool {
             || !normalized.contains("./.rccb/bin/rccb-delegate-researcher")
             || !normalized.contains("--await-terminal")
             || !normalized.contains("调研类任务天然更慢")
+            || !normalized.contains("低风险、单事实查询")
             || normalized.contains("至少两轮调研")
             || normalized.contains("先让 gemini 调研，再让 codex 复核"))
     {
@@ -1525,10 +1528,11 @@ fn should_refresh_legacy_plain_rule(path: &Path, existing: &str) -> bool {
 
     if path_str.ends_with(".claude/agents/delegate-researcher.md")
         && (!normalized.contains("阻塞等待该 `req_id` 进入真实终态")
+            || !normalized.contains("调研执行者：<provider>")
             || !normalized.contains("tools: ['Bash']")
             || !normalized.contains("./.rccb/bin/rccb-delegate-researcher")
             || !normalized.contains("--await-terminal")
-            || !normalized.contains("不要为了显得积极而反复发言或重复追问用户"))
+            || !normalized.contains("低风险、单事实查询"))
     {
         return true;
     }
@@ -1553,6 +1557,47 @@ fn should_refresh_legacy_plain_rule(path: &Path, existing: &str) -> bool {
         && (!normalized.contains("./.rccb/bin/rccb-delegate-scribe")
             || !normalized.contains("--await-terminal")
             || !normalized.contains("等待到任务进入真实终态"))
+    {
+        return true;
+    }
+
+    if path_str.ends_with(".opencode/commands/rccb-research.md")
+        && (!normalized.contains("复杂调研任务可委派给专门调研者")
+            || !normalized.contains("默认直接完成")
+            || normalized.contains("先让 gemini 调研，再让 codex 复核"))
+    {
+        return true;
+    }
+
+    if path_str.ends_with(".opencode/agents/coder.md")
+        && (!normalized.contains("默认直接完成被派到的任务")
+            || !normalized.contains("轻量单次查询"))
+    {
+        return true;
+    }
+
+    if path_str.ends_with(".opencode/agents/auditor.md")
+        && !normalized.contains("如果你被明确指定为复核执行者")
+    {
+        return true;
+    }
+
+    if path_str.ends_with(".factory/commands/rccb-research.md")
+        && (!normalized.contains("复杂调研任务可委派给专门调研者")
+            || !normalized.contains("默认直接完成")
+            || normalized.contains("先让 gemini 调研，再让 codex 复核"))
+    {
+        return true;
+    }
+
+    if path_str.ends_with(".factory/droids/researcher.md")
+        && !normalized.contains("如果你被明确指定来做调研")
+    {
+        return true;
+    }
+
+    if path_str.ends_with(".factory/droids/scribe.md")
+        && !normalized.contains("如果你被明确指定承担文档或审计职责")
     {
         return true;
     }
@@ -1600,12 +1645,14 @@ fn build_agents_rules_markdown(providers: &[String]) -> String {
     }
     let mut research_lines = Vec::new();
     if contains_provider(providers, "gemini") {
-        research_lines.push("- 只要任务涉及外部事实、时间敏感信息、网页资料、版本差异或供应商能力判断，优先先派给 `gemini`。");
+        research_lines.push("- 以下调研链路默认只约束主编排者，不自动约束已被明确指派的执行者。");
+        research_lines.push("- 对复杂外部事实、时间敏感信息、网页资料、版本差异或供应商能力判断，主编排者优先先派给 `gemini`。");
         research_lines.push("- `gemini` 的调研要详细、结构化、有逻辑，优先官方/一手来源，并显式写出日期、关键依据、推导过程和冲突点。");
+        research_lines.push("- 对一次性、低风险、单事实查询（如天气、时间、简单状态/价格），如果用户已明确指定执行者，可直接派给该执行者一次完成，不强制升级成多阶段链路。");
     }
     if contains_provider(providers, "codex") && contains_provider(providers, "gemini") {
         research_lines
-            .push("- 任何会影响实现、设计决策或最终结论的调研结果，都必须再派给 `codex` 做复核。");
+            .push("- 任何会影响实现、设计决策或最终结论的复杂调研结果，都应再派给 `codex` 做复核；若用户明确指定其他复核执行者，以明确指定为准。");
         research_lines
             .push("- `codex` 复核时重点关注：事实冲突、过期信息、落地风险、边界条件、遗漏约束。");
     }
@@ -1620,6 +1667,11 @@ fn build_agents_rules_markdown(providers: &[String]) -> String {
 - 主编排者必须调用对应委派子代理派单，不要直接下场执行执行者任务。\n\
 - 所有执行任务统一通过 `rccb --project-dir . ask --instance default --provider <执行者> --caller <编排者> \"<任务>\"` 下发。\n\
 - 选择执行者时优先匹配其默认职责；只有确有必要时才跨职责派单。\n\n\
+## 执行者原则\n\
+- 执行者一旦被明确派到某个任务，默认直接执行，不要把共享项目规则误读成“自己还要继续做编排者”。\n\
+- 只有任务文本显式要求“继续委派 / 多阶段验证 / 继续复核”，或上游明确让你负责编排下游时，执行者才允许再通过 RCCB 委派其他执行者。\n\
+- 对一次性、低风险、单事实查询（如天气、时间、简单状态），执行者直接完成即可，不要自行升级成 `gemini -> codex` 或类似多阶段链路。\n\
+- 用户或主编排者的手动指定优先级最高；如果明确指定“调研让 opencode 做”“审计让 droid 做”，就必须服从明确指定。\n\n\
 ## 调研核验链路\n\
 {}\n\n\
 ## 实时状态与结果\n\
@@ -1689,9 +1741,9 @@ fn build_claude_core_rule_markdown(providers: &[String]) -> String {
     let research_rules = if contains_provider(providers, "gemini")
         && contains_provider(providers, "codex")
     {
-        "- 涉及外部事实时，先委派 `gemini` 做详细、结构化调研，优先一手来源并写清推导过程。\n- `gemini` 返回后，不要直接采纳；继续委派复核执行者核验关键结论、日期、风险和边界条件。默认使用 `codex`，但若用户明确指定其他执行者复核，以明确指定为准。\n- 人工指定的复核执行者优先级高于默认分工。例如：用户说“复审让 opencode 来做，不要找 codex”，就必须继续走复核链路并把执行者定为 `opencode`，不能回落到 `codex`，也不能把任务误判成编码链路。\n- 没有完成复核时，不要把调研结果当成最终依据。".to_string()
+        "- 对复杂外部事实、网页资料、版本差异和会影响实现/结论的调研任务，先委派 `gemini` 做详细、结构化调研，优先一手来源并写清推导过程。\n- `gemini` 返回后，不要直接采纳；继续委派复核执行者核验关键结论、日期、风险和边界条件。默认使用 `codex`，但若用户明确指定其他执行者复核，以明确指定为准。\n- 对一次性、低风险、单事实查询（如天气、时间、简单状态），如果用户已经明确指定执行者，可直接派给该执行者处理，不强制走完整调研+复核链路。\n- 人工指定的复核执行者优先级高于默认分工。例如：用户说“复审让 opencode 来做，不要找 codex”，就必须继续走复核链路并把执行者定为 `opencode`，不能回落到 `codex`，也不能把任务误判成编码链路。\n- 没有完成复核时，不要把复杂调研结果当成最终依据。".to_string()
     } else if contains_provider(providers, "gemini") {
-        "- 涉及外部事实时，先委派 `gemini` 做详细、结构化调研，优先一手来源并写清推导过程。\n- 当前未启用 `codex`，采纳调研结论前请额外人工复核关键事实。".to_string()
+        "- 对复杂外部事实任务，先委派 `gemini` 做详细、结构化调研，优先一手来源并写清推导过程。\n- 对一次性、低风险、单事实查询，如果用户已经明确指定其他执行者，可直接派给该执行者处理。\n- 当前未启用 `codex`，采纳复杂调研结论前请额外人工复核关键事实。".to_string()
     } else {
         "- 当前未启用专门调研执行者；若任务依赖外部事实，请谨慎处理并优先补充调研 provider。"
             .to_string()
@@ -1851,6 +1903,8 @@ fn build_gemini_rules_markdown(providers: &[String]) -> String {
 ## 边界\n\
 - 除非任务明确要求，否则不要把自己当成最终代码审计者。\n\
 - 除非任务明确要求，否则不要承担文档归档者职责。\n\
+- 如果你已经被明确指派为当前任务执行者，就直接完成当前调研；不要因为共享项目规则就自动再委派其他执行者。\n\
+- 对天气、时间、简单状态等轻量单次查询，直接完成即可，不要升级成多阶段链路。\n\
 {}\n\n\
 ## RCCB 交互\n\
 - 你通常通过 RCCB 收到任务，回复内容应尽量结构化，便于编排者继续派单。\n\
@@ -1885,9 +1939,9 @@ fn build_agents_delegate_skill_markdown(providers: &[String]) -> String {
     let research_chain = if contains_provider(providers, "gemini")
         && contains_provider(providers, "codex")
     {
-        "- 如果任务涉及外部事实或网页资料，先委派 `gemini` 做详细、结构化调研。\n- `gemini` 返回后，再委派 `codex` 复核关键结论、日期、风险和遗漏项。".to_string()
+        "- 这条调研链路默认只给主编排者使用：复杂外部事实任务先委派 `gemini` 做详细、结构化调研，再委派复核执行者核验关键结论、日期、风险和遗漏项。\n- 如果你已经被明确指派为当前任务执行者，默认直接完成；只有任务文本显式要求多阶段验证时，才继续派单。".to_string()
     } else if contains_provider(providers, "gemini") {
-        "- 如果任务涉及外部事实或网页资料，先委派 `gemini` 做详细、结构化调研。".to_string()
+        "- 复杂外部事实任务可先委派 `gemini` 做详细、结构化调研；但如果你已经被明确指派为当前任务执行者，默认直接完成。".to_string()
     } else {
         "- 当前 provider 集合未启用专门调研链路。".to_string()
     };
@@ -1995,9 +2049,9 @@ fn build_opencode_delegate_skill_markdown(providers: &[String]) -> String {
     let research_rules = if contains_provider(providers, "gemini")
         && contains_provider(providers, "codex")
     {
-        "- 涉及外部事实时，先让 `gemini` 做详细、结构化调研。\n- `gemini` 返回后，再让 `codex` 复核关键结论、日期、风险和边界条件。".to_string()
+        "- 对复杂外部事实任务，主编排者可先让 `gemini` 做详细、结构化调研，再让复核执行者核验关键结论、日期、风险和边界条件。\n- 如果你已经被明确指派为当前任务执行者，默认直接完成；不要把轻量查询自动回退给 `gemini` / `codex`。".to_string()
     } else if contains_provider(providers, "gemini") {
-        "- 涉及外部事实时，先让 `gemini` 做详细、结构化调研。".to_string()
+        "- 复杂外部事实任务可先让 `gemini` 做详细、结构化调研；如果你已经被明确指派为当前任务执行者，默认直接完成。".to_string()
     } else {
         "- 当前 provider 集合未启用专门调研执行者。".to_string()
     };
@@ -2047,9 +2101,9 @@ fn build_factory_delegate_skill_markdown(providers: &[String]) -> String {
     let research_chain = if contains_provider(providers, "gemini")
         && contains_provider(providers, "codex")
     {
-        "1. 先派 `gemini` 做详细、结构化调研。\n2. 再派 `codex` 复核关键结论、日期、风险和边界条件。\n3. 没有经过 `codex` 复核时，不要把调研结论当最终依据。".to_string()
+        "1. 对复杂外部事实任务，主编排者可先派 `gemini` 做详细、结构化调研。\n2. 再派复核执行者核验关键结论、日期、风险和边界条件。\n3. 如果你已经被明确指派为当前任务执行者，默认直接完成，不要把轻量查询自动升级成完整调研链。".to_string()
     } else if contains_provider(providers, "gemini") {
-        "1. 先派 `gemini` 做详细、结构化调研。\n2. 当前未启用 `codex`，采纳前请人工复核关键事实。"
+        "1. 对复杂外部事实任务，可先派 `gemini` 做详细、结构化调研。\n2. 如果你已经被明确指派为当前任务执行者，默认直接完成。\n3. 当前未启用 `codex`，采纳复杂调研结论前请人工复核关键事实。"
             .to_string()
     } else {
         "1. 当前 provider 集合未启用专门调研链路，请按需补充。".to_string()
@@ -2217,6 +2271,68 @@ fn build_claude_delegate_agent_markdown(
     }
     format!(
         "---\nname: {name}\ndescription: {summary}\ntools: ['Bash']\n---\n\n{}",
+        sections.join("\n")
+    )
+}
+
+fn build_claude_delegate_research_agent_markdown(providers: &[String]) -> String {
+    let has_codex = contains_provider(providers, "codex");
+    let verify_rule = if has_codex {
+        "- 如果这是复杂外部事实、网页资料、版本差异或会影响实现/结论的调研结果，要提醒主编排者继续派给 `delegate-auditor` 做复核。"
+    } else {
+        "- 当前未启用 `codex`；对复杂调研结果要更明确区分“已确认 / 待确认 / 风险项”。"
+    };
+    let sections = vec![
+        "# 调研者\n".to_string(),
+        "把联网调研、事实核验和资料搜集任务委派给调研执行者，并阻塞等待真实终态后再返回给主编排者。\n".to_string(),
+        "## 硬约束\n\
+- 你是 Claude 编排者的专用委派子代理，不是最终执行者。\n\
+- 你唯一的任务是：整理任务 -> 判断调研执行者 -> 通过 RCCB 把任务派给该执行者 -> 阻塞等待该 `req_id` 进入真实终态 -> 返回真实 `req_id` 与终态结果。\n\
+- 默认调研执行者是 `gemini`；如果用户或主编排者明确指定改用其他执行者（例如 `opencode`）承担调研，必须服从明确指定，不要继续默认 `gemini`。\n\
+- 判断执行者时，先看结构化强标记：`调研执行者：<provider>` 与 `禁止执行者：<provider>`；这两个标记优先级高于默认分工。\n\
+- 只要输入里出现“调研让 opencode 做”“改由 <provider> 调研”“不要找 gemini”“不用 gemini”等明确指令，最终 `--provider` 就必须服从该约束。\n\
+- 对一次性、低风险、单事实查询（如天气、时间、简单状态），如果用户已明确指定执行者，就直接把任务派给该执行者一次完成；不要自动升级成完整调研+复核链路。\n\
+- 严禁自己使用 `WebSearch`、`WebFetch`、`Read file`、`Grep`、`Glob`、普通 `Bash` 或任何其他工具去亲自完成调研。\n\
+- 唯一允许的执行动作，是运行一条以项目级 `./.rccb/bin/rccb-delegate-researcher` wrapper 为入口的 `ask --async --await-terminal` 派单命令。\n\
+- 除 delegate wrapper / `rccb` 相关命令外，其他任何 shell 指令一律禁止。\n\
+- 不要为了“确认环境变量”再执行 `env`、`printenv`、`set`、`grep -i rccb` 之类的 shell 检查；delegate wrapper 已经注入所需的 RCCB 环境变量，直接按模板派单即可。\n\
+- 派单后要继续等待到任务进入真实终态，再把 `provider=<provider>`、`req_id=<req_id>`、`status=<terminal_status>` 与结果要点返回给主编排者。\n\
+- 在等待期间保持安静；不要自行再跑 `inbox`、`watch`、`sleep`、`cat`、`Read file` 或任何二次轮询。\n"
+            .to_string(),
+        "## 执行者选择规则\n\
+- 默认使用：`gemini`\n\
+- 若任务中存在 `调研执行者：<provider>`，直接使用该 provider。\n\
+- 若任务中存在 `禁止执行者：<provider>`，最终执行者不得为该 provider。\n\
+- 若用户明确指定了调研执行者，以明确指定为准；默认分工优先级最低。\n"
+            .to_string(),
+        "## 标准派单命令\n\
+```bash\n\
+./.rccb/bin/rccb-delegate-researcher ask --instance default --provider <gemini|opencode|其他明确指定执行者> --caller claude --async --await-terminal --timeout-s 900 \"<任务>\"\n\
+```\n"
+            .to_string(),
+        "## 返回格式\n\
+- 必须返回：`provider=<实际执行者>`、`req_id=<req_id>`、`status=<completed|failed|timeout|incomplete|canceled>`\n\
+- 只有真正拿到 RCCB 输出里的 `req_id=<数字或请求ID>`，才算派单成功。\n\
+- 绝对不要把 Claude Bash 工具自己的后台任务 ID（如 `bg...`、`bu...`、`task ...`）当成 RCCB 的 `req_id`。\n\
+- 如果没拿到真正的 `req_id`，直接说明“本次派单不可追踪，需重新派单”。\n\
+- 默认不要主动回贴 `watch` 命令；只有用户明确要求查看状态，或任务超时/异常时再给出。\n\
+- 默认不要反复播报“仍在等待”或“我再检查一下”；没有新的终态结果前保持安静。\n\
+- 默认不要主动向用户提“继续等待 / 稍后查看”；静默等待就是默认动作。\n\
+- 提交后，禁止自己再执行 `Read file`、`Bash sleep`、`cat .rccb/tasks/<instance>/artifacts/<req_id>.reply.md`、`watch --follow` 等主动轮询动作。\n"
+            .to_string(),
+        "## 任务整理要求\n\
+- 先把需求整理成适合调研执行者执行的清晰中文任务。\n\
+- 如果用户或主编排者明确指定了调研执行者，整理任务时必须把这条要求放在首部，例如：`调研执行者：opencode`。\n\
+- 对复杂调研任务，要明确要求输出详细、逻辑清晰，优先官方/一手来源，并显式标注日期、来源线索、推导过程和冲突点。\n\
+- 中间派单默认只传增量上下文，不要把整段历史对话原样转发给执行者。\n"
+            .to_string(),
+        format!(
+            "## 附加约束\n{}\n- 调研执行者已经被明确指派后，不要再替它继续编排下游链路；你的职责只是准确派单并等待真实终态。",
+            verify_rule
+        ),
+    ];
+    format!(
+        "---\nname: delegate-researcher\ndescription: 把联网调研、事实核验和资料搜集任务委派给调研执行者（默认 gemini，可按用户明确指定改派），并等待真实终态后返回给主编排者。\ntools: ['Bash']\n---\n\n{}",
         sections.join("\n")
     )
 }
@@ -3092,6 +3208,7 @@ fn ensure_tmux_mouse_support_runtime() -> Result<()> {
         .context("二次回读 tmux window mouse 状态失败")?;
 
     if tmux_mouse_runtime_enabled(&session_state, &window_state) {
+        ensure_tmux_clipboard_runtime()?;
         return Ok(());
     }
 
@@ -3099,6 +3216,35 @@ fn ensure_tmux_mouse_support_runtime() -> Result<()> {
         "tmux mouse 运行态启用后仍未生效：session=`{}` window=`{}`",
         session_state,
         window_state
+    );
+}
+
+fn ensure_tmux_clipboard_runtime() -> Result<()> {
+    let desired = env::var("RCCB_TMUX_SET_CLIPBOARD")
+        .ok()
+        .map(|v| v.trim().to_ascii_lowercase())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| "external".to_string());
+    if desired == "keep" || desired == "inherit" {
+        return Ok(());
+    }
+
+    run_simple("tmux", &["set-option", "-g", "set-clipboard", &desired])
+        .with_context(|| format!("执行 `tmux set-option -g set-clipboard {}` 失败", desired))?;
+    let actual = run_capture(
+        "tmux",
+        &["show-options", "-gv", "set-clipboard"],
+        "读取 tmux set-clipboard 状态失败",
+    )?;
+    let normalized = actual.trim().to_ascii_lowercase();
+    if normalized == desired {
+        return Ok(());
+    }
+
+    bail!(
+        "tmux set-clipboard 运行态设置未生效：expected=`{}` actual=`{}`",
+        desired,
+        actual.trim()
     );
 }
 
@@ -3736,7 +3882,7 @@ fn orchestrator_guardrail_prompt(
     render_project_bootstrap_content(
         project_dir,
         &format!(
-        "RCCB 编排模式已启用。\n\n当前编排者：{orchestrator}\n可用执行者：{executor_list}\n\n只做：规划、拆解、委派、验收、汇总。\n不要自己执行 bash、修改文件或运行测试。\n\n默认分工：opencode=编码，gemini=调研，droid=文档，codex=审计。\n优先级规则：用户/主编排者手动指定 > 当前任务明确约束 > 默认分工；默认分工优先级最低。\n调研规则：先 gemini 做详细、结构化调研，再安排复核执行者核验关键结论；若用户明确指定复核执行者，以明确指定为准。\n\n接到执行型任务时，第一步必须先选择对应的 `delegate-*` 子代理；绝对不要先尝试 `Bash(rccb ask ...)` 再回退。\n如果某次直派被 RCCB guard 拦下，说明编排行为违规；只能立即改回对应的 `delegate-*` 子代理，不得改用通用 Agent、WebSearch、Read file 或其他工具自己完成任务。\n任务类型由工作性质决定，不由执行者是谁决定：编码/修复/测试走 `delegate-coder`；调研走 `delegate-researcher`；文档走 `delegate-scribe`；审计/复核/评审/核验一律走 `delegate-auditor`。\n如果用户说“复审让 opencode 来做，不要找 codex”，这仍然是复核任务，必须走 `delegate-auditor`，再把执行者改成 `opencode`；不能回落到 `codex`，也不能改走 `delegate-coder`。\n\n委派格式：\n- 编码链路：`./.rccb/bin/rccb-delegate-coder ask --instance default --provider <执行者> --caller {orchestrator} --async --timeout-s <预算秒数> \"<任务>\"`\n- 调研链路：`./.rccb/bin/rccb-delegate-researcher ask --instance default --provider <执行者> --caller {orchestrator} --async --await-terminal --timeout-s <预算秒数> \"<任务>\"`\n- 复核链路：`./.rccb/bin/rccb-delegate-auditor ask --instance default --provider <执行者> --caller {orchestrator} --async --await-terminal --timeout-s <预算秒数> \"<任务>\"`\n- 文档链路：`./.rccb/bin/rccb-delegate-scribe ask --instance default --provider <执行者> --caller {orchestrator} --async --await-terminal --timeout-s <预算秒数> \"<任务>\"`\n\n派单成功后默认静默等待 RCCB_RESULT。\n前台最多确认一次“已委派，等待后台结果”；不要循环 `sleep`、`cat .rccb/tasks/<instance>/artifacts/<req_id>.reply.md`、`inbox`、`watch --follow` 自己轮询，也不要主动向用户提“继续等待 / 稍后查看”。\n调研、复核、长阅读任务默认需要更多耐心；只要没有新的实质结论、异常或超时，就不要再次发言，更不要为了显得在跟进而反复抛“是否继续等待 / 是否重试 / 是否改派”。\n最终结果以 `.rccb/tasks/<instance>/artifacts/<req_id>.reply.md` 为准，不要在项目根目录创建或读取 `.reply.md`。\n只有用户明确要求、ask 超时、或已经超过任务超时预算时，才允许主动查状态。\n如需安静查看最新状态，优先用 `rccb --project-dir . inbox --instance default --req-id <req_id> --latest --limit 5`。\n若 ask 超时，或 `inbox` 不足以判断真实状态，再用不跟随的一次性 `watch --req-id` 看真实状态，不要立刻重派。\n详细规则见 `AGENTS.md` 与 `CLAUDE.md`。"
+        "RCCB 编排模式已启用。\n\n当前编排者：{orchestrator}\n可用执行者：{executor_list}\n\n只做：规划、拆解、委派、验收、汇总。\n不要自己执行 bash、修改文件或运行测试。\n\n默认分工：opencode=编码，gemini=调研，droid=文档，codex=审计。\n优先级规则：用户/主编排者手动指定 > 当前任务明确约束 > 默认分工；默认分工优先级最低。\n调研规则：复杂外部事实任务优先先让 gemini 做详细、结构化调研，再安排复核执行者核验关键结论；若用户明确指定执行者，以明确指定为准。对天气、时间、简单状态这类轻量单次查询，不要默认升级成多阶段链路。\n\n接到执行型任务时，第一步必须先选择对应的 `delegate-*` 子代理；绝对不要先尝试 `Bash(rccb ask ...)` 再回退。\n如果某次直派被 RCCB guard 拦下，说明编排行为违规；只能立即改回对应的 `delegate-*` 子代理，不得改用通用 Agent、WebSearch、Read file 或其他工具自己完成任务。\n任务类型由工作性质决定，不由执行者是谁决定：编码/修复/测试走 `delegate-coder`；调研走 `delegate-researcher`；文档走 `delegate-scribe`；审计/复核/评审/核验一律走 `delegate-auditor`。\n如果用户手动指定了执行者（例如“调研让 opencode 做”“审计让 droid 做”），该指定优先级高于默认分工；不要先按默认人选派单再纠正。\n如果用户说“复审让 opencode 来做，不要找 codex”，这仍然是复核任务，必须走 `delegate-auditor`，再把执行者改成 `opencode`；不能回落到 `codex`，也不能改走 `delegate-coder`。\n\n委派格式：\n- 编码链路：`./.rccb/bin/rccb-delegate-coder ask --instance default --provider <执行者> --caller {orchestrator} --async --timeout-s <预算秒数> \"<任务>\"`\n- 调研链路：`./.rccb/bin/rccb-delegate-researcher ask --instance default --provider <执行者> --caller {orchestrator} --async --await-terminal --timeout-s <预算秒数> \"<任务>\"`\n- 复核链路：`./.rccb/bin/rccb-delegate-auditor ask --instance default --provider <执行者> --caller {orchestrator} --async --await-terminal --timeout-s <预算秒数> \"<任务>\"`\n- 文档链路：`./.rccb/bin/rccb-delegate-scribe ask --instance default --provider <执行者> --caller {orchestrator} --async --await-terminal --timeout-s <预算秒数> \"<任务>\"`\n\n派单成功后默认静默等待 RCCB_RESULT。\n前台最多确认一次“已委派，等待后台结果”；不要循环 `sleep`、`cat .rccb/tasks/<instance>/artifacts/<req_id>.reply.md`、`inbox`、`watch --follow` 自己轮询，也不要主动向用户提“继续等待 / 稍后查看”。\n调研、复核、长阅读任务默认需要更多耐心；只要没有新的实质结论、异常或超时，就不要再次发言，更不要为了显得在跟进而反复抛“是否继续等待 / 是否重试 / 是否改派”。\n最终结果以 `.rccb/tasks/<instance>/artifacts/<req_id>.reply.md` 为准，不要在项目根目录创建或读取 `.reply.md`。\n只有用户明确要求、ask 超时、或已经超过任务超时预算时，才允许主动查状态。\n如需安静查看最新状态，优先用 `rccb --project-dir . inbox --instance default --req-id <req_id> --latest --limit 5`。\n若 ask 超时，或 `inbox` 不足以判断真实状态，再用不跟随的一次性 `watch --req-id` 看真实状态，不要立刻重派。\n详细规则见 `AGENTS.md` 与 `CLAUDE.md`。"
         ),
     )
 }
@@ -7301,6 +7447,21 @@ fn emit_await_terminal_outcome(task: &TaskView) -> Result<()> {
             }
             Ok(())
         }
+        "canceled" | "cancelled" => {
+            println!("RCCB_AWAIT_DONE");
+            println!("req_id={req_id}");
+            println!("provider={provider}");
+            println!("status=canceled");
+            println!("exit_code={exit_code}");
+            if let Some(path) = reply_file {
+                println!("reply_file={path}");
+            }
+            if let Some(text) = reply {
+                println!();
+                println!("{text}");
+            }
+            Ok(())
+        }
         _ => {
             let reply_text = reply.unwrap_or("无回复");
             bail!(
@@ -8876,6 +9037,37 @@ mod tests {
     }
 
     #[test]
+    fn managed_rule_missing_only_refreshes_managed_block_but_keeps_user_section() {
+        let project =
+            std::env::temp_dir().join(format!("rccb-managed-missing-only-{}", now_unix_ms()));
+        ensure_project_layout(&project).unwrap();
+
+        let agents_path = project.join("AGENTS.md");
+        fs::write(
+            &agents_path,
+            format!(
+                "{RCCB_MANAGED_BEGIN}\nstale-managed\n{RCCB_MANAGED_END}\n\n{RCCB_USER_BEGIN}\n保留用户内容\n{RCCB_USER_END}\n"
+            ),
+        )
+        .unwrap();
+
+        ensure_project_rule_bootstrap(
+            &project,
+            BootstrapMode::MissingOnly,
+            TEST_INSTANCE,
+            &all_test_providers(),
+        )
+        .unwrap();
+
+        let updated = fs::read_to_string(&agents_path).unwrap();
+        assert!(updated.contains("保留用户内容"));
+        assert!(updated.contains("执行者一旦被明确派到某个任务，默认直接执行"));
+        assert!(!updated.contains("stale-managed"));
+
+        let _ = fs::remove_dir_all(&project);
+    }
+
+    #[test]
     fn bootstrap_refresh_overwrites_generated_templates() {
         let project =
             std::env::temp_dir().join(format!("rccb-bootstrap-refresh-{}", now_unix_ms()));
@@ -9355,8 +9547,9 @@ mod tests {
         assert!(prompt.contains("--latest --limit 5"));
         assert!(prompt.contains("opencode=编码"));
         assert!(prompt.contains("用户/主编排者手动指定 > 当前任务明确约束 > 默认分工"));
-        assert!(prompt.contains("先 gemini 做详细、结构化调研"));
-        assert!(prompt.contains("若用户明确指定复核执行者，以明确指定为准"));
+        assert!(prompt.contains("复杂外部事实任务优先先让 gemini 做详细、结构化调研"));
+        assert!(prompt.contains("若用户明确指定执行者，以明确指定为准"));
+        assert!(prompt.contains("调研让 opencode 做"));
         assert!(prompt.contains("复审让 opencode 来做，不要找 codex"));
         assert!(prompt.contains("默认静默等待 RCCB_RESULT"));
         assert!(prompt.contains("不要主动向用户提“继续等待 / 稍后查看”"));

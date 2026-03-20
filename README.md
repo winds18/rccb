@@ -32,16 +32,17 @@
   - provider 超时时会尽量保留部分输出
   - `inbox/status` 已增加一轮 TUI 噪声清洗
   - 普通启动已会自动刷新托管的 `.rccb/bin/rccb` 与 `rccb-delegate-*` wrapper
+  - 普通启动现在也会按需刷新 `AGENTS.md / CLAUDE.md / GEMINI.md` 的托管区块，同时保留用户区块
   - 编排者 progress 状态已增加内容级去重，减少长任务重复刷屏
   - `inbox --latest` 已会在终态结果存在时隐藏同任务的迟到 `running` 状态
   - daemon 侧已会跳过终态之后迟到回流的 started/progress/status 通知
 - 待收口摘要：
-  - 人工指定执行者优先级仍需实测收口
+  - 手动指定执行者优先级与“执行者默认直做”已落地，仍需继续做真实场景实测收口
   - 子代理派单免审批仍需实测收口
   - 主编排者“只编排不下场执行”仍需继续压实
   - 实时状态、超时恢复、`inbox/watch/reply.md` 一致性仍是核心发布阻塞项
   - 首启 pane 注入稳定性仍需继续验证
-  - `tmux` 启动时的 mouse 运行态自动启用已补上回读校验，仍需继续实测收口
+  - `tmux` 启动时的 mouse / clipboard 运行态收敛已补上，仍需继续验证复制体验与跨终端兼容性
   - Claude 编排已改成“自动加载优先，pane 注入兜底”，但仍需继续实测首启稳定性
 
 后续如果 README 摘要与 roadmap 明细不一致，以 roadmap 为准，并优先修正文档漂移。
@@ -208,6 +209,8 @@ rccb claude codex gemini opencode droid
 10. 默认启用 `orchestrator strict mode`：当存在执行者时，Claude 编排者优先依赖项目级自动加载规则工作；若检测到 Claude 项目级规则缺失或你显式强制开启，才会向编排者 pane 注入兜底 guardrail。执行者完成后，若 `caller` 指向编排者，最终结果默认只写入后台 inbox 与 `.rccb/tasks/<instance>/artifacts/<req_id>.reply.md`；只有显式设置 `RCCB_ORCHESTRATOR_RESULT_CALLBACK=1` 才会前台回注到编排者 pane
    - 同步 `ask` 路径同样默认静默：若确实需要把同步结果直接打印回当前终端，可显式设置 `RCCB_ORCHESTRATOR_SYNC_STDOUT_RESULT=1`
    - 人工指定执行者优先级最高；如果用户明确说“复审让 opencode 来做，不要找 codex”，编排者传给 `delegate-auditor` 的任务首部必须显式带上 `复核执行者：opencode` 与 `禁止执行者：codex`
+   - 调研链路同样支持人工覆盖：如果用户明确说“调研让 opencode 做”，主编排者与 `delegate-researcher` 都必须服从明确指定，不再强制先回落到 `gemini`
+   - 对天气、时间、简单状态等一次性、低风险、单事实查询，不默认升级成完整“调研 + 复核”链路；执行者被明确派到任务后默认直接完成
    - 子代理默认分两类：`delegate-coder` 继续采用“提交即返回 req_id”的异步模式；`delegate-researcher` / `delegate-auditor` / `delegate-scribe` 默认使用 `rccb ask --async --await-terminal`，在子代理内部安静等待真实终态后再返回给主编排者
 11. `debug` 不是粘滞状态：上一次即使开过 debug，这一次若未显式指定 `--debug` 或 `RCCB_DEBUG=1`，也不会自动拉起 debug pane
 12. `debug` 模式下每次重启都会额外重置当前实例的调试运行态：清空旧的 `logs/<instance>/`、`sessions/<instance>/`、`tmp/<instance>/`、`run/<instance>.*` 残留，并把本次刷新/清理动作写入新的 `debug.log`
@@ -223,6 +226,7 @@ rccb claude codex gemini opencode droid
    - `RCCB_ORCHESTRATOR_STRICT=0`：关闭编排者 strict mode（默认开启，且仅在存在执行者时生效）
    - `RCCB_ORCHESTRATOR_PRIME_MODE=<auto|always|off>`：控制 Claude 编排者 pane 首启 guardrail 注入；默认 `auto`，即项目级规则齐全时跳过注入，只在缺失时兜底
    - `RCCB_ORCHESTRATOR_CALLBACK_MAX_CHARS=<N>`：限制回注给编排者的结果长度（默认 12000）
+   - `RCCB_TMUX_SET_CLIPBOARD=<external|on|off|keep>`：tmux 运行态 clipboard 模式（默认 `external`，用于减少子任务运行时对用户复制内容的干扰；`keep` 表示不改当前 tmux 设定）
 
 静默后台消费排查：
 
@@ -240,8 +244,8 @@ rccb --project-dir . inbox --instance default --req-id <req_id> --kind result --
   - `RCCB_AWAIT_DONE`
   - `req_id=...`
   - `provider=...`
-  - `status=completed`
-  - `exit_code=0`
+  - `status=<completed|canceled>`
+  - `exit_code=<0|130>`
   - 后续正文为真实 reply 内容
 - 如需安静查看最新状态，优先使用 `inbox --latest`
 - 只有任务超时、异常或用户明确要求实时跟踪时，再使用一次性 `watch --req-id ... --with-provider-log --timeout-s 3 --pane-ui`
