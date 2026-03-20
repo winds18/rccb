@@ -146,6 +146,7 @@
 12. Claude 项目级 `.claude/settings.local.json` 白名单已和 wrapper 对齐到“读/搜/RCCB 派单”，减少编排者审批噪声并继续保持零写边界
 13. 自动生成的 Claude rules/agents/commands 已切换到统一项目入口 `./.rccb/bin/rccb --project-dir .`，减少命令路径漂移导致的审批噪声
 14. 普通启动现已支持自动刷新托管的 `.rccb/bin/rccb` 与 `.rccb/bin/rccb-delegate-*` wrapper，老项目无需删除文件或开 debug 也能吃到最新派单修复
+15. provider reply 提取已继续加固：若检测到 `RCCB_DONE` 但未能可信定位对应 `RCCB_BEGIN`，会优先判空/不完整，避免把 prompt echo 或任务说明误当最终结果
 
 ### 最近新增待办
 

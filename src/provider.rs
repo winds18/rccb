@@ -1931,6 +1931,7 @@ fn extract_reply_for_req(text: &str, req_id: &str) -> String {
 
     let target_i = *target_idxs.last().unwrap_or(&0);
     let mut start_i = 0usize;
+    let mut begin_found = false;
 
     if let Some(prev_done) = done_idxs.iter().rev().find(|i| **i < target_i) {
         start_i = *prev_done + 1;
@@ -1939,8 +1940,13 @@ fn extract_reply_for_req(text: &str, req_id: &str) -> String {
     for i in (start_i..target_i).rev() {
         if is_begin_line_for_req(&lines[i], req_id) {
             start_i = i + 1;
+            begin_found = true;
             break;
         }
+    }
+
+    if !begin_found && looks_like_wrapped_prompt_session(text, req_id) {
+        return String::new();
     }
 
     lines = lines[start_i..target_i].to_vec();
@@ -2826,6 +2832,21 @@ mod tests {
         );
         let got = extract_reply_for_req(&raw, req_id);
         assert_eq!(got, "ZeroClaw 是一个 Rust 项目\n主要特点是高性能");
+    }
+
+    #[test]
+    fn extract_reply_for_req_ignores_prompt_echo_when_begin_marker_is_malformed() {
+        let req_id = "req-pane-malformed-begin";
+        let raw = format!(
+            "RCCB_REQ_ID: {req_id}\n\
+请帮我调研 zeroclaw，并总结技术栈与用途。\n\
+请严格按照以下格式回复：\n\
+RCCB_BEGIN {req_id}\n\
+<回复内容>\n\
+RCCB_DONE: {req_id}\n"
+        );
+        let got = extract_reply_for_req(&raw, req_id);
+        assert!(got.is_empty());
     }
 
     #[test]
