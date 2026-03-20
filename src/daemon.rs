@@ -41,6 +41,13 @@ const EVENT_BUS_DEFAULT_BUFFER: usize = 2048;
 const EVENT_BUS_MAX_BUFFER: usize = 20000;
 const EVENT_BUS_KEEPALIVE_MS: u64 = 5000;
 const ORCHESTRATOR_PROGRESS_INTERVAL_MS: u64 = 5000;
+const ORCHESTRATOR_PROGRESS_REPEAT_MS: u64 = 30000;
+
+#[derive(Debug, Clone)]
+struct OrchestratorProgressState {
+    last_emit_ms: u64,
+    last_message: String,
+}
 
 #[derive(Debug, Clone, Deserialize)]
 struct SubscribeRequest {
@@ -1888,10 +1895,10 @@ fn relay_task_progress(
         return;
     };
     let progress_lines = relay_progress_lines(chunk);
-    if progress_lines.is_empty() || !should_emit_orchestrator_progress(req_id) {
+    let progress = progress_lines.join("\n");
+    if progress.is_empty() || !should_emit_orchestrator_progress(req_id, &progress) {
         return;
     }
-    let progress = progress_lines.join("\n");
     let entry = json!({
         "ts_unix": now_unix(),
         "kind": "status",
@@ -2178,19 +2185,47 @@ fn orchestrator_callback_target(
     Some(orchestrator_provider)
 }
 
-fn should_emit_orchestrator_progress(req_id: &str) -> bool {
-    static LAST_PROGRESS: OnceLock<Mutex<HashMap<String, u64>>> = OnceLock::new();
+fn normalize_orchestrator_progress_message(message: &str) -> String {
+    message
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn should_emit_orchestrator_progress(req_id: &str, message: &str) -> bool {
+    should_emit_orchestrator_progress_with_now(req_id, message, now_unix_ms())
+}
+
+fn should_emit_orchestrator_progress_with_now(req_id: &str, message: &str, now: u64) -> bool {
+    static LAST_PROGRESS: OnceLock<Mutex<HashMap<String, OrchestratorProgressState>>> =
+        OnceLock::new();
     let map = LAST_PROGRESS.get_or_init(|| Mutex::new(HashMap::new()));
     let mut guard = match map.lock() {
         Ok(v) => v,
         Err(_) => return true,
     };
-    let now = now_unix_ms();
-    let entry = guard.entry(req_id.to_string()).or_insert(0);
-    if now.saturating_sub(*entry) < ORCHESTRATOR_PROGRESS_INTERVAL_MS {
+    let normalized = normalize_orchestrator_progress_message(message);
+    let entry = guard
+        .entry(req_id.to_string())
+        .or_insert_with(|| OrchestratorProgressState {
+            last_emit_ms: 0,
+            last_message: String::new(),
+        });
+    let since_last = now.saturating_sub(entry.last_emit_ms);
+    let same_message = !entry.last_message.is_empty() && entry.last_message == normalized;
+
+    if since_last < ORCHESTRATOR_PROGRESS_INTERVAL_MS {
         return false;
     }
-    *entry = now;
+
+    if same_message && since_last < ORCHESTRATOR_PROGRESS_REPEAT_MS {
+        return false;
+    }
+
+    entry.last_emit_ms = now;
+    entry.last_message = normalized;
     true
 }
 
@@ -2518,7 +2553,8 @@ mod tests {
     use super::{
         build_orchestrator_progress_prompt, build_orchestrator_result_prompt,
         build_orchestrator_started_prompt, orchestrator_result_callback_enabled,
-        relay_progress_lines, sync_response_wait_timeout,
+        relay_progress_lines, should_emit_orchestrator_progress_with_now,
+        sync_response_wait_timeout,
     };
 
     fn env_lock() -> &'static Mutex<()> {
@@ -2606,6 +2642,48 @@ mod tests {
         assert!(prompt.contains("静默等待态"));
         assert!(prompt.contains("不要主动向用户提“继续等待 / 稍后查看”"));
         assert!(prompt.contains("保持耐心"));
+    }
+
+    #[test]
+    fn orchestrator_progress_dedupes_repeated_same_message() {
+        let req_id = format!("req-progress-repeat-{}", crate::io_utils::now_unix_ms());
+        let base = 1_000_000;
+        assert!(should_emit_orchestrator_progress_with_now(
+            &req_id,
+            "正在搜索 Claude Code 博客",
+            base
+        ));
+        assert!(!should_emit_orchestrator_progress_with_now(
+            &req_id,
+            "正在搜索 Claude Code 博客",
+            base + 6000
+        ));
+        assert!(should_emit_orchestrator_progress_with_now(
+            &req_id,
+            "正在搜索 Claude Code 博客",
+            base + 31000
+        ));
+    }
+
+    #[test]
+    fn orchestrator_progress_allows_changed_message_after_interval() {
+        let req_id = format!("req-progress-change-{}", crate::io_utils::now_unix_ms());
+        let base = 2_000_000;
+        assert!(should_emit_orchestrator_progress_with_now(
+            &req_id,
+            "正在搜索第一组资料",
+            base
+        ));
+        assert!(!should_emit_orchestrator_progress_with_now(
+            &req_id,
+            "正在搜索第二组资料",
+            base + 2000
+        ));
+        assert!(should_emit_orchestrator_progress_with_now(
+            &req_id,
+            "正在搜索第二组资料",
+            base + 6000
+        ));
     }
 
     #[test]

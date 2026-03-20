@@ -99,6 +99,7 @@
    - 减少“已委派、等待结果”之外的重复描述
    - 长任务前台避免连续状态播报
    - 调研/复核类长任务默认更耐心：无新结论、无异常、未超时前，不主动再次发言，不反复向用户抛“继续等待/稍后查看/是否重试”选择题
+   - 当前继续收口方向：对 started/progress 状态做内容级去重，避免执行者重复输出同一条搜索/思考进展时持续刷入编排者 inbox
 
 2. provider-specific native adapter 深化
    - 逐 provider 对齐原生命令、权限与行为差异
@@ -147,6 +148,7 @@
 13. 自动生成的 Claude rules/agents/commands 已切换到统一项目入口 `./.rccb/bin/rccb --project-dir .`，减少命令路径漂移导致的审批噪声
 14. 普通启动现已支持自动刷新托管的 `.rccb/bin/rccb` 与 `.rccb/bin/rccb-delegate-*` wrapper，老项目无需删除文件或开 debug 也能吃到最新派单修复
 15. provider reply 提取已继续加固：若检测到 `RCCB_DONE` 但未能可信定位对应 `RCCB_BEGIN`，会优先判空/不完整，避免把 prompt echo 或任务说明误当最终结果
+16. 编排者 progress 状态已增加内容级去重：相同进展短时间内不再重复写入 inbox，仅在内容变化或较长时间后才重发，减少长任务刷屏
 
 ### 最近新增待办
 
