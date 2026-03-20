@@ -6743,9 +6743,6 @@ fn should_suppress_sync_reply_for_orchestrator(
     if env_bool("RCCB_ORCHESTRATOR_SYNC_STDOUT_RESULT", false) {
         return false;
     }
-    if !env_bool("RCCB_ORCHESTRATOR_RESULT_CALLBACK", false) {
-        return false;
-    }
     is_orchestrator_executor_call(state, provider, caller)
 }
 
@@ -7521,9 +7518,11 @@ mod tests {
     #[test]
     fn suppresses_sync_reply_for_orchestrator_executor_call() {
         let _guard = env_lock().lock().unwrap();
-        let old = std::env::var("RCCB_ORCHESTRATOR_RESULT_CALLBACK").ok();
+        let old_result = std::env::var("RCCB_ORCHESTRATOR_RESULT_CALLBACK").ok();
+        let old_sync_stdout = std::env::var("RCCB_ORCHESTRATOR_SYNC_STDOUT_RESULT").ok();
         unsafe {
             std::env::set_var("RCCB_ORCHESTRATOR_RESULT_CALLBACK", "1");
+            std::env::remove_var("RCCB_ORCHESTRATOR_SYNC_STDOUT_RESULT");
         }
 
         let state = InstanceState {
@@ -7549,7 +7548,7 @@ mod tests {
             &state, "gemini", "claude"
         ));
 
-        if let Some(v) = old {
+        if let Some(v) = old_result {
             unsafe {
                 std::env::set_var("RCCB_ORCHESTRATOR_RESULT_CALLBACK", v);
             }
@@ -7558,14 +7557,25 @@ mod tests {
                 std::env::remove_var("RCCB_ORCHESTRATOR_RESULT_CALLBACK");
             }
         }
+        if let Some(v) = old_sync_stdout {
+            unsafe {
+                std::env::set_var("RCCB_ORCHESTRATOR_SYNC_STDOUT_RESULT", v);
+            }
+        } else {
+            unsafe {
+                std::env::remove_var("RCCB_ORCHESTRATOR_SYNC_STDOUT_RESULT");
+            }
+        }
     }
 
     #[test]
-    fn keeps_sync_reply_when_result_callback_is_silent() {
+    fn suppresses_sync_reply_when_result_callback_is_silent() {
         let _guard = env_lock().lock().unwrap();
-        let old = std::env::var("RCCB_ORCHESTRATOR_RESULT_CALLBACK").ok();
+        let old_result = std::env::var("RCCB_ORCHESTRATOR_RESULT_CALLBACK").ok();
+        let old_sync_stdout = std::env::var("RCCB_ORCHESTRATOR_SYNC_STDOUT_RESULT").ok();
         unsafe {
             std::env::remove_var("RCCB_ORCHESTRATOR_RESULT_CALLBACK");
+            std::env::remove_var("RCCB_ORCHESTRATOR_SYNC_STDOUT_RESULT");
         }
 
         let state = InstanceState {
@@ -7587,13 +7597,26 @@ mod tests {
             daemon_token: None,
             debug_enabled: false,
         };
-        assert!(!super::should_suppress_sync_reply_for_orchestrator(
+        assert!(super::should_suppress_sync_reply_for_orchestrator(
             &state, "gemini", "claude"
         ));
 
-        if let Some(v) = old {
+        if let Some(v) = old_result {
             unsafe {
                 std::env::set_var("RCCB_ORCHESTRATOR_RESULT_CALLBACK", v);
+            }
+        } else {
+            unsafe {
+                std::env::remove_var("RCCB_ORCHESTRATOR_RESULT_CALLBACK");
+            }
+        }
+        if let Some(v) = old_sync_stdout {
+            unsafe {
+                std::env::set_var("RCCB_ORCHESTRATOR_SYNC_STDOUT_RESULT", v);
+            }
+        } else {
+            unsafe {
+                std::env::remove_var("RCCB_ORCHESTRATOR_SYNC_STDOUT_RESULT");
             }
         }
     }
@@ -7622,6 +7645,59 @@ mod tests {
         assert!(!super::should_suppress_sync_reply_for_orchestrator(
             &state, "gemini", "manual"
         ));
+    }
+
+    #[test]
+    fn keeps_sync_reply_when_sync_stdout_override_enabled() {
+        let _guard = env_lock().lock().unwrap();
+        let old_result = std::env::var("RCCB_ORCHESTRATOR_RESULT_CALLBACK").ok();
+        let old_sync_stdout = std::env::var("RCCB_ORCHESTRATOR_SYNC_STDOUT_RESULT").ok();
+        unsafe {
+            std::env::remove_var("RCCB_ORCHESTRATOR_RESULT_CALLBACK");
+            std::env::set_var("RCCB_ORCHESTRATOR_SYNC_STDOUT_RESULT", "1");
+        }
+
+        let state = InstanceState {
+            schema_version: 1,
+            instance_id: "default".to_string(),
+            project_dir: ".".to_string(),
+            pid: 1,
+            status: "running".to_string(),
+            started_at_unix: 1,
+            last_heartbeat_unix: 1,
+            stopped_at_unix: None,
+            providers: vec!["claude".to_string(), "gemini".to_string()],
+            orchestrator: Some("claude".to_string()),
+            executors: vec!["gemini".to_string()],
+            session_file: None,
+            last_task_id: None,
+            daemon_host: None,
+            daemon_port: None,
+            daemon_token: None,
+            debug_enabled: false,
+        };
+        assert!(!super::should_suppress_sync_reply_for_orchestrator(
+            &state, "gemini", "claude"
+        ));
+
+        if let Some(v) = old_result {
+            unsafe {
+                std::env::set_var("RCCB_ORCHESTRATOR_RESULT_CALLBACK", v);
+            }
+        } else {
+            unsafe {
+                std::env::remove_var("RCCB_ORCHESTRATOR_RESULT_CALLBACK");
+            }
+        }
+        if let Some(v) = old_sync_stdout {
+            unsafe {
+                std::env::set_var("RCCB_ORCHESTRATOR_SYNC_STDOUT_RESULT", v);
+            }
+        } else {
+            unsafe {
+                std::env::remove_var("RCCB_ORCHESTRATOR_SYNC_STDOUT_RESULT");
+            }
+        }
     }
 
     #[test]

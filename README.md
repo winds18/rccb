@@ -202,6 +202,7 @@ rccb claude codex gemini opencode droid
 8. 默认采用静默后台通信：任务下发/回传不打扰 CLI 输入区；可通过命令查看状态和输出
 9. `debug` 开启时会自动创建一个调试日志 pane（位于编排者 pane 上方），默认跟踪首个执行者并持续 `watch --follow`，所有旁路日志仅在这个实时调试日志 pane 显示
 10. 默认启用 `orchestrator strict mode`：当存在执行者时，Claude 编排者优先依赖项目级自动加载规则工作；若检测到 Claude 项目级规则缺失或你显式强制开启，才会向编排者 pane 注入兜底 guardrail。执行者完成后，若 `caller` 指向编排者，最终结果默认只写入后台 inbox 与 `.rccb/tasks/<instance>/artifacts/<req_id>.reply.md`；只有显式设置 `RCCB_ORCHESTRATOR_RESULT_CALLBACK=1` 才会前台回注到编排者 pane
+   - 同步 `ask` 路径同样默认静默：若确实需要把同步结果直接打印回当前终端，可显式设置 `RCCB_ORCHESTRATOR_SYNC_STDOUT_RESULT=1`
    - 人工指定执行者优先级最高；如果用户明确说“复审让 opencode 来做，不要找 codex”，编排者传给 `delegate-auditor` 的任务首部必须显式带上 `复核执行者：opencode` 与 `禁止执行者：codex`
    - 子代理默认分两类：`delegate-coder` 继续采用“提交即返回 req_id”的异步模式；`delegate-researcher` / `delegate-auditor` / `delegate-scribe` 默认使用 `rccb ask --async --await-terminal`，在子代理内部安静等待真实终态后再返回给主编排者
 11. `debug` 不是粘滞状态：上一次即使开过 debug，这一次若未显式指定 `--debug` 或 `RCCB_DEBUG=1`，也不会自动拉起 debug pane

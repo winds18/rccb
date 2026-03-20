@@ -78,7 +78,7 @@
 
 5. 执行结果默认静默回传
    - 目标：执行者完成后，最终结果默认只写入编排者 inbox 与 `.rccb/tasks/<instance>/artifacts/<req_id>.reply.md`，不再默认前台注入编排者 pane
-   - 当前状态：已发现 daemon 侧仍保留“最终结果前台回注默认开启”的旧默认值，和现有文档口径不一致
+   - 当前状态：daemon 回调默认值与文档已对齐；同步 ask 侧也已改成默认抑制编排者 stdout 结果，只保留 inbox 与 `reply.md` 静默消费
    - 验收标准：
      - 默认情况下，执行者完成不会再向编排者 pane 前台注入 `RCCB_RESULT`
      - 编排者仍可通过 `inbox --latest` 与 `reply.md` 静默消费结果
@@ -142,7 +142,7 @@
 8. 当 Claude 项目级自动加载规则齐全时，首启 pane 注入会自动降级为兜底路径
 9. 人工指定复核执行者已通过结构化强标记压过默认 `codex` 分工
 10. 同步 `ask` 的传输异常恢复窗口与 timeout 待定窗口已加固，减少执行者仍在运行时的误判失败
-11. 已确认并记录一个口径不一致问题：daemon 仍默认开启最终结果前台回注，需统一切回“默认静默消费”
+11. “最终结果默认静默回传”已继续压实到同步 ask 路径：默认抑制编排者 stdout 结果，仅在显式设置 `RCCB_ORCHESTRATOR_SYNC_STDOUT_RESULT=1` 时才恢复前台打印
 12. Claude 项目级 `.claude/settings.local.json` 白名单已和 wrapper 对齐到“读/搜/RCCB 派单”，减少编排者审批噪声并继续保持零写边界
 13. 自动生成的 Claude rules/agents/commands 已切换到统一项目入口 `./.rccb/bin/rccb --project-dir .`，减少命令路径漂移导致的审批噪声
 
@@ -152,7 +152,7 @@
 2. 真实验证 `tmux / wezterm` 首启注入稳定性
 3. 收敛 Claude 子代理 Bash 派单的审批 UI 噪声
 4. 强化主编排者“零写权限”硬约束与测试覆盖
-5. 统一“最终结果默认静默回传”的代码默认值、测试与文档口径
+5. 继续做真实编排链路实测，确认同步 ask / callback / inbox / reply.md 四条路径在长任务下都不再前台串扰
 
 ## 使用约定
 
