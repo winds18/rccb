@@ -240,6 +240,7 @@ rccb claude codex gemini opencode droid
    - `RCCB_ORCHESTRATOR_CALLBACK_MAX_CHARS=<N>`：限制回注给编排者的结果长度（默认 12000）
    - `RCCB_TMUX_SET_CLIPBOARD=<external|on|off|keep>`：tmux 运行态 clipboard 模式（默认 `external`，用于减少子任务运行时对用户复制内容的干扰；`keep` 表示不改当前 tmux 设定）
    - `RCCB_TMUX_COPY_PRIORITY=0`：关闭 tmux “复制优先”运行态绑定；默认开启。开启时会让 pane 内普通鼠标拖选优先进入 tmux copy-mode 并在松开时复制，代价是 pane 内 TUI 程序的原生鼠标交互会让位
+   - `RCCB_TMUX_COPY_COMMAND=<shell command|off>`：覆盖 tmux 拖拽复制后的系统剪贴板命令；默认自动探测（macOS 优先 `pbcopy`，Linux 优先 `wl-copy`/`xclip`/`xsel`）。设为 `off` 时回退到 tmux 自身的 `copy-selection-and-cancel`
 
 静默后台消费排查：
 

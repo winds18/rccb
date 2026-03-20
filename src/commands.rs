@@ -3279,6 +3279,8 @@ fn ensure_tmux_mouse_support_runtime(project_dir: &Path, instance: &str) -> Resu
         .context("回读 tmux window mouse 状态失败")?;
 
     if tmux_mouse_runtime_enabled(&session_state, &window_state) {
+        ensure_tmux_clipboard_runtime()?;
+        ensure_tmux_copy_priority_runtime(project_dir, instance)?;
         return Ok(());
     }
 
@@ -3370,6 +3372,7 @@ fn tmux_clipboard_mode() -> String {
 }
 
 fn build_tmux_copy_priority_apply_script(clipboard_mode: String) -> String {
+    let drag_end_action = tmux_copy_drag_end_action();
     let mut lines = vec![
         "set-option -g mouse on".to_string(),
         "set-window-option -g mouse on".to_string(),
@@ -3377,19 +3380,29 @@ fn build_tmux_copy_priority_apply_script(clipboard_mode: String) -> String {
     if clipboard_mode != "keep" && clipboard_mode != "inherit" {
         lines.push(format!("set-option -g set-clipboard {}", clipboard_mode));
     }
-    lines.push("bind-key -T root MouseDown1Pane select-pane -t=".to_string());
+    lines.push("bind-key -T root MouseDown1Pane select-pane -t= \\; send-keys -M".to_string());
     lines.push(
-        "bind-key -T root MouseDrag1Pane if-shell -F '#{pane_in_mode}' 'send-keys -M' 'select-pane -t= \\; copy-mode -M'"
+        "bind-key -T root MouseDrag1Pane if-shell -F '#{||:#{pane_in_mode},#{mouse_any_flag}}' 'send-keys -M' 'copy-mode -M'"
+            .to_string(),
+    );
+    lines.push("bind-key -T copy-mode MouseDown1Pane select-pane".to_string());
+    lines.push("bind-key -T copy-mode-vi MouseDown1Pane select-pane".to_string());
+    lines.push(
+        "bind-key -T copy-mode MouseDrag1Pane select-pane \\; send-keys -X begin-selection"
             .to_string(),
     );
     lines.push(
-        "bind-key -T copy-mode MouseDragEnd1Pane send-keys -X copy-selection-and-cancel"
+        "bind-key -T copy-mode-vi MouseDrag1Pane select-pane \\; send-keys -X begin-selection"
             .to_string(),
     );
-    lines.push(
-        "bind-key -T copy-mode-vi MouseDragEnd1Pane send-keys -X copy-selection-and-cancel"
-            .to_string(),
-    );
+    lines.push(format!(
+        "bind-key -T copy-mode MouseDragEnd1Pane {}",
+        drag_end_action
+    ));
+    lines.push(format!(
+        "bind-key -T copy-mode-vi MouseDragEnd1Pane {}",
+        drag_end_action
+    ));
     lines.join("\n") + "\n"
 }
 
@@ -3397,6 +3410,10 @@ fn build_tmux_copy_priority_restore_script() -> Result<String> {
     let bindings = [
         ("root", "MouseDown1Pane"),
         ("root", "MouseDrag1Pane"),
+        ("copy-mode", "MouseDown1Pane"),
+        ("copy-mode-vi", "MouseDown1Pane"),
+        ("copy-mode", "MouseDrag1Pane"),
+        ("copy-mode-vi", "MouseDrag1Pane"),
         ("copy-mode", "MouseDragEnd1Pane"),
         ("copy-mode-vi", "MouseDragEnd1Pane"),
     ];
@@ -3439,6 +3456,54 @@ fn capture_tmux_binding_restore_line(table: &str, key: &str) -> Result<String> {
         }
     }
     Ok(format!("unbind-key -T {} {}", table, key))
+}
+
+fn tmux_copy_drag_end_action() -> String {
+    resolve_tmux_copy_pipe_command()
+        .map(|command| {
+            format!(
+                "send-keys -X copy-pipe-and-cancel {}",
+                tmux_single_quote(&command)
+            )
+        })
+        .unwrap_or_else(|| "send-keys -X copy-selection-and-cancel".to_string())
+}
+
+fn resolve_tmux_copy_pipe_command() -> Option<String> {
+    let override_value = env::var("RCCB_TMUX_COPY_COMMAND")
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty());
+    if let Some(value) = override_value {
+        let normalized = value.to_ascii_lowercase();
+        if matches!(normalized.as_str(), "off" | "none" | "disable" | "disabled") {
+            return None;
+        }
+        return Some(value);
+    }
+
+    if cfg!(target_os = "macos") && command_exists_on_path("pbcopy") {
+        return Some("pbcopy".to_string());
+    }
+    if cfg!(target_os = "linux") {
+        if command_exists_on_path("wl-copy") {
+            return Some("wl-copy".to_string());
+        }
+        if command_exists_on_path("xclip") {
+            return Some("xclip -in -selection clipboard".to_string());
+        }
+        if command_exists_on_path("xsel") {
+            return Some("xsel --clipboard --input".to_string());
+        }
+    }
+    if cfg!(target_os = "windows") && command_exists_on_path("clip.exe") {
+        return Some("clip.exe".to_string());
+    }
+    None
+}
+
+fn tmux_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 fn read_tmux_mouse_state(args: &[&str]) -> Result<String> {
@@ -10432,5 +10497,49 @@ mod tests {
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].kind, "result");
         assert_eq!(got[0].req_id.as_deref(), Some("req-1"));
+    }
+
+    #[test]
+    fn tmux_copy_priority_apply_script_uses_default_drag_flow_and_clipboard_pipe() {
+        let _guard = env_lock().lock().unwrap();
+        unsafe {
+            std::env::set_var("RCCB_TMUX_COPY_COMMAND", "pbcopy");
+        }
+
+        let script = super::build_tmux_copy_priority_apply_script("external".to_string());
+        assert!(script.contains("set-option -g mouse on"));
+        assert!(script.contains("set-window-option -g mouse on"));
+        assert!(script.contains("bind-key -T root MouseDown1Pane select-pane -t= \\; send-keys -M"));
+        assert!(script.contains(
+            "bind-key -T root MouseDrag1Pane if-shell -F '#{||:#{pane_in_mode},#{mouse_any_flag}}' 'send-keys -M' 'copy-mode -M'"
+        ));
+        assert!(script.contains(
+            "bind-key -T copy-mode MouseDrag1Pane select-pane \\; send-keys -X begin-selection"
+        ));
+        assert!(script.contains(
+            "bind-key -T copy-mode MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel 'pbcopy'"
+        ));
+
+        unsafe {
+            std::env::remove_var("RCCB_TMUX_COPY_COMMAND");
+        }
+    }
+
+    #[test]
+    fn tmux_copy_priority_apply_script_can_disable_clipboard_pipe_override() {
+        let _guard = env_lock().lock().unwrap();
+        unsafe {
+            std::env::set_var("RCCB_TMUX_COPY_COMMAND", "off");
+        }
+
+        let script = super::build_tmux_copy_priority_apply_script("external".to_string());
+        assert!(script.contains(
+            "bind-key -T copy-mode MouseDragEnd1Pane send-keys -X copy-selection-and-cancel"
+        ));
+        assert!(!script.contains("copy-pipe-and-cancel"));
+
+        unsafe {
+            std::env::remove_var("RCCB_TMUX_COPY_COMMAND");
+        }
     }
 }
