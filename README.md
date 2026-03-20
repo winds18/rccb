@@ -33,6 +33,7 @@
   - `inbox/status` 已增加一轮 TUI 噪声清洗
   - 普通启动已会自动刷新托管的 `.rccb/bin/rccb` 与 `rccb-delegate-*` wrapper
   - 编排者 progress 状态已增加内容级去重，减少长任务重复刷屏
+  - `inbox --latest` 已会在终态结果存在时隐藏同任务的迟到 `running` 状态
 - 待收口摘要：
   - 人工指定执行者优先级仍需实测收口
   - 子代理派单免审批仍需实测收口

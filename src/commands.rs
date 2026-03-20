@@ -4567,18 +4567,50 @@ fn collapse_inbox_entries_latest(items: Vec<InboxEntryView>) -> Vec<InboxEntryVi
         }
     }
     out.reverse();
-    out
+
+    let terminal_results = out
+        .iter()
+        .filter(|item| item.kind.eq_ignore_ascii_case("result"))
+        .filter(|item| {
+            item.status
+                .as_deref()
+                .map(is_terminal_inbox_status)
+                .unwrap_or(false)
+        })
+        .map(|item| inbox_entry_req_executor_key(item))
+        .collect::<HashSet<_>>();
+
+    out.into_iter()
+        .filter(|item| {
+            if item.kind.eq_ignore_ascii_case("result") {
+                return true;
+            }
+            !terminal_results.contains(&inbox_entry_req_executor_key(item))
+        })
+        .collect()
 }
 
 fn inbox_entry_latest_key(item: &InboxEntryView) -> String {
-    let req_id = item.req_id.as_deref().unwrap_or("-");
-    let executor = item.executor.as_deref().unwrap_or("-");
+    let req_executor = inbox_entry_req_executor_key(item);
     let kind_group = if item.kind.eq_ignore_ascii_case("result") {
         "result"
     } else {
         "status"
     };
-    format!("{req_id}\t{executor}\t{kind_group}")
+    format!("{req_executor}\t{kind_group}")
+}
+
+fn inbox_entry_req_executor_key(item: &InboxEntryView) -> String {
+    let req_id = item.req_id.as_deref().unwrap_or("-");
+    let executor = item.executor.as_deref().unwrap_or("-");
+    format!("{req_id}\t{executor}")
+}
+
+fn is_terminal_inbox_status(status: &str) -> bool {
+    matches!(
+        status.trim().to_ascii_lowercase().as_str(),
+        "completed" | "failed" | "timeout" | "incomplete" | "canceled"
+    )
 }
 
 pub fn cmd_tasks(
@@ -9953,13 +9985,49 @@ mod tests {
         ];
 
         let got = super::collapse_inbox_entries_latest(items);
-        assert_eq!(got.len(), 3);
+        assert_eq!(got.len(), 2);
         assert_eq!(got[0].req_id.as_deref(), Some("req-1"));
-        assert_eq!(got[0].kind, "status");
-        assert_eq!(got[0].message.as_deref(), Some("still working"));
-        assert_eq!(got[1].req_id.as_deref(), Some("req-1"));
-        assert_eq!(got[1].kind, "result");
-        assert_eq!(got[2].req_id.as_deref(), Some("req-2"));
-        assert_eq!(got[2].kind, "status");
+        assert_eq!(got[0].kind, "result");
+        assert_eq!(got[1].req_id.as_deref(), Some("req-2"));
+        assert_eq!(got[1].kind, "status");
+    }
+
+    #[test]
+    fn collapse_inbox_entries_latest_hides_late_running_status_after_terminal_result() {
+        let items = vec![
+            super::InboxEntryView {
+                instance: "default".to_string(),
+                orchestrator: "claude".to_string(),
+                kind: "result".to_string(),
+                req_id: Some("req-1".to_string()),
+                executor: Some("droid".to_string()),
+                caller: Some("claude".to_string()),
+                status: Some("completed".to_string()),
+                exit_code: Some(0),
+                ts_unix: Some(10),
+                message: None,
+                reply: Some("done".to_string()),
+                reply_file: Some("/tmp/reply.md".to_string()),
+            },
+            super::InboxEntryView {
+                instance: "default".to_string(),
+                orchestrator: "claude".to_string(),
+                kind: "status".to_string(),
+                req_id: Some("req-1".to_string()),
+                executor: Some("droid".to_string()),
+                caller: Some("claude".to_string()),
+                status: Some("running".to_string()),
+                exit_code: None,
+                ts_unix: Some(11),
+                message: Some("still working".to_string()),
+                reply: None,
+                reply_file: None,
+            },
+        ];
+
+        let got = super::collapse_inbox_entries_latest(items);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].kind, "result");
+        assert_eq!(got[0].req_id.as_deref(), Some("req-1"));
     }
 }
