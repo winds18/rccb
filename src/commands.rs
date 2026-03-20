@@ -140,6 +140,9 @@ fn ensure_project_bootstrap(
     if let Some(wrapper) = write_project_rccb_wrapper(project_dir, mode)? {
         wrapper_scripts.push(wrapper);
     }
+    if let Some(wrapper) = write_project_cleanup_wrapper(project_dir, mode)? {
+        wrapper_scripts.push(wrapper);
+    }
     if providers.iter().any(|p| p == "claude") {
         wrapper_scripts.extend(write_project_delegate_wrappers(project_dir, mode)?);
     }
@@ -939,6 +942,85 @@ fn build_project_rccb_wrapper_script(project_dir: &Path) -> Result<String> {
         "#!/usr/bin/env sh\nset -eu\nproject_root=\"${{RCCB_PROJECT_DIR:-$PWD}}\"\ncd \"$project_root\"\nexec {} \"$@\"\n",
         shell_quote(&target)
     ))
+}
+
+fn project_cleanup_wrapper_path(project_dir: &Path) -> PathBuf {
+    rccb_dir(project_dir).join("bin").join("rccb-clean")
+}
+
+fn write_project_cleanup_wrapper(
+    project_dir: &Path,
+    mode: BootstrapMode,
+) -> Result<Option<PathBuf>> {
+    let path = project_cleanup_wrapper_path(project_dir);
+    if path.exists() && matches!(mode, BootstrapMode::MissingOnly) {
+        return Ok(None);
+    }
+    let script = build_project_cleanup_wrapper_script();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(&path, script.as_bytes())
+        .with_context(|| format!("写入项目级清理脚本失败：{}", path.display()))?;
+    set_executable(&path)?;
+    Ok(Some(path))
+}
+
+fn build_project_cleanup_wrapper_script() -> String {
+    r#"#!/usr/bin/env sh
+set -eu
+
+project_root="${RCCB_PROJECT_DIR:-$PWD}"
+cd "$project_root"
+
+echo "[rccb-clean] project=$project_root"
+
+remove_path() {
+  target="$1"
+  if [ -e "$target" ] || [ -L "$target" ]; then
+    rm -rf "$target"
+    echo "  removed $target"
+  fi
+}
+
+# RCCB runtime
+remove_path ".rccb/run"
+remove_path ".rccb/logs"
+remove_path ".rccb/sessions"
+remove_path ".rccb/tmp"
+remove_path ".rccb/tasks"
+remove_path ".rccb/update"
+
+# RCCB generated wrappers / templates / provider support
+remove_path ".rccb/bin"
+remove_path ".rccb/providers"
+remove_path ".rccb/config.example.json"
+
+# RCCB managed rule / skill surfaces
+remove_path ".claude/agents"
+remove_path ".claude/commands"
+remove_path ".claude/rules"
+remove_path ".claude/settings.local.json"
+remove_path ".opencode/agents"
+remove_path ".opencode/commands"
+remove_path ".opencode/skills"
+remove_path ".factory/commands"
+remove_path ".factory/droids"
+remove_path ".factory/rules"
+remove_path ".factory/skills"
+remove_path ".factory/settings.local.json"
+remove_path ".agents/skills/rccb-delegate"
+remove_path ".agents/skills/rccb-audit"
+remove_path ".agents/skills/rccb-research-verify"
+
+# Managed entry files; user can regenerate on next bootstrap/start
+remove_path "AGENTS.md"
+remove_path "CLAUDE.md"
+remove_path "GEMINI.md"
+
+echo "[rccb-clean] done"
+"#
+    .to_string()
 }
 
 fn build_project_delegate_wrapper_script(project_dir: &Path, agent: &str) -> Result<String> {
@@ -9126,6 +9208,7 @@ mod tests {
         assert!(project.join(".rccb/bin/codex").exists());
         assert!(project.join(".rccb/bin/claude").exists());
         assert!(project.join(".rccb/bin/rccb").exists());
+        assert!(project.join(".rccb/bin/rccb-clean").exists());
         assert!(project.join(".rccb/bin/rccb-delegate-coder").exists());
         assert!(project.join(".rccb/bin/rccb-delegate-researcher").exists());
         assert!(project.join(".rccb/bin/rccb-delegate-auditor").exists());

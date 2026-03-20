@@ -124,6 +124,7 @@ rccb --project-dir . init
 - `./.rccb/providers/*.example.json`（native provider profile 模板）
 - `./.rccb/bin/*`（provider 启动包装脚本）
 - `./.rccb/bin/rccb`（项目级稳定 RCCB 入口，供 rules/skills/agents 统一调用）
+- `./.rccb/bin/rccb-clean`（调试清理脚本，一键清理 RCCB 托管生成的 wrapper / 规则 / skills / 运行态残留）
 - `./AGENTS.md`（跨 provider 共享协作规则，含托管区块与用户区块）
 - `./CLAUDE.md`
 - `./GEMINI.md`
@@ -151,6 +152,16 @@ rccb --project-dir . init
 - 启动包装脚本也属于 RCCB 生成模板，`debug` 模式会一并刷新
 - `AGENTS.md` / `CLAUDE.md` / `GEMINI.md` 会保留用户区块，方便写项目个性化规则
 - `.claude/rules/rccb-runtime.md` 属于 RCCB 全托管动态文件，会按当前实例和当前 provider 集合自动刷新
+
+调试清理：
+
+```bash
+./.rccb/bin/rccb-clean
+```
+
+- 该脚本只清理 RCCB 托管生成的内容与运行态残留
+- 不改你的全局配置
+- 设计目标是“清干净后重新启动即可重新生成”，方便调试复现
 
 Claude 自动加载策略：
 
