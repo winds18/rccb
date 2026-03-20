@@ -140,6 +140,9 @@ fn ensure_project_bootstrap(
     if let Some(wrapper) = write_project_rccb_wrapper(project_dir, mode)? {
         wrapper_scripts.push(wrapper);
     }
+    if providers.iter().any(|p| p == "claude") {
+        wrapper_scripts.extend(write_project_delegate_wrappers(project_dir, mode)?);
+    }
     let provider_support_files = write_provider_support_files(project_dir, mode, providers)?;
     let rule_templates = ensure_project_rule_bootstrap(project_dir, mode, instance, providers)?;
     Ok(ProjectBootstrapSummary {
@@ -289,6 +292,15 @@ fn claude_rccb_allowed_tools(project_dir: &Path) -> Vec<String> {
     let debug_abs = project_dir.join("target").join("debug").join("rccb");
     let release_abs = project_dir.join("target").join("release").join("rccb");
     let wrapper_abs = project_rccb_wrapper_path(project_dir);
+    let delegate_wrapper_abs = [
+        "delegate-coder",
+        "delegate-researcher",
+        "delegate-auditor",
+        "delegate-scribe",
+    ]
+    .iter()
+    .map(|agent| project_delegate_rccb_wrapper_path(project_dir, agent))
+    .collect::<Vec<_>>();
     let mut allow = vec![
         "WebSearch".to_string(),
         "Read".to_string(),
@@ -307,10 +319,34 @@ fn claude_rccb_allowed_tools(project_dir: &Path) -> Vec<String> {
         &[
             "./.rccb/bin/rccb".to_string(),
             "'./.rccb/bin/rccb'".to_string(),
+            "./.rccb/bin/rccb-delegate-coder".to_string(),
+            "'./.rccb/bin/rccb-delegate-coder'".to_string(),
+            "./.rccb/bin/rccb-delegate-researcher".to_string(),
+            "'./.rccb/bin/rccb-delegate-researcher'".to_string(),
+            "./.rccb/bin/rccb-delegate-auditor".to_string(),
+            "'./.rccb/bin/rccb-delegate-auditor'".to_string(),
+            "./.rccb/bin/rccb-delegate-scribe".to_string(),
+            "'./.rccb/bin/rccb-delegate-scribe'".to_string(),
             "$project_root/.rccb/bin/rccb".to_string(),
             "'$project_root/.rccb/bin/rccb'".to_string(),
+            "$project_root/.rccb/bin/rccb-delegate-coder".to_string(),
+            "'$project_root/.rccb/bin/rccb-delegate-coder'".to_string(),
+            "$project_root/.rccb/bin/rccb-delegate-researcher".to_string(),
+            "'$project_root/.rccb/bin/rccb-delegate-researcher'".to_string(),
+            "$project_root/.rccb/bin/rccb-delegate-auditor".to_string(),
+            "'$project_root/.rccb/bin/rccb-delegate-auditor'".to_string(),
+            "$project_root/.rccb/bin/rccb-delegate-scribe".to_string(),
+            "'$project_root/.rccb/bin/rccb-delegate-scribe'".to_string(),
             wrapper_abs.display().to_string(),
             format!("'{}'", wrapper_abs.display()),
+            delegate_wrapper_abs[0].display().to_string(),
+            format!("'{}'", delegate_wrapper_abs[0].display()),
+            delegate_wrapper_abs[1].display().to_string(),
+            format!("'{}'", delegate_wrapper_abs[1].display()),
+            delegate_wrapper_abs[2].display().to_string(),
+            format!("'{}'", delegate_wrapper_abs[2].display()),
+            delegate_wrapper_abs[3].display().to_string(),
+            format!("'{}'", delegate_wrapper_abs[3].display()),
             "rccb".to_string(),
             "./target/debug/rccb".to_string(),
             "'./target/debug/rccb'".to_string(),
@@ -426,6 +462,33 @@ fn write_project_rccb_wrapper(project_dir: &Path, mode: BootstrapMode) -> Result
         .with_context(|| format!("写入项目级 rccb wrapper 失败：{}", path.display()))?;
     set_executable(&path)?;
     Ok(Some(path))
+}
+
+fn write_project_delegate_wrappers(
+    project_dir: &Path,
+    mode: BootstrapMode,
+) -> Result<Vec<PathBuf>> {
+    let mut written = Vec::new();
+    for agent in [
+        "delegate-coder",
+        "delegate-researcher",
+        "delegate-auditor",
+        "delegate-scribe",
+    ] {
+        let path = project_delegate_rccb_wrapper_path(project_dir, agent);
+        if path.exists() && matches!(mode, BootstrapMode::MissingOnly) {
+            continue;
+        }
+        let script = build_project_delegate_wrapper_script(project_dir, agent)?;
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(&path, script.as_bytes())
+            .with_context(|| format!("写入项目级 delegate wrapper 失败：{}", path.display()))?;
+        set_executable(&path)?;
+        written.push(path);
+    }
+    Ok(written)
 }
 
 fn refresh_legacy_provider_wrappers(
@@ -666,8 +729,24 @@ fn append_claude_rccb_bash_allow_patterns(tools: &mut Vec<String>, seen: &mut Ha
         &[
             "./.rccb/bin/rccb".to_string(),
             "'./.rccb/bin/rccb'".to_string(),
+            "./.rccb/bin/rccb-delegate-coder".to_string(),
+            "'./.rccb/bin/rccb-delegate-coder'".to_string(),
+            "./.rccb/bin/rccb-delegate-researcher".to_string(),
+            "'./.rccb/bin/rccb-delegate-researcher'".to_string(),
+            "./.rccb/bin/rccb-delegate-auditor".to_string(),
+            "'./.rccb/bin/rccb-delegate-auditor'".to_string(),
+            "./.rccb/bin/rccb-delegate-scribe".to_string(),
+            "'./.rccb/bin/rccb-delegate-scribe'".to_string(),
             "$project_root/.rccb/bin/rccb".to_string(),
             "'$project_root/.rccb/bin/rccb'".to_string(),
+            "$project_root/.rccb/bin/rccb-delegate-coder".to_string(),
+            "'$project_root/.rccb/bin/rccb-delegate-coder'".to_string(),
+            "$project_root/.rccb/bin/rccb-delegate-researcher".to_string(),
+            "'$project_root/.rccb/bin/rccb-delegate-researcher'".to_string(),
+            "$project_root/.rccb/bin/rccb-delegate-auditor".to_string(),
+            "'$project_root/.rccb/bin/rccb-delegate-auditor'".to_string(),
+            "$project_root/.rccb/bin/rccb-delegate-scribe".to_string(),
+            "'$project_root/.rccb/bin/rccb-delegate-scribe'".to_string(),
             "rccb".to_string(),
             "./target/debug/rccb".to_string(),
             "'./target/debug/rccb'".to_string(),
@@ -785,11 +864,30 @@ fn project_rccb_wrapper_path(project_dir: &Path) -> PathBuf {
     rccb_dir(project_dir).join("bin").join("rccb")
 }
 
+fn project_delegate_rccb_wrapper_path(project_dir: &Path, agent: &str) -> PathBuf {
+    rccb_dir(project_dir)
+        .join("bin")
+        .join(format!("rccb-{}", agent.trim()))
+}
+
 fn build_project_rccb_wrapper_script(project_dir: &Path) -> Result<String> {
     let target = current_rccb_binary_target_hint(project_dir);
     Ok(format!(
         "#!/usr/bin/env sh\nset -eu\nproject_root=\"${{RCCB_PROJECT_DIR:-$PWD}}\"\ncd \"$project_root\"\nexec {} \"$@\"\n",
         shell_quote(&target)
+    ))
+}
+
+fn build_project_delegate_wrapper_script(project_dir: &Path, agent: &str) -> Result<String> {
+    let base = project_rccb_wrapper_path(project_dir);
+    let base_hint = match base.strip_prefix(project_dir) {
+        Ok(rel) => format!("./{}", rel.display()),
+        Err(_) => base.display().to_string(),
+    };
+    Ok(format!(
+        "#!/usr/bin/env sh\nset -eu\nproject_root=\"${{RCCB_PROJECT_DIR:-$PWD}}\"\ncd \"$project_root\"\nexport RCCB_PROVIDER_ROLE=orchestrator\nexport RCCB_PROVIDER_AGENT={}\nexport RCCB_ASK_ASYNC_STDOUT=\"${{RCCB_ASK_ASYNC_STDOUT:-minimal}}\"\nexec {} \"$@\"\n",
+        shell_quote(agent.trim()),
+        shell_quote(&base_hint)
     ))
 }
 
@@ -800,6 +898,10 @@ fn project_rccb_command(project_dir: &Path) -> String {
         Err(_) => wrapper.display().to_string(),
     };
     format!("{} --project-dir .", shell_quote(&wrapper_hint))
+}
+
+fn project_delegate_rccb_command(agent: &str) -> String {
+    shell_quote(&format!("./.rccb/bin/rccb-{}", agent.trim()))
 }
 
 fn build_rule_file_specs(
@@ -1081,17 +1183,17 @@ fn build_rule_file_specs(
                 .join("rccb-code.md"),
             contents: build_claude_command_markdown(
                 "委派编码任务给 opencode",
-                "使用 RCCB 把实现、改代码、运行测试、联调修复等任务委派给 `opencode`。\n\
+                &format!("使用 RCCB 把实现、改代码、运行测试、联调修复等任务委派给 `opencode`。\n\
 任务内容：$ARGUMENTS\n\n\
 如果用户只是指定“由 opencode 复审/审计/核验”，这仍然不是编码任务；必须改走 `/rccb-audit` 或 `delegate-auditor`，不要因为执行者是 opencode 就使用 `delegate-coder`。\n\
 必须通过 `delegate-coder` 子代理完成派单，主编排者不要直接下场执行。\n\
 请直接异步委派，前台只保留最小提交信息，不要自己轮询状态：\n\
-`RCCB_PROVIDER_ROLE=orchestrator RCCB_PROVIDER_AGENT=delegate-coder RCCB_ASK_ASYNC_STDOUT=minimal rccb --project-dir . ask --instance default --provider opencode --caller claude --async --timeout-s 900 \"$ARGUMENTS\"`\n\n\
+`{} ask --instance default --provider opencode --caller claude --async --timeout-s 900 \"$ARGUMENTS\"`\n\n\
 提交成功后，不要自己执行 WebSearch / Read / 通用 Bash，也不要下场做这个任务。\n\
 提交成功后默认静默等待，不要主动向用户提“继续等待 / 稍后查看”。\n\
 如需安静查看状态，只允许用：\n\
 `rccb --project-dir . inbox --instance default --req-id <req_id> --latest --limit 5`\n\n\
-如果任务依赖外部事实或资料，请改用 `/rccb-research`。",
+如果任务依赖外部事实或资料，请改用 `/rccb-research`。", project_delegate_rccb_command("delegate-coder")),
             ),
             kind: RuleFileKind::PlainMarkdown,
         });
@@ -1104,14 +1206,14 @@ fn build_rule_file_specs(
                 .join("rccb-research.md"),
             contents: build_claude_command_markdown(
                 "委派调研任务给 gemini，并安排复核执行者核验关键结论",
-                "使用 RCCB 先把调研任务委派给 `gemini`，要求它做详细、结构化、有逻辑的调研，优先官方/一手来源，并明确标注日期、推导过程与冲突点。\n\
+                &format!("使用 RCCB 先把调研任务委派给 `gemini`，要求它做详细、结构化、有逻辑的调研，优先官方/一手来源，并明确标注日期、推导过程与冲突点。\n\
 任务内容：$ARGUMENTS\n\n\
 在 gemini 返回后，不要直接采纳结论；继续把关键结论、风险点和冲突信息委派给复核执行者做核验。\n\
 默认复核执行者是 `codex`，但如果用户或主编排者明确指定改由 `opencode` 等其他执行者复核，必须服从明确指定。\n\
 如果用户明确说“复审让 opencode 来做”“不要找 codex”，那后续复核必须交给 `delegate-auditor`，并由 auditor 把执行者选成 `opencode`；不要把任务改判成编码链路。\n\
 整个过程中必须通过 `delegate-researcher` 子代理派单并等待 gemini 真实终态，主编排者不要直接下场执行。\n\n\
 推荐派单：\n\
-`RCCB_PROVIDER_ROLE=orchestrator RCCB_PROVIDER_AGENT=delegate-researcher RCCB_ASK_ASYNC_STDOUT=minimal rccb --project-dir . ask --instance default --provider gemini --caller claude --async --await-terminal --timeout-s 900 \"$ARGUMENTS\"`\n\n\
+`{} ask --instance default --provider gemini --caller claude --async --await-terminal --timeout-s 900 \"$ARGUMENTS\"`\n\n\
 只有真正拿到 RCCB 输出中的 `req_id=<数字或请求ID>`，才算派单成功。\n\
 绝对不要把 Claude Bash 工具自己的后台任务 ID（如 `bg...`、`bu...`、`task ...`）当成 RCCB 的 `req_id`。\n\
 如果没拿到真正的 `req_id`，应直接说明“本次派单不可追踪，需重新派单”，不要继续用错误 ID 查 `inbox/watch`。\n\n\
@@ -1119,7 +1221,7 @@ fn build_rule_file_specs(
 提交后默认静默等待真实终态，不要主动向用户提“继续等待 / 稍后查看”。\n\
 调研类任务天然更慢；只要没有新的实质进展、异常或超时，不要为了显得在跟进而反复刷屏、反复提问用户。\n\
 如需安静查看状态，只允许用：\n\
-`rccb --project-dir . inbox --instance default --req-id <req_id> --latest --limit 5`。",
+`rccb --project-dir . inbox --instance default --req-id <req_id> --latest --limit 5`。", project_delegate_rccb_command("delegate-researcher")),
             ),
             kind: RuleFileKind::PlainMarkdown,
         });
@@ -1132,14 +1234,14 @@ fn build_rule_file_specs(
                 .join("rccb-audit.md"),
             contents: build_claude_command_markdown(
                 "委派代码审计/复核任务给复核执行者",
-                "使用 RCCB 把代码审计、风险评估、边界条件检查、回归分析和调研复核任务委派给复核执行者。\n\
+                &format!("使用 RCCB 把代码审计、风险评估、边界条件检查、回归分析和调研复核任务委派给复核执行者。\n\
 任务内容：$ARGUMENTS\n\n\
 任务类型由工作性质决定，不由执行者是谁决定：即便用户指定 `opencode` 来做复审，这仍然是审计/复核任务，必须走 `delegate-auditor`，不要改走 `delegate-coder`。\n\
 默认复核执行者是 `codex`，但如果用户或主编排者明确指定改由 `opencode` 等其他执行者复核，必须服从明确指定。\n\
 如果存在手动指定复核执行者，传给 `delegate-auditor` 的任务首部必须显式写成 `复核执行者：<provider>`；如果用户明确说“不要找 codex”，还必须写 `禁止执行者：codex`。\n\
 必须通过 `delegate-auditor` 子代理完成派单，主编排者不要直接下场执行。\n\
 请直接委派并等待真实终态，前台只保留最小提交信息，不要自己轮询状态：\n\
-`RCCB_PROVIDER_ROLE=orchestrator RCCB_PROVIDER_AGENT=delegate-auditor RCCB_ASK_ASYNC_STDOUT=minimal rccb --project-dir . ask --instance default --provider <codex|opencode|用户明确指定执行者> --caller claude --async --await-terminal --timeout-s 900 \"$ARGUMENTS\"`\n\n\
+`{} ask --instance default --provider <codex|opencode|用户明确指定执行者> --caller claude --async --await-terminal --timeout-s 900 \"$ARGUMENTS\"`\n\n\
 只有真正拿到 RCCB 输出中的 `req_id=<数字或请求ID>`，才算派单成功。\n\
 绝对不要把 Claude Bash 工具自己的后台任务 ID（如 `bg...`、`bu...`、`task ...`）当成 RCCB 的 `req_id`。\n\
 如果没拿到真正的 `req_id`，应直接说明“本次派单不可追踪，需重新派单”，不要继续用错误 ID 查 `inbox/watch`。\n\n\
@@ -1147,7 +1249,7 @@ fn build_rule_file_specs(
 提交后默认静默等待真实终态，不要主动向用户提“继续等待 / 稍后查看”。\n\
 复核类任务往往需要较长阅读和核验时间；只要没有新的实质结论、异常或超时，不要反复刷屏或频繁向用户追问。\n\
 如需安静查看状态，只允许用：\n\
-`rccb --project-dir . inbox --instance default --req-id <req_id> --latest --limit 5`",
+`rccb --project-dir . inbox --instance default --req-id <req_id> --latest --limit 5`", project_delegate_rccb_command("delegate-auditor")),
             ),
             kind: RuleFileKind::PlainMarkdown,
         });
@@ -1160,15 +1262,15 @@ fn build_rule_file_specs(
                 .join("rccb-doc.md"),
             contents: build_claude_command_markdown(
                 "委派文档记录任务给 droid",
-                "使用 RCCB 把文档整理、纪要、变更说明、操作手册和复盘归档任务委派给 `droid`。\n\
+                &format!("使用 RCCB 把文档整理、纪要、变更说明、操作手册和复盘归档任务委派给 `droid`。\n\
 任务内容：$ARGUMENTS\n\n\
 必须通过 `delegate-scribe` 子代理完成派单，主编排者不要直接下场执行。\n\
 请直接委派并等待真实终态，前台只保留最小提交信息，不要自己轮询状态：\n\
-`RCCB_PROVIDER_ROLE=orchestrator RCCB_PROVIDER_AGENT=delegate-scribe RCCB_ASK_ASYNC_STDOUT=minimal rccb --project-dir . ask --instance default --provider droid --caller claude --async --await-terminal --timeout-s 600 \"$ARGUMENTS\"`\n\n\
+`{} ask --instance default --provider droid --caller claude --async --await-terminal --timeout-s 600 \"$ARGUMENTS\"`\n\n\
 提交成功后，不要自己执行 WebSearch / Read / 通用 Bash，也不要自己做文档交付。\n\
 提交后默认静默等待真实终态，不要主动向用户提“继续等待 / 稍后查看”。\n\
 如需安静查看状态，只允许用：\n\
-`rccb --project-dir . inbox --instance default --req-id <req_id> --latest --limit 5`",
+`rccb --project-dir . inbox --instance default --req-id <req_id> --latest --limit 5`", project_delegate_rccb_command("delegate-scribe")),
             ),
             kind: RuleFileKind::PlainMarkdown,
         });
@@ -1323,7 +1425,7 @@ fn should_refresh_legacy_plain_rule(path: &Path, existing: &str) -> bool {
 
     if path_str.ends_with(".claude/commands/rccb-research.md")
         && (!normalized.contains("delegate-researcher")
-            || !normalized.contains("RCCB_PROVIDER_AGENT=delegate-researcher")
+            || !normalized.contains("./.rccb/bin/rccb-delegate-researcher")
             || !normalized.contains("--await-terminal")
             || !normalized.contains("调研类任务天然更慢")
             || normalized.contains("至少两轮调研")
@@ -1334,7 +1436,7 @@ fn should_refresh_legacy_plain_rule(path: &Path, existing: &str) -> bool {
 
     if path_str.ends_with(".claude/commands/rccb-audit.md")
         && (!normalized.contains("delegate-auditor")
-            || !normalized.contains("RCCB_PROVIDER_AGENT=delegate-auditor")
+            || !normalized.contains("./.rccb/bin/rccb-delegate-auditor")
             || !normalized.contains("--await-terminal")
             || !normalized.contains("复核执行者：<provider>")
             || !normalized.contains("禁止执行者：codex")
@@ -1345,14 +1447,14 @@ fn should_refresh_legacy_plain_rule(path: &Path, existing: &str) -> bool {
 
     if path_str.ends_with(".claude/commands/rccb-code.md")
         && (!normalized.contains("delegate-coder")
-            || !normalized.contains("RCCB_PROVIDER_AGENT=delegate-coder"))
+            || !normalized.contains("./.rccb/bin/rccb-delegate-coder"))
     {
         return true;
     }
 
     if path_str.ends_with(".claude/commands/rccb-doc.md")
         && (!normalized.contains("delegate-scribe")
-            || !normalized.contains("RCCB_PROVIDER_AGENT=delegate-scribe")
+            || !normalized.contains("./.rccb/bin/rccb-delegate-scribe")
             || !normalized.contains("--await-terminal"))
     {
         return true;
@@ -1361,7 +1463,7 @@ fn should_refresh_legacy_plain_rule(path: &Path, existing: &str) -> bool {
     if path_str.ends_with(".claude/agents/delegate-researcher.md")
         && (!normalized.contains("阻塞等待该 `req_id` 进入真实终态")
             || !normalized.contains("tools: ['Bash']")
-            || !normalized.contains("RCCB_PROVIDER_AGENT=delegate-researcher")
+            || !normalized.contains("./.rccb/bin/rccb-delegate-researcher")
             || !normalized.contains("--await-terminal")
             || !normalized.contains("不要为了显得积极而反复发言或重复追问用户"))
     {
@@ -1370,8 +1472,7 @@ fn should_refresh_legacy_plain_rule(path: &Path, existing: &str) -> bool {
 
     if path_str.contains(".claude/agents/delegate-")
         && (!normalized.contains("tools: ['Bash']")
-            || !normalized.contains("RCCB_PROVIDER_ROLE=orchestrator")
-            || !normalized.contains("RCCB_PROVIDER_AGENT="))
+            || !normalized.contains("./.rccb/bin/rccb-delegate-"))
     {
         return true;
     }
@@ -1386,7 +1487,7 @@ fn should_refresh_legacy_plain_rule(path: &Path, existing: &str) -> bool {
     }
 
     if path_str.ends_with(".claude/agents/delegate-scribe.md")
-        && (!normalized.contains("RCCB_PROVIDER_AGENT=delegate-scribe")
+        && (!normalized.contains("./.rccb/bin/rccb-delegate-scribe")
             || !normalized.contains("--await-terminal")
             || !normalized.contains("等待到任务进入真实终态"))
     {
@@ -1600,22 +1701,26 @@ fn build_claude_runtime_rule_markdown(
     let mut delegate_lines = Vec::new();
     if contains_provider(providers, "opencode") {
         delegate_lines.push(format!(
-            "- 编码委派：`RCCB_PROVIDER_ROLE=orchestrator RCCB_PROVIDER_AGENT=delegate-coder RCCB_ASK_ASYNC_STDOUT=minimal {base_cmd} ask --instance {effective_instance} --provider opencode --caller claude --async --timeout-s 900 \"<任务>\"`"
+            "- 编码委派：`{} ask --instance {effective_instance} --provider opencode --caller claude --async --timeout-s 900 \"<任务>\"`",
+            project_delegate_rccb_command("delegate-coder")
         ));
     }
     if contains_provider(providers, "gemini") {
         delegate_lines.push(format!(
-            "- 调研委派：`RCCB_PROVIDER_ROLE=orchestrator RCCB_PROVIDER_AGENT=delegate-researcher RCCB_ASK_ASYNC_STDOUT=minimal {base_cmd} ask --instance {effective_instance} --provider gemini --caller claude --async --await-terminal --timeout-s 900 \"<任务>\"`"
+            "- 调研委派：`{} ask --instance {effective_instance} --provider gemini --caller claude --async --await-terminal --timeout-s 900 \"<任务>\"`",
+            project_delegate_rccb_command("delegate-researcher")
         ));
     }
     if contains_provider(providers, "codex") || contains_provider(providers, "opencode") {
         delegate_lines.push(format!(
-            "- 复核委派：`RCCB_PROVIDER_ROLE=orchestrator RCCB_PROVIDER_AGENT=delegate-auditor RCCB_ASK_ASYNC_STDOUT=minimal {base_cmd} ask --instance {effective_instance} --provider <codex|opencode|用户明确指定执行者> --caller claude --async --await-terminal --timeout-s 900 \"<任务>\"`"
+            "- 复核委派：`{} ask --instance {effective_instance} --provider <codex|opencode|用户明确指定执行者> --caller claude --async --await-terminal --timeout-s 900 \"<任务>\"`",
+            project_delegate_rccb_command("delegate-auditor")
         ));
     }
     if contains_provider(providers, "droid") {
         delegate_lines.push(format!(
-            "- 文档委派：`RCCB_PROVIDER_ROLE=orchestrator RCCB_PROVIDER_AGENT=delegate-scribe RCCB_ASK_ASYNC_STDOUT=minimal {base_cmd} ask --instance {effective_instance} --provider droid --caller claude --async --await-terminal --timeout-s 600 \"<任务>\"`"
+            "- 文档委派：`{} ask --instance {effective_instance} --provider droid --caller claude --async --await-terminal --timeout-s 600 \"<任务>\"`",
+            project_delegate_rccb_command("delegate-scribe")
         ));
     }
     if delegate_lines.is_empty() {
@@ -1947,7 +2052,8 @@ fn build_delegate_async_template(
         ""
     };
     format!(
-        "RCCB_PROVIDER_ROLE=orchestrator RCCB_PROVIDER_AGENT={agent} RCCB_ASK_ASYNC_STDOUT=minimal rccb --project-dir . ask --instance default --provider {provider_expr} --caller claude --async{await_flag} --timeout-s {timeout_s} \\\"<任务>\\\""
+        "{} ask --instance default --provider {provider_expr} --caller claude --async{await_flag} --timeout-s {timeout_s} \\\"<任务>\\\"",
+        project_delegate_rccb_command(agent)
     )
 }
 
@@ -2022,9 +2128,9 @@ fn build_claude_delegate_agent_markdown(
 - 你是 Claude 编排者的专用委派子代理，不是最终执行者。\n\
 - 你唯一的任务是：{workflow_line}\n\
 - 严禁自己使用 `WebSearch`、`WebFetch`、`Read file`、`Grep`、`Glob`、普通 `Bash` 或任何其他工具去亲自完成任务。\n\
-- 唯一允许的执行动作，是运行一条以 `rccb` 为核心的 {command_mode} 命令；如需环境变量前缀，也只能使用 `RCCB_*=` 这类 RCCB 自身变量。\n\
-- 除 `rccb` 相关命令外，其他任何 shell 指令一律禁止。\n\
-- 不要为了“确认环境变量”再执行 `env`、`printenv`、`set`、`grep -i rccb` 之类的 shell 检查；标准命令里已经显式注入了 `RCCB_PROVIDER_ROLE=orchestrator` 与当前子代理的 `RCCB_PROVIDER_AGENT`，直接按模板派单即可。\n\
+- 唯一允许的执行动作，是运行一条以项目级 delegate wrapper 为入口的 {command_mode} 命令。\n\
+- 除 delegate wrapper / `rccb` 相关命令外，其他任何 shell 指令一律禁止。\n\
+- 不要为了“确认环境变量”再执行 `env`、`printenv`、`set`、`grep -i rccb` 之类的 shell 检查；delegate wrapper 已经注入所需的 RCCB 环境变量，直接按模板派单即可。\n\
 {submit_exit_line}"
         ),
         format!(
@@ -2063,9 +2169,9 @@ fn build_claude_delegate_auditor_agent_markdown() -> String {
 - 判断执行者时，先看结构化强标记：`复核执行者：<provider>` 与 `禁止执行者：<provider>`；这两个标记优先级高于一切默认分工。\n\
 - 只要输入里出现 `禁止执行者：codex`、`不要找 codex`、`不用 codex` 等明确排除语义，最终 `--provider` 就绝对不能是 `codex`。\n\
 - 严禁自己使用 `Read file`、`Grep`、`Glob`、普通 `Bash` 或任何其他工具去亲自做审计或复核。\n\
-- 唯一允许的执行动作，是运行一条以 `rccb` 为核心的 `ask --async --await-terminal` 派单命令；如需环境变量前缀，也只能使用 `RCCB_*=` 这类 RCCB 自身变量。\n\
-- 除 `rccb` 相关命令外，其他任何 shell 指令一律禁止。\n\
-- 不要为了“确认环境变量”再执行 `env`、`printenv`、`set`、`grep -i rccb` 之类的 shell 检查；标准命令里已经显式注入了 `RCCB_PROVIDER_ROLE=orchestrator` 与当前子代理的 `RCCB_PROVIDER_AGENT`，直接按模板派单即可。\n\
+- 唯一允许的执行动作，是运行一条以项目级 `./.rccb/bin/rccb-delegate-auditor` wrapper 为入口的 `ask --async --await-terminal` 派单命令。\n\
+- 除 delegate wrapper / `rccb` 相关命令外，其他任何 shell 指令一律禁止。\n\
+- 不要为了“确认环境变量”再执行 `env`、`printenv`、`set`、`grep -i rccb` 之类的 shell 检查；delegate wrapper 已经注入所需的 RCCB 环境变量，直接按模板派单即可。\n\
 - 派单后要继续等待到任务进入真实终态，再把 `provider=<provider>`、`req_id=<req_id>`、`status=<terminal_status>` 与复核结论返回给主编排者。\n\
 - 在等待期间保持安静；不要自行再跑 `inbox`、`watch`、`sleep`、`cat`、`Read file` 或任何二次轮询。\n"
             .to_string(),
@@ -2078,9 +2184,9 @@ fn build_claude_delegate_auditor_agent_markdown() -> String {
         .to_string(),
         "## 标准派单命令\n\
 ```bash\n\
-RCCB_PROVIDER_ROLE=orchestrator RCCB_PROVIDER_AGENT=delegate-auditor RCCB_ASK_ASYNC_STDOUT=minimal rccb --project-dir . ask --instance default --provider <codex|opencode|其他明确指定执行者> --caller claude --async --await-terminal --timeout-s 900 \"<任务>\"\n\
+./.rccb/bin/rccb-delegate-auditor ask --instance default --provider <codex|opencode|其他明确指定执行者> --caller claude --async --await-terminal --timeout-s 900 \"<任务>\"\n\
 ```\n"
-        .to_string(),
+            .to_string(),
         "## 返回格式\n\
 - 必须返回：`provider=<实际执行者>`、`req_id=<req_id>`、`status=<completed|failed|timeout|incomplete|canceled>`\n\
 - 只有真正拿到 RCCB 输出里的 `req_id=<数字或请求ID>`，才算派单成功。\n\
@@ -3565,7 +3671,7 @@ fn orchestrator_guardrail_prompt(
     render_project_bootstrap_content(
         project_dir,
         &format!(
-        "RCCB 编排模式已启用。\n\n当前编排者：{orchestrator}\n可用执行者：{executor_list}\n\n只做：规划、拆解、委派、验收、汇总。\n不要自己执行 bash、修改文件或运行测试。\n\n默认分工：opencode=编码，gemini=调研，droid=文档，codex=审计。\n优先级规则：用户/主编排者手动指定 > 当前任务明确约束 > 默认分工；默认分工优先级最低。\n调研规则：先 gemini 做详细、结构化调研，再安排复核执行者核验关键结论；若用户明确指定复核执行者，以明确指定为准。\n\n接到执行型任务时，第一步必须先选择对应的 `delegate-*` 子代理；绝对不要先尝试 `Bash(rccb ask ...)` 再回退。\n如果某次直派被 RCCB guard 拦下，说明编排行为违规；只能立即改回对应的 `delegate-*` 子代理，不得改用通用 Agent、WebSearch、Read file 或其他工具自己完成任务。\n任务类型由工作性质决定，不由执行者是谁决定：编码/修复/测试走 `delegate-coder`；调研走 `delegate-researcher`；文档走 `delegate-scribe`；审计/复核/评审/核验一律走 `delegate-auditor`。\n如果用户说“复审让 opencode 来做，不要找 codex”，这仍然是复核任务，必须走 `delegate-auditor`，再把执行者改成 `opencode`；不能回落到 `codex`，也不能改走 `delegate-coder`。\n\n委派格式：\n- 编码链路：`RCCB_PROVIDER_ROLE=orchestrator RCCB_PROVIDER_AGENT=delegate-coder RCCB_ASK_ASYNC_STDOUT=minimal rccb --project-dir . ask --instance default --provider <执行者> --caller {orchestrator} --async --timeout-s <预算秒数> \"<任务>\"`\n- 调研/复核/文档链路：`RCCB_PROVIDER_ROLE=orchestrator RCCB_PROVIDER_AGENT=<delegate-agent> RCCB_ASK_ASYNC_STDOUT=minimal rccb --project-dir . ask --instance default --provider <执行者> --caller {orchestrator} --async --await-terminal --timeout-s <预算秒数> \"<任务>\"`\n\n派单成功后默认静默等待 RCCB_RESULT。\n前台最多确认一次“已委派，等待后台结果”；不要循环 `sleep`、`cat .rccb/tasks/<instance>/artifacts/<req_id>.reply.md`、`inbox`、`watch --follow` 自己轮询，也不要主动向用户提“继续等待 / 稍后查看”。\n调研、复核、长阅读任务默认需要更多耐心；只要没有新的实质结论、异常或超时，就不要再次发言，更不要为了显得在跟进而反复抛“是否继续等待 / 是否重试 / 是否改派”。\n最终结果以 `.rccb/tasks/<instance>/artifacts/<req_id>.reply.md` 为准，不要在项目根目录创建或读取 `.reply.md`。\n只有用户明确要求、ask 超时、或已经超过任务超时预算时，才允许主动查状态。\n如需安静查看最新状态，优先用 `rccb --project-dir . inbox --instance default --req-id <req_id> --latest --limit 5`。\n若 ask 超时，或 `inbox` 不足以判断真实状态，再用不跟随的一次性 `watch --req-id` 看真实状态，不要立刻重派。\n详细规则见 `AGENTS.md` 与 `CLAUDE.md`。"
+        "RCCB 编排模式已启用。\n\n当前编排者：{orchestrator}\n可用执行者：{executor_list}\n\n只做：规划、拆解、委派、验收、汇总。\n不要自己执行 bash、修改文件或运行测试。\n\n默认分工：opencode=编码，gemini=调研，droid=文档，codex=审计。\n优先级规则：用户/主编排者手动指定 > 当前任务明确约束 > 默认分工；默认分工优先级最低。\n调研规则：先 gemini 做详细、结构化调研，再安排复核执行者核验关键结论；若用户明确指定复核执行者，以明确指定为准。\n\n接到执行型任务时，第一步必须先选择对应的 `delegate-*` 子代理；绝对不要先尝试 `Bash(rccb ask ...)` 再回退。\n如果某次直派被 RCCB guard 拦下，说明编排行为违规；只能立即改回对应的 `delegate-*` 子代理，不得改用通用 Agent、WebSearch、Read file 或其他工具自己完成任务。\n任务类型由工作性质决定，不由执行者是谁决定：编码/修复/测试走 `delegate-coder`；调研走 `delegate-researcher`；文档走 `delegate-scribe`；审计/复核/评审/核验一律走 `delegate-auditor`。\n如果用户说“复审让 opencode 来做，不要找 codex”，这仍然是复核任务，必须走 `delegate-auditor`，再把执行者改成 `opencode`；不能回落到 `codex`，也不能改走 `delegate-coder`。\n\n委派格式：\n- 编码链路：`./.rccb/bin/rccb-delegate-coder ask --instance default --provider <执行者> --caller {orchestrator} --async --timeout-s <预算秒数> \"<任务>\"`\n- 调研链路：`./.rccb/bin/rccb-delegate-researcher ask --instance default --provider <执行者> --caller {orchestrator} --async --await-terminal --timeout-s <预算秒数> \"<任务>\"`\n- 复核链路：`./.rccb/bin/rccb-delegate-auditor ask --instance default --provider <执行者> --caller {orchestrator} --async --await-terminal --timeout-s <预算秒数> \"<任务>\"`\n- 文档链路：`./.rccb/bin/rccb-delegate-scribe ask --instance default --provider <执行者> --caller {orchestrator} --async --await-terminal --timeout-s <预算秒数> \"<任务>\"`\n\n派单成功后默认静默等待 RCCB_RESULT。\n前台最多确认一次“已委派，等待后台结果”；不要循环 `sleep`、`cat .rccb/tasks/<instance>/artifacts/<req_id>.reply.md`、`inbox`、`watch --follow` 自己轮询，也不要主动向用户提“继续等待 / 稍后查看”。\n调研、复核、长阅读任务默认需要更多耐心；只要没有新的实质结论、异常或超时，就不要再次发言，更不要为了显得在跟进而反复抛“是否继续等待 / 是否重试 / 是否改派”。\n最终结果以 `.rccb/tasks/<instance>/artifacts/<req_id>.reply.md` 为准，不要在项目根目录创建或读取 `.reply.md`。\n只有用户明确要求、ask 超时、或已经超过任务超时预算时，才允许主动查状态。\n如需安静查看最新状态，优先用 `rccb --project-dir . inbox --instance default --req-id <req_id> --latest --limit 5`。\n若 ask 超时，或 `inbox` 不足以判断真实状态，再用不跟随的一次性 `watch --req-id` 看真实状态，不要立刻重派。\n详细规则见 `AGENTS.md` 与 `CLAUDE.md`。"
         ),
     )
 }
@@ -8556,7 +8662,8 @@ mod tests {
         assert!(delegate_researcher.contains("严禁自己使用 `WebSearch`"));
         assert!(delegate_researcher.contains("唯一允许的执行动作"));
         assert!(delegate_researcher.contains("不要为了“确认环境变量”再执行 `env`"));
-        assert!(delegate_researcher.contains("RCCB_PROVIDER_AGENT=delegate-researcher"));
+        assert!(delegate_researcher.contains("./.rccb/bin/rccb-delegate-researcher"));
+        assert!(delegate_researcher.contains("delegate wrapper 已经注入所需的 RCCB 环境变量"));
         assert!(delegate_researcher.contains("--await-terminal"));
         assert!(delegate_researcher.contains("等待到任务进入真实终态"));
         assert!(delegate_researcher.contains("--timeout-s 900"));
@@ -8564,7 +8671,8 @@ mod tests {
             fs::read_to_string(project.join(".claude/agents/delegate-coder.md")).unwrap();
         assert!(delegate_coder.contains("tools: ['Bash']"));
         assert!(delegate_coder.contains("唯一允许的执行动作"));
-        assert!(delegate_coder.contains("RCCB_PROVIDER_AGENT=delegate-coder"));
+        assert!(delegate_coder.contains("./.rccb/bin/rccb-delegate-coder"));
+        assert!(delegate_coder.contains("delegate wrapper 已经注入所需的 RCCB 环境变量"));
         assert!(!delegate_coder.contains("--await-terminal"));
         assert!(delegate_coder.contains("--timeout-s 900"));
         assert!(delegate_coder.contains("如果任务本质是审计、复核、评审、核验"));
@@ -8577,14 +8685,16 @@ mod tests {
         assert!(delegate_auditor.contains("复核执行者：<provider>"));
         assert!(delegate_auditor.contains("禁止执行者：<provider>"));
         assert!(delegate_auditor.contains("不要为了“确认环境变量”再执行 `env`"));
-        assert!(delegate_auditor.contains("RCCB_PROVIDER_AGENT=delegate-auditor"));
+        assert!(delegate_auditor.contains("./.rccb/bin/rccb-delegate-auditor"));
+        assert!(delegate_auditor.contains("delegate wrapper 已经注入所需的 RCCB 环境变量"));
         assert!(delegate_auditor.contains("--await-terminal"));
         assert!(delegate_auditor.contains("--timeout-s 900"));
         let delegate_scribe =
             fs::read_to_string(project.join(".claude/agents/delegate-scribe.md")).unwrap();
         assert!(delegate_scribe.contains("tools: ['Bash']"));
         assert!(delegate_scribe.contains("不要自己起草最终文档内容"));
-        assert!(delegate_scribe.contains("RCCB_PROVIDER_AGENT=delegate-scribe"));
+        assert!(delegate_scribe.contains("./.rccb/bin/rccb-delegate-scribe"));
+        assert!(delegate_scribe.contains("delegate wrapper 已经注入所需的 RCCB 环境变量"));
         assert!(delegate_scribe.contains("--await-terminal"));
         assert!(delegate_scribe.contains("--timeout-s 600"));
         let research_cmd =
@@ -8628,6 +8738,11 @@ mod tests {
             .exists());
         assert!(project.join(".rccb/bin/codex").exists());
         assert!(project.join(".rccb/bin/claude").exists());
+        assert!(project.join(".rccb/bin/rccb").exists());
+        assert!(project.join(".rccb/bin/rccb-delegate-coder").exists());
+        assert!(project.join(".rccb/bin/rccb-delegate-researcher").exists());
+        assert!(project.join(".rccb/bin/rccb-delegate-auditor").exists());
+        assert!(project.join(".rccb/bin/rccb-delegate-scribe").exists());
 
         let _ = fs::remove_dir_all(&project);
     }
@@ -9148,7 +9263,8 @@ mod tests {
         assert!(prompt.contains("不要主动向用户提“继续等待 / 稍后查看”"));
         assert!(prompt.contains("调研、复核、长阅读任务默认需要更多耐心"));
         assert!(prompt.contains("绝对不要先尝试 `Bash(rccb ask ...)`"));
-        assert!(prompt.contains("RCCB_PROVIDER_AGENT=<delegate-agent>"));
+        assert!(prompt.contains("./.rccb/bin/rccb-delegate-researcher"));
+        assert!(prompt.contains("./.rccb/bin/rccb-delegate-auditor"));
     }
 
     #[test]

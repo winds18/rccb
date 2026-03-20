@@ -132,7 +132,7 @@
 
 ### 最近已完成
 
-1. 子代理派单命令显式注入 `RCCB_PROVIDER_ROLE=orchestrator` 与 `RCCB_PROVIDER_AGENT=delegate-*`
+1. 子代理派单已切换到项目级 `./.rccb/bin/rccb-delegate-*` wrapper，由 wrapper 统一注入 RCCB 环境变量并减少审批噪声
 2. `delegate-*` 的 Claude wrapper 单独走 `bypassPermissions` 分支
 3. 主编排者 strict prompt 与项目级规则进一步加硬
 4. pane 注入改为确认式发送
