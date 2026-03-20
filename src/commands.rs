@@ -285,30 +285,37 @@ fn merge_claude_settings_local(path: &Path, desired: &Value) -> Result<Value> {
 fn claude_rccb_allowed_tools(project_dir: &Path) -> Vec<String> {
     let debug_abs = project_dir.join("target").join("debug").join("rccb");
     let release_abs = project_dir.join("target").join("release").join("rccb");
-    let binaries = vec![
-        "rccb".to_string(),
-        "./target/debug/rccb".to_string(),
-        "'./target/debug/rccb'".to_string(),
-        "./target/release/rccb".to_string(),
-        "'./target/release/rccb'".to_string(),
-        debug_abs.display().to_string(),
-        format!("'{}'", debug_abs.display()),
-        release_abs.display().to_string(),
-        format!("'{}'", release_abs.display()),
+    let mut allow = vec![
+        "WebSearch".to_string(),
+        "Read".to_string(),
+        "Grep".to_string(),
+        "Glob".to_string(),
+        "LS".to_string(),
+        "Task".to_string(),
     ];
-    let prefixes = rccb_bash_env_prefixes();
-    let mut allow = vec!["WebSearch".to_string()];
     let mut seen = HashSet::new();
-    seen.insert("WebSearch".to_string());
-
-    for prefix in prefixes {
-        for bin in &binaries {
-            let pattern = format!("Bash({}{}:*)", prefix, bin);
-            if seen.insert(pattern.clone()) {
-                allow.push(pattern);
-            }
-        }
+    for item in &allow {
+        seen.insert(item.clone());
     }
+    append_claude_rccb_bash_allow_patterns_with_binaries(
+        &mut allow,
+        &mut seen,
+        &[
+            "rccb".to_string(),
+            "./target/debug/rccb".to_string(),
+            "'./target/debug/rccb'".to_string(),
+            "./target/release/rccb".to_string(),
+            "'./target/release/rccb'".to_string(),
+            "$project_root/target/debug/rccb".to_string(),
+            "'$project_root/target/debug/rccb'".to_string(),
+            "$project_root/target/release/rccb".to_string(),
+            "'$project_root/target/release/rccb'".to_string(),
+            debug_abs.display().to_string(),
+            format!("'{}'", debug_abs.display()),
+            release_abs.display().to_string(),
+            format!("'{}'", release_abs.display()),
+        ],
+    );
 
     allow
 }
@@ -596,6 +603,14 @@ exec droid "$@"
 }
 
 fn claude_wrapper_allowed_tools_arg() -> String {
+    claude_wrapper_allowed_tools_list().join(" ")
+}
+
+fn claude_wrapper_delegate_allowed_tools_arg() -> String {
+    claude_wrapper_delegate_allowed_tools_list().join(" ")
+}
+
+fn claude_wrapper_allowed_tools_list() -> Vec<String> {
     let mut tools = vec![
         "WebSearch".to_string(),
         "Read".to_string(),
@@ -609,31 +624,42 @@ fn claude_wrapper_allowed_tools_arg() -> String {
         seen.insert(tool.clone());
     }
     append_claude_rccb_bash_allow_patterns(&mut tools, &mut seen);
-    tools.join(" ")
+    tools
 }
 
-fn claude_wrapper_delegate_allowed_tools_arg() -> String {
+fn claude_wrapper_delegate_allowed_tools_list() -> Vec<String> {
     let mut tools = Vec::new();
     let mut seen = HashSet::new();
     append_claude_rccb_bash_allow_patterns(&mut tools, &mut seen);
-    tools.join(" ")
+    tools
 }
 
 fn append_claude_rccb_bash_allow_patterns(tools: &mut Vec<String>, seen: &mut HashSet<String>) {
-    let binaries = vec![
-        "rccb".to_string(),
-        "./target/debug/rccb".to_string(),
-        "'./target/debug/rccb'".to_string(),
-        "./target/release/rccb".to_string(),
-        "'./target/release/rccb'".to_string(),
-        "$project_root/target/debug/rccb".to_string(),
-        "'$project_root/target/debug/rccb'".to_string(),
-        "$project_root/target/release/rccb".to_string(),
-        "'$project_root/target/release/rccb'".to_string(),
-    ];
+    append_claude_rccb_bash_allow_patterns_with_binaries(
+        tools,
+        seen,
+        &[
+            "rccb".to_string(),
+            "./target/debug/rccb".to_string(),
+            "'./target/debug/rccb'".to_string(),
+            "./target/release/rccb".to_string(),
+            "'./target/release/rccb'".to_string(),
+            "$project_root/target/debug/rccb".to_string(),
+            "'$project_root/target/debug/rccb'".to_string(),
+            "$project_root/target/release/rccb".to_string(),
+            "'$project_root/target/release/rccb'".to_string(),
+        ],
+    );
+}
+
+fn append_claude_rccb_bash_allow_patterns_with_binaries(
+    tools: &mut Vec<String>,
+    seen: &mut HashSet<String>,
+    binaries: &[String],
+) {
     let prefixes = rccb_bash_env_prefixes();
     for prefix in prefixes {
-        for bin in &binaries {
+        for bin in binaries {
             let pattern = format!("Bash({}{}:*)", prefix, bin);
             if seen.insert(pattern.clone()) {
                 tools.push(pattern);
@@ -8550,9 +8576,17 @@ mod tests {
         assert!(trusted.contains("\"TRUST_FOLDER\""));
         assert!(trusted.contains(&project.display().to_string()));
         assert!(droid_settings.contains("\"autonomyMode\": \"auto-high\""));
+        assert!(claude_settings.contains("\"WebSearch\""));
+        assert!(claude_settings.contains("\"Read\""));
+        assert!(claude_settings.contains("\"Grep\""));
+        assert!(claude_settings.contains("\"Glob\""));
+        assert!(claude_settings.contains("\"LS\""));
+        assert!(claude_settings.contains("\"Task\""));
         assert!(claude_settings.contains("Bash(rccb:*)"));
         assert!(claude_settings.contains("RCCB_ASK_ASYNC_STDOUT=minimal"));
         assert!(claude_settings.contains("RCCB_ASK_ASYNC_STDOUT=json"));
+        assert!(claude_settings.contains("$project_root/target/debug/rccb"));
+        assert!(claude_settings.contains(&project.join("target/debug/rccb").display().to_string()));
 
         let _ = fs::remove_dir_all(&project);
     }
@@ -8587,11 +8621,17 @@ mod tests {
         let merged = fs::read_to_string(&settings_path).unwrap();
         assert!(merged.contains("\"WebFetch\""));
         assert!(merged.contains("\"Bash(custom-tool:*)\""));
+        assert!(merged.contains("\"Read\""));
+        assert!(merged.contains("\"Grep\""));
+        assert!(merged.contains("\"Glob\""));
+        assert!(merged.contains("\"LS\""));
+        assert!(merged.contains("\"Task\""));
         assert!(merged.contains("\"Bash(rccb:*)\""));
         assert!(merged.contains("RCCB_ASK_ASYNC_STDOUT=minimal"));
         assert!(merged.contains("RCCB_ASK_ASYNC_STDOUT=json"));
         assert!(merged.contains("Bash(RCCB_*=* rccb:*)"));
         assert!(merged.contains("Bash(RCCB_*=* RCCB_*=* rccb:*)"));
+        assert!(merged.contains("$project_root/target/debug/rccb"));
         assert!(merged.contains("\"custom\": true"));
 
         let _ = fs::remove_dir_all(&project);

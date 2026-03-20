@@ -139,7 +139,7 @@ rccb --project-dir . init
 规则文件策略：
 
 - 普通模式：只补缺失文件，不覆盖已有项目级规则
-- 普通模式下若已存在 `.claude/settings.local.json`，会补齐 RCCB 命令白名单，但保留你已有的自定义项
+- 普通模式下若已存在 `.claude/settings.local.json`，会补齐 RCCB 的只读/搜索/RCCB 派单白名单，但保留你已有的自定义项
 - `debug` 模式：每次启动都会重置 RCCB 生成模板，包括 `.rccb/config.example.json`、`providers/*.example.json`、`.rccb/bin/*`、provider 支持文件与项目级托管规则
 - 启动包装脚本也属于 RCCB 生成模板，`debug` 模式会一并刷新
 - `AGENTS.md` / `CLAUDE.md` / `GEMINI.md` 会保留用户区块，方便写项目个性化规则
@@ -149,7 +149,7 @@ Claude 自动加载策略：
 
 - Claude 编排者优先依赖项目级自动加载规则，而不是依赖 pane 首条提示注入
 - 核心入口包括：`CLAUDE.md`、`.claude/rules/rccb-core.md`、`.claude/rules/rccb-runtime.md`、`.claude/agents/*.md`、`.claude/commands/*.md`
-- `.claude/settings.local.json` 只负责 RCCB 命令白名单与权限，不承担主提示词职责
+- `.claude/settings.local.json` 只负责 RCCB 命令白名单与权限，不承担主提示词职责；其默认白名单与 wrapper 对齐为“读/搜/RCCB 派单”，不放开写文件工具
 - Claude 主编排者默认采用“无审批但强限制工具集”模式：允许读/搜/委派，不允许任何写文件工具
 - pane 注入现在只作为兜底路径：当项目级 Claude 规则缺失、损坏，或你显式强制开启时才使用
 
