@@ -491,6 +491,47 @@ fn write_project_delegate_wrappers(
     Ok(written)
 }
 
+fn refresh_managed_project_wrappers(
+    project_dir: &Path,
+    providers: &[String],
+) -> Result<Vec<PathBuf>> {
+    let mut refreshed = Vec::new();
+
+    let project_wrapper = project_rccb_wrapper_path(project_dir);
+    if project_wrapper.exists() && project_rccb_wrapper_needs_refresh(project_dir)? {
+        let script = build_project_rccb_wrapper_script(project_dir)?;
+        fs::write(&project_wrapper, script.as_bytes()).with_context(|| {
+            format!(
+                "刷新项目级 rccb wrapper 失败：{}",
+                project_wrapper.display()
+            )
+        })?;
+        set_executable(&project_wrapper)?;
+        refreshed.push(project_wrapper);
+    }
+
+    if providers.iter().any(|p| p == "claude") {
+        for agent in [
+            "delegate-coder",
+            "delegate-researcher",
+            "delegate-auditor",
+            "delegate-scribe",
+        ] {
+            let path = project_delegate_rccb_wrapper_path(project_dir, agent);
+            if !path.exists() || !project_delegate_wrapper_needs_refresh(project_dir, agent)? {
+                continue;
+            }
+            let script = build_project_delegate_wrapper_script(project_dir, agent)?;
+            fs::write(&path, script.as_bytes())
+                .with_context(|| format!("刷新项目级 delegate wrapper 失败：{}", path.display()))?;
+            set_executable(&path)?;
+            refreshed.push(path);
+        }
+    }
+
+    Ok(refreshed)
+}
+
 fn refresh_legacy_provider_wrappers(
     project_dir: &Path,
     providers: &[String],
@@ -510,6 +551,28 @@ fn refresh_legacy_provider_wrappers(
         refreshed.push(path);
     }
     Ok(refreshed)
+}
+
+fn project_rccb_wrapper_needs_refresh(project_dir: &Path) -> Result<bool> {
+    let path = project_rccb_wrapper_path(project_dir);
+    if !path.exists() {
+        return Ok(false);
+    }
+    let raw = fs::read_to_string(&path)
+        .with_context(|| format!("读取项目级 rccb wrapper 失败：{}", path.display()))?;
+    let expected = build_project_rccb_wrapper_script(project_dir)?;
+    Ok(raw != expected)
+}
+
+fn project_delegate_wrapper_needs_refresh(project_dir: &Path, agent: &str) -> Result<bool> {
+    let path = project_delegate_rccb_wrapper_path(project_dir, agent);
+    if !path.exists() {
+        return Ok(false);
+    }
+    let raw = fs::read_to_string(&path)
+        .with_context(|| format!("读取项目级 delegate wrapper 失败：{}", path.display()))?;
+    let expected = build_project_delegate_wrapper_script(project_dir, agent)?;
+    Ok(raw != expected)
 }
 
 fn provider_wrapper_needs_refresh(path: &Path) -> Result<bool> {
@@ -2489,6 +2552,7 @@ pub fn cmd_start(
         instance,
         &normalized,
     )?;
+    let _ = refresh_managed_project_wrappers(project_dir, &normalized)?;
     let _ = refresh_legacy_provider_wrappers(project_dir, &normalized)?;
     if effective_debug {
         prepare_debug_start_state(project_dir, instance, &bootstrap)?;
@@ -2554,6 +2618,7 @@ fn launch_shortcut_instance(project_dir: &Path, providers: &[String]) -> Result<
         SHORTCUT_INSTANCE,
         providers,
     )?;
+    let _ = refresh_managed_project_wrappers(project_dir, providers)?;
     let _ = refresh_legacy_provider_wrappers(project_dir, providers)?;
     let shown = show_startup_banner(
         project_dir,
@@ -9447,6 +9512,57 @@ mod tests {
         .unwrap();
 
         assert!(super::provider_wrapper_needs_refresh(&wrapper).unwrap());
+
+        let _ = fs::remove_dir_all(&project);
+    }
+
+    #[test]
+    fn stale_project_rccb_wrapper_is_marked_for_refresh() {
+        let project =
+            std::env::temp_dir().join(format!("rccb-project-wrapper-refresh-{}", now_unix_ms()));
+        ensure_project_layout(&project).unwrap();
+        let wrapper = project.join(".rccb").join("bin").join("rccb");
+        fs::create_dir_all(wrapper.parent().unwrap()).unwrap();
+        fs::write(&wrapper, "#!/usr/bin/env sh\nset -eu\nexec rccb \"$@\"\n").unwrap();
+
+        assert!(super::project_rccb_wrapper_needs_refresh(&project).unwrap());
+        let refreshed =
+            super::refresh_managed_project_wrappers(&project, &["claude".to_string()]).unwrap();
+        assert!(refreshed.contains(&wrapper));
+        assert!(!super::project_rccb_wrapper_needs_refresh(&project).unwrap());
+
+        let _ = fs::remove_dir_all(&project);
+    }
+
+    #[test]
+    fn stale_project_delegate_wrapper_is_marked_for_refresh() {
+        let project = std::env::temp_dir().join(format!(
+            "rccb-project-delegate-wrapper-refresh-{}",
+            now_unix_ms()
+        ));
+        ensure_project_layout(&project).unwrap();
+        super::write_project_rccb_wrapper(&project, BootstrapMode::RefreshGenerated).unwrap();
+        let wrapper = project
+            .join(".rccb")
+            .join("bin")
+            .join("rccb-delegate-researcher");
+        fs::create_dir_all(wrapper.parent().unwrap()).unwrap();
+        fs::write(
+            &wrapper,
+            "#!/usr/bin/env sh\nset -eu\nexport RCCB_PROVIDER_ROLE=orchestrator\nexec ./.rccb/bin/rccb \"$@\"\n",
+        )
+        .unwrap();
+
+        assert!(
+            super::project_delegate_wrapper_needs_refresh(&project, "delegate-researcher").unwrap()
+        );
+        let refreshed =
+            super::refresh_managed_project_wrappers(&project, &["claude".to_string()]).unwrap();
+        assert!(refreshed.contains(&wrapper));
+        assert!(
+            !super::project_delegate_wrapper_needs_refresh(&project, "delegate-researcher")
+                .unwrap()
+        );
 
         let _ = fs::remove_dir_all(&project);
     }

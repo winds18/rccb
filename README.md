@@ -31,6 +31,7 @@
   - 主编排者直接 `rccb ask` 已被 guard 拦截，要求走 `delegate-*`
   - provider 超时时会尽量保留部分输出
   - `inbox/status` 已增加一轮 TUI 噪声清洗
+  - 普通启动已会自动刷新托管的 `.rccb/bin/rccb` 与 `rccb-delegate-*` wrapper
 - 待收口摘要：
   - 人工指定执行者优先级仍需实测收口
   - 子代理派单免审批仍需实测收口

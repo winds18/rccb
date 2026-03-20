@@ -39,7 +39,7 @@
 
 1. 子代理派单免审批稳定
    - 目标：`delegate-*` 执行 RCCB 派单时，不再因为 `RCCB_*=` 前缀命令触发审批
-   - 当前状态：Claude wrapper 已加 `delegate-* -> bypassPermissions` 分支，但主编排者进程仍存在审批噪声；需继续收口 orchestrator 侧的无审批受限工具模式
+   - 当前状态：Claude wrapper 已加 `delegate-* -> bypassPermissions` 分支，派单文案也已切到项目级 `./.rccb/bin/rccb-delegate-*`；普通启动现在会自动刷新托管 wrapper，避免老项目继续残留旧派单脚本。剩余工作主要是继续做真实链路实测，确认审批 UI 噪声彻底消失
    - 验收标准：
      - `delegate-researcher`
      - `delegate-auditor`
@@ -145,6 +145,7 @@
 11. “最终结果默认静默回传”已继续压实到同步 ask 路径：默认抑制编排者 stdout 结果，仅在显式设置 `RCCB_ORCHESTRATOR_SYNC_STDOUT_RESULT=1` 时才恢复前台打印
 12. Claude 项目级 `.claude/settings.local.json` 白名单已和 wrapper 对齐到“读/搜/RCCB 派单”，减少编排者审批噪声并继续保持零写边界
 13. 自动生成的 Claude rules/agents/commands 已切换到统一项目入口 `./.rccb/bin/rccb --project-dir .`，减少命令路径漂移导致的审批噪声
+14. 普通启动现已支持自动刷新托管的 `.rccb/bin/rccb` 与 `.rccb/bin/rccb-delegate-*` wrapper，老项目无需删除文件或开 debug 也能吃到最新派单修复
 
 ### 最近新增待办
 
