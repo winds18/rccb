@@ -144,6 +144,7 @@
 10. 同步 `ask` 的传输异常恢复窗口与 timeout 待定窗口已加固，减少执行者仍在运行时的误判失败
 11. 已确认并记录一个口径不一致问题：daemon 仍默认开启最终结果前台回注，需统一切回“默认静默消费”
 12. Claude 项目级 `.claude/settings.local.json` 白名单已和 wrapper 对齐到“读/搜/RCCB 派单”，减少编排者审批噪声并继续保持零写边界
+13. 自动生成的 Claude rules/agents/commands 已切换到统一项目入口 `./.rccb/bin/rccb --project-dir .`，减少命令路径漂移导致的审批噪声
 
 ### 最近新增待办
 

@@ -136,7 +136,10 @@ fn ensure_project_bootstrap(
     ensure_project_layout(project_dir)?;
     let config_path = write_config_template(project_dir, mode, providers)?;
     let profile_templates = write_native_profile_templates(project_dir, mode, providers)?;
-    let wrapper_scripts = write_provider_launch_wrappers(project_dir, mode, providers)?;
+    let mut wrapper_scripts = write_provider_launch_wrappers(project_dir, mode, providers)?;
+    if let Some(wrapper) = write_project_rccb_wrapper(project_dir, mode)? {
+        wrapper_scripts.push(wrapper);
+    }
     let provider_support_files = write_provider_support_files(project_dir, mode, providers)?;
     let rule_templates = ensure_project_rule_bootstrap(project_dir, mode, instance, providers)?;
     Ok(ProjectBootstrapSummary {
@@ -285,6 +288,7 @@ fn merge_claude_settings_local(path: &Path, desired: &Value) -> Result<Value> {
 fn claude_rccb_allowed_tools(project_dir: &Path) -> Vec<String> {
     let debug_abs = project_dir.join("target").join("debug").join("rccb");
     let release_abs = project_dir.join("target").join("release").join("rccb");
+    let wrapper_abs = project_rccb_wrapper_path(project_dir);
     let mut allow = vec![
         "WebSearch".to_string(),
         "Read".to_string(),
@@ -301,6 +305,12 @@ fn claude_rccb_allowed_tools(project_dir: &Path) -> Vec<String> {
         &mut allow,
         &mut seen,
         &[
+            "./.rccb/bin/rccb".to_string(),
+            "'./.rccb/bin/rccb'".to_string(),
+            "$project_root/.rccb/bin/rccb".to_string(),
+            "'$project_root/.rccb/bin/rccb'".to_string(),
+            wrapper_abs.display().to_string(),
+            format!("'{}'", wrapper_abs.display()),
             "rccb".to_string(),
             "./target/debug/rccb".to_string(),
             "'./target/debug/rccb'".to_string(),
@@ -401,6 +411,21 @@ fn write_provider_launch_wrappers(
         written.push(path);
     }
     Ok(written)
+}
+
+fn write_project_rccb_wrapper(project_dir: &Path, mode: BootstrapMode) -> Result<Option<PathBuf>> {
+    let path = project_rccb_wrapper_path(project_dir);
+    if path.exists() && matches!(mode, BootstrapMode::MissingOnly) {
+        return Ok(None);
+    }
+    let script = build_project_rccb_wrapper_script(project_dir)?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(&path, script.as_bytes())
+        .with_context(|| format!("写入项目级 rccb wrapper 失败：{}", path.display()))?;
+    set_executable(&path)?;
+    Ok(Some(path))
 }
 
 fn refresh_legacy_provider_wrappers(
@@ -639,6 +664,10 @@ fn append_claude_rccb_bash_allow_patterns(tools: &mut Vec<String>, seen: &mut Ha
         tools,
         seen,
         &[
+            "./.rccb/bin/rccb".to_string(),
+            "'./.rccb/bin/rccb'".to_string(),
+            "$project_root/.rccb/bin/rccb".to_string(),
+            "'$project_root/.rccb/bin/rccb'".to_string(),
             "rccb".to_string(),
             "./target/debug/rccb".to_string(),
             "'./target/debug/rccb'".to_string(),
@@ -739,7 +768,7 @@ fn render_project_bootstrap_content(project_dir: &Path, contents: &str) -> Strin
     contents.replace("rccb --project-dir .", &project_rccb_command(project_dir))
 }
 
-fn current_rccb_binary_hint(project_dir: &Path) -> String {
+fn current_rccb_binary_target_hint(project_dir: &Path) -> String {
     if let Ok(exe) = env::current_exe() {
         if let Ok(rel) = exe.strip_prefix(project_dir) {
             let rel_display = rel.display().to_string();
@@ -752,12 +781,25 @@ fn current_rccb_binary_hint(project_dir: &Path) -> String {
     "rccb".to_string()
 }
 
+fn project_rccb_wrapper_path(project_dir: &Path) -> PathBuf {
+    rccb_dir(project_dir).join("bin").join("rccb")
+}
+
+fn build_project_rccb_wrapper_script(project_dir: &Path) -> Result<String> {
+    let target = current_rccb_binary_target_hint(project_dir);
+    Ok(format!(
+        "#!/usr/bin/env sh\nset -eu\nproject_root=\"${{RCCB_PROJECT_DIR:-$PWD}}\"\ncd \"$project_root\"\nexec {} \"$@\"\n",
+        shell_quote(&target)
+    ))
+}
+
 fn project_rccb_command(project_dir: &Path) -> String {
-    format!(
-        "{} --project-dir {}",
-        shell_quote(&current_rccb_binary_hint(project_dir)),
-        shell_quote(&project_dir.display().to_string())
-    )
+    let wrapper = project_rccb_wrapper_path(project_dir);
+    let wrapper_hint = match wrapper.strip_prefix(project_dir) {
+        Ok(rel) => format!("./{}", rel.display()),
+        Err(_) => wrapper.display().to_string(),
+    };
+    format!("{} --project-dir .", shell_quote(&wrapper_hint))
 }
 
 fn build_rule_file_specs(
@@ -2161,7 +2203,7 @@ fn render_startup_banner(
         .and_then(|v| v.to_str())
         .filter(|v| !v.is_empty())
         .unwrap_or("project");
-    let binary_hint = current_rccb_binary_hint(project_dir);
+    let binary_hint = current_rccb_binary_target_hint(project_dir);
     format!(
         "\
 \x1b[1;36m┌──────────────────────────────────────────────────────────────┐\x1b[0m
@@ -8583,8 +8625,11 @@ mod tests {
         assert!(claude_settings.contains("\"LS\""));
         assert!(claude_settings.contains("\"Task\""));
         assert!(claude_settings.contains("Bash(rccb:*)"));
+        assert!(claude_settings.contains("./.rccb/bin/rccb"));
         assert!(claude_settings.contains("RCCB_ASK_ASYNC_STDOUT=minimal"));
         assert!(claude_settings.contains("RCCB_ASK_ASYNC_STDOUT=json"));
+        assert!(claude_settings.contains("$project_root/.rccb/bin/rccb"));
+        assert!(claude_settings.contains(&project.join(".rccb/bin/rccb").display().to_string()));
         assert!(claude_settings.contains("$project_root/target/debug/rccb"));
         assert!(claude_settings.contains(&project.join("target/debug/rccb").display().to_string()));
 
@@ -8627,10 +8672,12 @@ mod tests {
         assert!(merged.contains("\"LS\""));
         assert!(merged.contains("\"Task\""));
         assert!(merged.contains("\"Bash(rccb:*)\""));
+        assert!(merged.contains("./.rccb/bin/rccb"));
         assert!(merged.contains("RCCB_ASK_ASYNC_STDOUT=minimal"));
         assert!(merged.contains("RCCB_ASK_ASYNC_STDOUT=json"));
         assert!(merged.contains("Bash(RCCB_*=* rccb:*)"));
         assert!(merged.contains("Bash(RCCB_*=* RCCB_*=* rccb:*)"));
+        assert!(merged.contains("$project_root/.rccb/bin/rccb"));
         assert!(merged.contains("$project_root/target/debug/rccb"));
         assert!(merged.contains("\"custom\": true"));
 
@@ -8658,6 +8705,7 @@ mod tests {
         assert!(!project.join(".factory").exists());
         assert!(!project.join(".agents").exists());
         assert!(project.join(".rccb/bin/claude").exists());
+        assert!(project.join(".rccb/bin/rccb").exists());
         assert!(project.join(".rccb/bin/gemini").exists());
         assert!(!project.join(".rccb/bin/opencode").exists());
         let config = fs::read_to_string(project.join(".rccb/config.example.json")).unwrap();
@@ -8679,6 +8727,7 @@ mod tests {
         let runtime_path = project.join(".claude/rules/rccb-runtime.md");
         let first = fs::read_to_string(&runtime_path).unwrap();
         assert!(first.contains("当前实例：`default`"));
+        assert!(first.contains("当前 RCCB 命令：`'./.rccb/bin/rccb' --project-dir .`"));
 
         ensure_project_bootstrap(&project, BootstrapMode::MissingOnly, "team-a", &providers)
             .unwrap();
@@ -8721,16 +8770,19 @@ mod tests {
 
         assert!(claude.starts_with("#!/usr/bin/env sh"));
         assert!(claude.contains("role=\"${RCCB_PROVIDER_ROLE:-executor}\""));
-        assert!(claude.contains("allowed_tools=\"WebSearch Read Grep Glob LS Task Bash(rccb:*)"));
+        assert!(claude
+            .contains("allowed_tools=\"WebSearch Read Grep Glob LS Task Bash(./.rccb/bin/rccb:*)"));
         assert!(claude.contains("case \"$agent\" in"));
         assert!(claude.contains("delegate-*)"));
         assert!(claude.contains("delegate_mode=\"0\""));
         assert!(claude.contains("delegate_mode=\"1\""));
-        assert!(claude.contains("allowed_tools=\"Bash(rccb:*)"));
+        assert!(claude.contains("allowed_tools=\"Bash(./.rccb/bin/rccb:*)"));
         assert!(claude.contains("--allowedTools \"$allowed_tools\""));
         assert!(claude.contains("Bash(RCCB_ASK_ASYNC_STDOUT=minimal rccb:*)"));
         assert!(claude.contains("Bash(RCCB_*=* rccb:*)"));
         assert!(claude.contains("Bash(RCCB_*=* RCCB_*=* rccb:*)"));
+        assert!(claude.contains("Bash(RCCB_ASK_ASYNC_STDOUT=minimal './.rccb/bin/rccb':*)"));
+        assert!(claude.contains("Bash($project_root/.rccb/bin/rccb:*)"));
         assert!(claude.contains("Bash(RCCB_ASK_ASYNC_STDOUT=json './target/debug/rccb':*)"));
         assert!(claude.contains("Bash($project_root/target/release/rccb:*)"));
         assert!(claude.contains("--disallowedTools \"Edit MultiEdit Write NotebookEdit\""));
@@ -9184,7 +9236,7 @@ mod tests {
         assert!(raw.contains("case \"$agent\" in"));
         assert!(raw.contains("delegate-*)"));
         assert!(raw.contains("delegate_mode=\"0\""));
-        assert!(raw.contains("allowed_tools=\"Bash(rccb:*)"));
+        assert!(raw.contains("allowed_tools=\"Bash(./.rccb/bin/rccb:*)"));
 
         let _ = fs::remove_dir_all(&project);
     }
@@ -9260,8 +9312,7 @@ mod tests {
             "执行：rccb --project-dir . ask --instance default --provider codex --caller claude \"hi\"",
         );
         assert!(!rendered.contains("rccb --project-dir ."));
-        assert!(rendered.contains("--project-dir"));
-        assert!(rendered.contains("/tmp/rccb-proj"));
+        assert!(rendered.contains("'./.rccb/bin/rccb' --project-dir ."));
     }
 
     #[test]

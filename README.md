@@ -117,6 +117,7 @@ rccb --project-dir . init
 - `./.rccb/config.example.json`
 - `./.rccb/providers/*.example.json`（native provider profile 模板）
 - `./.rccb/bin/*`（provider 启动包装脚本）
+- `./.rccb/bin/rccb`（项目级稳定 RCCB 入口，供 rules/skills/agents 统一调用）
 - `./AGENTS.md`（跨 provider 共享协作规则，含托管区块与用户区块）
 - `./CLAUDE.md`
 - `./GEMINI.md`
@@ -150,6 +151,7 @@ Claude 自动加载策略：
 - Claude 编排者优先依赖项目级自动加载规则，而不是依赖 pane 首条提示注入
 - 核心入口包括：`CLAUDE.md`、`.claude/rules/rccb-core.md`、`.claude/rules/rccb-runtime.md`、`.claude/agents/*.md`、`.claude/commands/*.md`
 - `.claude/settings.local.json` 只负责 RCCB 命令白名单与权限，不承担主提示词职责；其默认白名单与 wrapper 对齐为“读/搜/RCCB 派单”，不放开写文件工具
+- Claude 自动生成的规则、commands、agents 会优先使用 `./.rccb/bin/rccb --project-dir .`，避免在 `rccb`、`./target/debug/rccb`、绝对路径之间来回漂移
 - Claude 主编排者默认采用“无审批但强限制工具集”模式：允许读/搜/委派，不允许任何写文件工具
 - pane 注入现在只作为兜底路径：当项目级 Claude 规则缺失、损坏，或你显式强制开启时才使用
 
