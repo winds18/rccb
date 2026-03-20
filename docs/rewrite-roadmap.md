@@ -67,12 +67,13 @@
 
 4. 首启与 pane 注入稳定
    - 目标：首次启动时编排提示注入稳定，不需要手动回车
-   - 当前状态：已改为“发送后确认，不成功补发 Enter”；新增 tmux mouse 配置自动修正需求待收口
+   - 当前状态：已改为“发送后确认，不成功补发 Enter”；tmux 场景已切到启动时直接对当前 tmux server 运行态开启 `mouse on`，待继续实测收口
    - 验收标准：
      - `tmux` 稳定
      - `wezterm` 稳定
      - 不重复注入整段提示
-     - 通过 `tmux` 启动时，会检测 tmux 配置中的 `mouse` 选项；若缺失则非覆盖式注入，若显式为 `off` 则改为 `on`
+     - 通过 `tmux` 启动时，会自动为当前 tmux server 运行态执行 `set-option -g mouse on`
+     - 不修改用户的 tmux 配置文件
 
 5. 执行结果默认静默回传
    - 目标：执行者完成后，最终结果默认只写入编排者 inbox 与 `.rccb/tasks/<instance>/artifacts/<req_id>.reply.md`，不再默认前台注入编排者 pane
@@ -114,11 +115,10 @@
    - 重点验证 `delegate-researcher` / `delegate-auditor` / `delegate-scribe` 在 tmux / wezterm 下都能稳定等到 `RCCB_AWAIT_DONE`
    - 验证超时、失败、incomplete、取消场景的编排者前台表现是否仍然克制且不乱派单
 
-6. tmux mouse 配置自动修正
-   - 启动时检测 tmux 配置文件
-   - 若未配置 `mouse on`，则以非覆盖方式补入
-   - 若配置里显式是 `mouse off`，则仅把该项修正为 `on`
-   - 不破坏用户其他 tmux 自定义内容
+6. tmux mouse 运行态自动启用
+   - 仅在 `tmux` backend 启动 RCCB 时执行
+   - 对当前 tmux server 运行态执行 `set-option -g mouse on`
+   - 不写入、不改写、不热更新用户的 tmux 配置文件
 
 ### P2 后续规划
 
