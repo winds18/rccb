@@ -151,6 +151,7 @@
 16. 编排者 progress 状态已增加内容级去重：相同进展短时间内不再重复写入 inbox，仅在内容变化或较长时间后才重发，减少长任务刷屏
 17. 编排者 `inbox` 读取结果现已优先采用 `reply_file` 工件内容，再回退事件内联 `reply`，与 `watch/task` 路径的结果优先级保持一致
 18. `inbox --latest` 现已在存在终态 `result` 时隐藏同 req/executor 的 `running status`，避免迟到状态把编排者误导成“任务仍在运行”
+19. daemon 侧现已在编排通知写入阶段识别“终态已达成”的 req/executor，并直接跳过后续迟到的 started/progress/status，减少源头回流噪声
 
 ### 最近新增待办
 

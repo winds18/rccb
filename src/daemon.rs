@@ -42,6 +42,7 @@ const EVENT_BUS_MAX_BUFFER: usize = 20000;
 const EVENT_BUS_KEEPALIVE_MS: u64 = 5000;
 const ORCHESTRATOR_PROGRESS_INTERVAL_MS: u64 = 5000;
 const ORCHESTRATOR_PROGRESS_REPEAT_MS: u64 = 30000;
+const ORCHESTRATOR_TERMINAL_NOTICE_KEEP_MS: u64 = 6 * 60 * 60 * 1000;
 
 #[derive(Debug, Clone)]
 struct OrchestratorProgressState {
@@ -2246,14 +2247,30 @@ fn dispatch_orchestrator_notice_async(
     thread::spawn(move || {
         let daemon_log =
             logs_instance_dir(&context.project_dir, &context.instance_id).join("daemon.log");
-        if let Err(err) = append_orchestrator_inbox(&context, &orchestrator_provider, &inbox_entry)
-        {
+        let appended =
+            match append_orchestrator_notice(&context, &orchestrator_provider, &inbox_entry) {
+                Ok(v) => v,
+                Err(err) => {
+                    let line = format!(
+                        "[WARN] orchestrator inbox append failed provider={} req_id={} err={}",
+                        orchestrator_provider, req_id, err
+                    );
+                    let _ = write_line(daemon_log.clone(), &line);
+                    debug_log(&context, &line);
+                    return;
+                }
+            };
+
+        if !appended {
             let line = format!(
-                "[WARN] orchestrator inbox append failed provider={} req_id={} err={}",
-                orchestrator_provider, req_id, err
+                "[INFO] orchestrator notice skipped after terminal result provider={} req_id={} kind={}",
+                orchestrator_provider,
+                req_id,
+                kind.as_str()
             );
             let _ = write_line(daemon_log.clone(), &line);
             debug_log(&context, &line);
+            return;
         }
 
         if let Some(prompt) = prompt {
@@ -2278,6 +2295,21 @@ fn dispatch_orchestrator_notice_async(
     });
 }
 
+fn append_orchestrator_notice(
+    context: &DaemonContext,
+    orchestrator: &str,
+    entry: &Value,
+) -> Result<bool> {
+    if should_skip_orchestrator_notice_after_terminal(entry) {
+        return Ok(false);
+    }
+    append_orchestrator_inbox(context, orchestrator, entry)?;
+    if is_terminal_notice_entry(entry) {
+        mark_orchestrator_notice_terminal(entry);
+    }
+    Ok(true)
+}
+
 fn append_orchestrator_inbox(
     context: &DaemonContext,
     orchestrator: &str,
@@ -2291,6 +2323,80 @@ fn append_orchestrator_inbox(
     }
     let line = serde_json::to_string(entry).context("serialize orchestrator inbox entry failed")?;
     write_line(path, &line)
+}
+
+fn should_skip_orchestrator_notice_after_terminal(entry: &Value) -> bool {
+    if entry
+        .get("kind")
+        .and_then(|v| v.as_str())
+        .map(|v| v.eq_ignore_ascii_case("result"))
+        .unwrap_or(false)
+    {
+        return false;
+    }
+    let Some(key) = orchestrator_notice_req_executor_key(entry) else {
+        return false;
+    };
+    orchestrator_terminal_notice_seen(&key)
+}
+
+fn is_terminal_notice_entry(entry: &Value) -> bool {
+    entry
+        .get("kind")
+        .and_then(|v| v.as_str())
+        .map(|v| v.eq_ignore_ascii_case("result"))
+        .unwrap_or(false)
+        && entry
+            .get("status")
+            .and_then(|v| v.as_str())
+            .map(is_terminal_notice_status)
+            .unwrap_or(false)
+}
+
+fn is_terminal_notice_status(status: &str) -> bool {
+    matches!(
+        status.trim().to_ascii_lowercase().as_str(),
+        "completed" | "failed" | "timeout" | "incomplete" | "canceled"
+    )
+}
+
+fn orchestrator_notice_req_executor_key(entry: &Value) -> Option<String> {
+    let req_id = entry.get("req_id").and_then(|v| v.as_str())?.trim();
+    let executor = entry.get("executor").and_then(|v| v.as_str())?.trim();
+    if req_id.is_empty() || executor.is_empty() {
+        return None;
+    }
+    Some(format!("{req_id}\t{executor}"))
+}
+
+fn orchestrator_terminal_notice_map() -> &'static Mutex<HashMap<String, u64>> {
+    static TERMINAL: OnceLock<Mutex<HashMap<String, u64>>> = OnceLock::new();
+    TERMINAL.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn orchestrator_terminal_notice_seen(key: &str) -> bool {
+    let map = orchestrator_terminal_notice_map();
+    let mut guard = match map.lock() {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+    let now = now_unix_ms();
+    guard.retain(|_, ts| now.saturating_sub(*ts) <= ORCHESTRATOR_TERMINAL_NOTICE_KEEP_MS);
+    guard.contains_key(key)
+}
+
+fn mark_orchestrator_notice_terminal(entry: &Value) {
+    let Some(key) = orchestrator_notice_req_executor_key(entry) else {
+        return;
+    };
+    let map = orchestrator_terminal_notice_map();
+    let mut guard = match map.lock() {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+    let now = now_unix_ms();
+    guard.retain(|_, ts| now.saturating_sub(*ts) <= ORCHESTRATOR_TERMINAL_NOTICE_KEEP_MS);
+    guard.insert(key, now);
 }
 
 fn run_orchestrator_callback_worker(
@@ -2552,10 +2658,12 @@ mod tests {
 
     use super::{
         build_orchestrator_progress_prompt, build_orchestrator_result_prompt,
-        build_orchestrator_started_prompt, orchestrator_result_callback_enabled,
-        relay_progress_lines, should_emit_orchestrator_progress_with_now,
+        build_orchestrator_started_prompt, is_terminal_notice_entry,
+        orchestrator_result_callback_enabled, relay_progress_lines,
+        should_emit_orchestrator_progress_with_now, should_skip_orchestrator_notice_after_terminal,
         sync_response_wait_timeout,
     };
+    use serde_json::json;
 
     fn env_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -2684,6 +2792,38 @@ mod tests {
             "正在搜索第二组资料",
             base + 6000
         ));
+    }
+
+    #[test]
+    fn terminal_orchestrator_result_is_recognized() {
+        let entry = json!({
+            "kind": "result",
+            "req_id": "req-daemon-terminal",
+            "executor": "gemini",
+            "status": "completed"
+        });
+        assert!(is_terminal_notice_entry(&entry));
+    }
+
+    #[test]
+    fn status_notice_is_skipped_after_terminal_result() {
+        let req_id = format!("req-daemon-skip-{}", crate::io_utils::now_unix_ms());
+        let result = json!({
+            "kind": "result",
+            "req_id": req_id,
+            "executor": "droid",
+            "status": "completed"
+        });
+        super::mark_orchestrator_notice_terminal(&result);
+
+        let status = json!({
+            "kind": "status",
+            "req_id": result["req_id"].as_str().unwrap(),
+            "executor": "droid",
+            "status": "running",
+            "message": "still working"
+        });
+        assert!(should_skip_orchestrator_notice_after_terminal(&status));
     }
 
     #[test]
