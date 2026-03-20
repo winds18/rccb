@@ -149,6 +149,7 @@
 14. 普通启动现已支持自动刷新托管的 `.rccb/bin/rccb` 与 `.rccb/bin/rccb-delegate-*` wrapper，老项目无需删除文件或开 debug 也能吃到最新派单修复
 15. provider reply 提取已继续加固：若检测到 `RCCB_DONE` 但未能可信定位对应 `RCCB_BEGIN`，会优先判空/不完整，避免把 prompt echo 或任务说明误当最终结果
 16. 编排者 progress 状态已增加内容级去重：相同进展短时间内不再重复写入 inbox，仅在内容变化或较长时间后才重发，减少长任务刷屏
+17. 编排者 `inbox` 读取结果现已优先采用 `reply_file` 工件内容，再回退事件内联 `reply`，与 `watch/task` 路径的结果优先级保持一致
 
 ### 最近新增待办
 

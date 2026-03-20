@@ -4713,6 +4713,7 @@ fn load_orchestrator_inbox_entries(
             Ok(v) => v,
             Err(_) => continue,
         };
+        let reply_file = value_reply_file_path(&v);
         out.push(InboxEntryView {
             instance: instance.to_string(),
             orchestrator: orchestrator.to_string(),
@@ -4746,14 +4747,8 @@ fn load_orchestrator_inbox_entries(
                 .get("message")
                 .and_then(|x| x.as_str())
                 .map(|s| s.to_string()),
-            reply: v
-                .get("reply")
-                .and_then(|x| x.as_str())
-                .map(|s| s.to_string()),
-            reply_file: v
-                .get("reply_file")
-                .and_then(|x| x.as_str())
-                .map(|s| s.to_string()),
+            reply: resolve_task_reply(&v, reply_file.as_deref()),
+            reply_file,
         });
     }
     Ok(out)
@@ -5895,6 +5890,13 @@ fn artifact_path_from_value(v: &Value, key: &str) -> Option<String> {
         .and_then(|x| x.get(key))
         .and_then(|x| x.as_str())
         .map(|s| s.to_string())
+}
+
+fn value_reply_file_path(v: &Value) -> Option<String> {
+    v.get("reply_file")
+        .and_then(|x| x.as_str())
+        .map(|s| s.to_string())
+        .or_else(|| artifact_path_from_value(v, "reply_file"))
 }
 
 fn resolve_task_reply(v: &Value, reply_file: Option<&str>) -> Option<String> {
@@ -9853,6 +9855,39 @@ mod tests {
         assert_eq!(items[1].reply.as_deref(), Some("done"));
         assert_eq!(items[1].reply_file.as_deref(), Some("/tmp/reply.md"));
 
+        let _ = fs::remove_dir_all(&project);
+    }
+
+    #[test]
+    fn load_orchestrator_inbox_entries_prefers_reply_artifact_contents() {
+        let project = std::env::temp_dir().join(format!("rccb-inbox-artifact-{}", now_unix_ms()));
+        let instance = "default";
+        ensure_project_layout(&project).unwrap();
+        let inbox = tmp_instance_dir(&project, instance)
+            .join("orchestrator")
+            .join("claude.jsonl");
+        fs::create_dir_all(inbox.parent().unwrap()).unwrap();
+        let reply_file =
+            std::env::temp_dir().join(format!("rccb-inbox-reply-{}.md", now_unix_ms()));
+        fs::write(&reply_file, "artifact reply").unwrap();
+        fs::write(
+            &inbox,
+            format!(
+                "{{\"kind\":\"result\",\"req_id\":\"req-1\",\"executor\":\"droid\",\"status\":\"completed\",\"exit_code\":0,\"reply\":\"event reply\",\"reply_file\":\"{}\",\"ts_unix\":2}}\n",
+                reply_file.display()
+            ),
+        )
+        .unwrap();
+
+        let items = load_orchestrator_inbox_entries(&project, instance, "claude").unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].reply.as_deref(), Some("artifact reply"));
+        assert_eq!(
+            items[0].reply_file.as_deref(),
+            Some(reply_file.to_string_lossy().as_ref())
+        );
+
+        let _ = fs::remove_file(&reply_file);
         let _ = fs::remove_dir_all(&project);
     }
 
