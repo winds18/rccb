@@ -1389,6 +1389,8 @@ fn worker_loop(
                     fallback_scan: false,
                     status: "failed".to_string(),
                     stderr: String::new(),
+                    error_kind: Some("executor_launch_failed".to_string()),
+                    retryable: false,
                     effective_timeout_s: req.timeout_s,
                     effective_quiet: req.quiet,
                 }
@@ -1426,6 +1428,8 @@ fn worker_loop(
             task_status,
             exec.exit_code,
             &reply,
+            exec.error_kind.as_deref(),
+            exec.retryable,
         );
 
         let resp = AskResponse {
@@ -1451,6 +1455,8 @@ fn worker_loop(
                 "request_file": request_artifact.display().to_string(),
                 "reply_file": reply_artifact_str,
                 "stderr": exec.stderr,
+                "error_kind": exec.error_kind,
+                "retryable": exec.retryable,
             })),
         };
 
@@ -1805,6 +1811,8 @@ fn relay_task_completed(
     status: &str,
     exit_code: i32,
     reply: &str,
+    error_kind: Option<&str>,
+    retryable: bool,
 ) {
     let Some(orchestrator_provider) =
         orchestrator_callback_target(context, orchestrator, caller, provider)
@@ -1813,7 +1821,7 @@ fn relay_task_completed(
     };
     let prompt = if orchestrator_result_callback_enabled() {
         Some(build_orchestrator_result_prompt(
-            req_id, provider, status, exit_code, reply,
+            req_id, provider, status, exit_code, reply, error_kind, retryable,
         ))
     } else {
         None
@@ -1831,6 +1839,8 @@ fn relay_task_completed(
         "exit_code": exit_code,
         "reply": reply,
         "reply_file": reply_file.display().to_string(),
+        "error_kind": error_kind,
+        "retryable": retryable,
     });
     dispatch_orchestrator_notice_async(
         context,
@@ -2484,6 +2494,8 @@ fn build_orchestrator_result_prompt(
     status: &str,
     exit_code: i32,
     reply: &str,
+    error_kind: Option<&str>,
+    retryable: bool,
 ) -> String {
     let reply = clamp_bus_text(reply.trim(), orchestrator_callback_max_chars());
     let reply = if reply.trim().is_empty() {
@@ -2491,8 +2503,23 @@ fn build_orchestrator_result_prompt(
     } else {
         reply
     };
+    let abnormal_hint = match status {
+        "completed" => String::new(),
+        "canceled" | "cancelled" => {
+            "\n异常提示：这不是超时，而是执行任务被人工取消。不要自动重派；只需向用户说明任务已取消并等待裁决。".to_string()
+        }
+        _ if retryable => format!(
+            "\n异常提示：当前结果属于可重试执行异常（error_kind={}）。优先判断为 provider/链路瞬时异常，不要误判成业务结论失败；如需后续动作，先向用户说明可重试。",
+            error_kind.unwrap_or("retryable_error")
+        ),
+        _ if status != "completed" => format!(
+            "\n异常提示：当前结果属于执行异常（error_kind={}）。不要把它当成正常完成结果；只向用户说明异常并等待裁决。",
+            error_kind.unwrap_or("executor_error")
+        ),
+        _ => String::new(),
+    };
     format!(
-        "RCCB_RESULT\nreq_id={req_id}\n执行者={executor}\n状态={status}\n退出码={exit_code}\n\n执行结果：\n{reply}\n\n你现在只继续做编排工作。\n不要自己执行 bash、修改文件或运行测试。\n如果结果异常、不完整或仍需后续动作：\n- 只做判断、汇总和再次委派\n- 继续通过 RCCB 委派给执行者\n- 不要自己下场执行这个任务\n- 如果需要人工裁决，直接向用户说明并等待用户决定。"
+        "RCCB_RESULT\nreq_id={req_id}\n执行者={executor}\n状态={status}\n退出码={exit_code}\n\n执行结果：\n{reply}{abnormal_hint}\n\n你现在只继续做编排工作。\n不要自己执行 bash、修改文件或运行测试。\n如果结果异常、不完整或仍需后续动作：\n- 只做判断、汇总和再次委派\n- 继续通过 RCCB 委派给执行者\n- 不要自己下场执行这个任务\n- 如果需要人工裁决，直接向用户说明并等待用户决定。"
     )
 }
 
@@ -2719,13 +2746,36 @@ mod tests {
 
     #[test]
     fn orchestrator_result_prompt_enforces_delegate_only_follow_up() {
-        let prompt =
-            build_orchestrator_result_prompt("req-1", "codex", "completed", 0, "step 1\nstep 2");
+        let prompt = build_orchestrator_result_prompt(
+            "req-1",
+            "codex",
+            "completed",
+            0,
+            "step 1\nstep 2",
+            None,
+            false,
+        );
         assert!(prompt.contains("RCCB_RESULT"));
         assert!(prompt.contains("执行者=codex"));
         assert!(prompt.contains("step 1"));
         assert!(prompt.contains("不要自己执行 bash"));
         assert!(prompt.contains("通过 RCCB 委派给执行者"));
+    }
+
+    #[test]
+    fn orchestrator_result_prompt_marks_retryable_failures() {
+        let prompt = build_orchestrator_result_prompt(
+            "req-2",
+            "gemini",
+            "failed",
+            1,
+            "执行异常（可重试）\n类别：provider_transport_closed",
+            Some("provider_transport_closed"),
+            true,
+        );
+        assert!(prompt.contains("可重试执行异常"));
+        assert!(prompt.contains("provider_transport_closed"));
+        assert!(prompt.contains("不要误判成业务结论失败"));
     }
 
     #[test]

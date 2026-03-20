@@ -36,6 +36,7 @@
   - 编排者 progress 状态已增加内容级去重，减少长任务重复刷屏
   - `inbox --latest` 已会在终态结果存在时隐藏同任务的迟到 `running` 状态
   - daemon 侧已会跳过终态之后迟到回流的 started/progress/status 通知
+  - provider CLI 异常现在会做基础分类，像 `api error: premature close` 会被识别为“可重试执行异常”并直接体现在 `reply.md / inbox / await-terminal` 结果中
 - 待收口摘要：
   - 手动指定执行者优先级与“执行者默认直做”已落地，仍需继续做真实场景实测收口
   - 子代理派单免审批仍需实测收口
@@ -247,6 +248,11 @@ rccb --project-dir . inbox --instance default --req-id <req_id> --kind result --
   - `status=<completed|canceled>`
   - `exit_code=<0|130>`
   - 后续正文为真实 reply 内容
+- 如果执行者出现 provider CLI 异常，结果正文会尽量整理成：
+  - 异常标题（如“执行异常（可重试）”）
+  - 异常类别（如 `provider_transport_closed`）
+  - 摘要与建议动作
+  - 原始异常片段
 - 如需安静查看最新状态，优先使用 `inbox --latest`
 - 只有任务超时、异常或用户明确要求实时跟踪时，再使用一次性 `watch --req-id ... --with-provider-log --timeout-s 3 --pane-ui`
 

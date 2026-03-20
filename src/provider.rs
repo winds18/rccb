@@ -30,8 +30,18 @@ pub struct ProviderExecResult {
     pub fallback_scan: bool,
     pub status: String,
     pub stderr: String,
+    pub error_kind: Option<String>,
+    pub retryable: bool,
     pub effective_timeout_s: f64,
     pub effective_quiet: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FailureSummary {
+    kind: &'static str,
+    retryable: bool,
+    headline: &'static str,
+    summary: &'static str,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -425,6 +435,8 @@ fn execute_native_via_pane(
                 fallback_scan: false,
                 status: "canceled".to_string(),
                 stderr: String::new(),
+                error_kind: None,
+                retryable: false,
                 effective_timeout_s,
                 effective_quiet,
             });
@@ -451,6 +463,8 @@ fn execute_native_via_pane(
                             fallback_scan: false,
                             status: "timeout".to_string(),
                             stderr: String::new(),
+                            error_kind: None,
+                            retryable: false,
                             effective_timeout_s,
                             effective_quiet,
                         });
@@ -522,6 +536,8 @@ fn execute_native_via_pane(
                         fallback_scan: false,
                         status: "timeout".to_string(),
                         stderr: String::new(),
+                        error_kind: None,
+                        retryable: false,
                         effective_timeout_s,
                         effective_quiet,
                     });
@@ -551,6 +567,8 @@ fn execute_native_via_pane(
         fallback_scan: false,
         status: "completed".to_string(),
         stderr: String::new(),
+        error_kind: None,
+        retryable: false,
         effective_timeout_s,
         effective_quiet,
     })
@@ -623,6 +641,8 @@ fn execute_native_via_tmux_feed(
                 fallback_scan: false,
                 status: "canceled".to_string(),
                 stderr: String::new(),
+                error_kind: None,
+                retryable: false,
                 effective_timeout_s,
                 effective_quiet,
             });
@@ -670,6 +690,8 @@ fn execute_native_via_tmux_feed(
                             fallback_scan: false,
                             status: "timeout".to_string(),
                             stderr: String::new(),
+                            error_kind: None,
+                            retryable: false,
                             effective_timeout_s,
                             effective_quiet,
                         });
@@ -732,6 +754,8 @@ fn execute_native_via_tmux_feed(
                         fallback_scan: false,
                         status: "timeout".to_string(),
                         stderr: String::new(),
+                        error_kind: None,
+                        retryable: false,
                         effective_timeout_s,
                         effective_quiet,
                     });
@@ -759,6 +783,8 @@ fn execute_native_via_tmux_feed(
         fallback_scan: false,
         status: "completed".to_string(),
         stderr: String::new(),
+        error_kind: None,
+        retryable: false,
         effective_timeout_s,
         effective_quiet,
     })
@@ -1133,6 +1159,8 @@ fn run_stub(req: &AskRequest, req_id: &str, message: &str) -> ProviderExecResult
         fallback_scan: false,
         status: "completed".to_string(),
         stderr: String::new(),
+        error_kind: None,
+        retryable: false,
         effective_timeout_s: req.timeout_s,
         effective_quiet: req.quiet,
     }
@@ -1249,6 +1277,8 @@ fn build_exec_result(
             fallback_scan: false,
             status: "canceled".to_string(),
             stderr: outcome.stderr,
+            error_kind: None,
+            retryable: false,
             effective_timeout_s,
             effective_quiet,
         };
@@ -1268,6 +1298,8 @@ fn build_exec_result(
             fallback_scan: false,
             status: "timeout".to_string(),
             stderr: outcome.stderr,
+            error_kind: None,
+            retryable: false,
             effective_timeout_s,
             effective_quiet,
         };
@@ -1321,6 +1353,15 @@ fn build_exec_result(
         reply = "执行进程已退出，但未检测到最终结果；当前输出仍像提示回显或占位内容。".to_string();
     }
 
+    let failure_summary = if status == "failed" || status == "incomplete" {
+        summarize_failure(reply.as_str(), outcome.stderr.as_str(), status)
+    } else {
+        None
+    };
+    if let Some(summary) = &failure_summary {
+        reply = render_failure_reply(summary, reply.as_str(), outcome.stderr.as_str(), status);
+    }
+
     ProviderExecResult {
         exit_code,
         reply,
@@ -1335,6 +1376,11 @@ fn build_exec_result(
         fallback_scan: false,
         status: status.to_string(),
         stderr: outcome.stderr,
+        error_kind: failure_summary.as_ref().map(|v| v.kind.to_string()),
+        retryable: failure_summary
+            .as_ref()
+            .map(|v| v.retryable)
+            .unwrap_or(false),
         effective_timeout_s,
         effective_quiet,
     }
@@ -2431,6 +2477,122 @@ fn sanitize_stderr_for_reply(stderr: &str) -> String {
     out.join("\n").trim().to_string()
 }
 
+fn summarize_failure(reply: &str, stderr: &str, status: &str) -> Option<FailureSummary> {
+    let combined = format!("{}\n{}", reply, stderr).to_ascii_lowercase();
+    if combined.trim().is_empty() {
+        return None;
+    }
+
+    if combined.contains("premature close")
+        || combined.contains("socket hang up")
+        || combined.contains("connection reset")
+        || combined.contains("broken pipe")
+        || combined.contains("econnreset")
+        || combined.contains("stream closed")
+        || combined.contains("transport closed")
+    {
+        return Some(FailureSummary {
+            kind: "provider_transport_closed",
+            retryable: true,
+            headline: "执行异常（可重试）",
+            summary: "provider API 连接被提前关闭，通常属于瞬时传输异常。",
+        });
+    }
+
+    if combined.contains("rate limit")
+        || combined.contains("too many requests")
+        || combined.contains("quota exceeded")
+        || combined.contains("429")
+    {
+        return Some(FailureSummary {
+            kind: "provider_rate_limited",
+            retryable: true,
+            headline: "执行异常（可重试）",
+            summary: "provider 当前命中限流或额度限制，建议稍后重试。",
+        });
+    }
+
+    if combined.contains("unauthorized")
+        || combined.contains("invalid api key")
+        || combined.contains("authentication failed")
+        || combined.contains("forbidden")
+        || combined.contains("permission denied")
+    {
+        return Some(FailureSummary {
+            kind: "provider_auth_failed",
+            retryable: false,
+            headline: "执行异常（需处理）",
+            summary: "provider 鉴权失败，需检查账号、密钥或权限配置。",
+        });
+    }
+
+    if combined.contains("model not found")
+        || combined.contains("unknown model")
+        || combined.contains("404")
+    {
+        return Some(FailureSummary {
+            kind: "provider_model_unavailable",
+            retryable: false,
+            headline: "执行异常（需处理）",
+            summary: "provider 指定模型或接口不可用，需调整配置后再执行。",
+        });
+    }
+
+    if status == "incomplete" {
+        return Some(FailureSummary {
+            kind: "missing_final_reply",
+            retryable: true,
+            headline: "执行异常（可重试）",
+            summary: "执行进程已退出，但没有形成可信的最终结果。",
+        });
+    }
+
+    Some(FailureSummary {
+        kind: "provider_unknown_error",
+        retryable: false,
+        headline: "执行异常（需处理）",
+        summary: "执行者发生未分类异常，需查看原始错误并决定是否重试或改派。",
+    })
+}
+
+fn render_failure_reply(
+    summary: &FailureSummary,
+    reply: &str,
+    stderr: &str,
+    status: &str,
+) -> String {
+    let reply = reply.trim();
+    let stderr = sanitize_stderr_for_reply(stderr);
+    let detail = if !stderr.is_empty() {
+        stderr
+    } else {
+        reply.to_string()
+    };
+
+    let mut out = Vec::new();
+    out.push(summary.headline.to_string());
+    out.push(format!("类别：{}", summary.kind));
+    out.push(format!("状态：{}", status));
+    out.push(format!("摘要：{}", summary.summary));
+    out.push(format!(
+        "建议：{}",
+        if summary.retryable {
+            "这类异常通常可以稍后重试同一执行者；若连续出现，再考虑改派或检查 provider 环境。"
+        } else {
+            "这类异常通常需要先处理配置或环境问题，再决定是否重试。"
+        }
+    ));
+    if !detail.is_empty() && detail != summary.summary {
+        out.push("原始异常：".to_string());
+        out.push(detail);
+    }
+    if !reply.is_empty() && !out.iter().any(|line| line == reply) && reply != "请求已取消" {
+        out.push("执行回复：".to_string());
+        out.push(reply.to_string());
+    }
+    out.join("\n").trim().to_string()
+}
+
 fn parse_env_f64(name: &str) -> Option<f64> {
     let raw = env::var(name).ok()?;
     let parsed = raw.trim().parse::<f64>().ok()?;
@@ -2750,6 +2912,50 @@ mod tests {
         assert_eq!(result.status, "timeout");
         assert!(result.reply.contains("请求超时（已保留部分输出）"));
         assert!(result.reply.contains("第一条结论"));
+    }
+
+    #[test]
+    fn native_failure_classifies_premature_close_as_retryable() {
+        let req = sample_request();
+        let req_id = "req-premature-close";
+        let outcome = ProcessOutcome {
+            stdout: String::new(),
+            stderr: "api error: premature close".to_string(),
+            exit_code: 1,
+            timed_out: false,
+            canceled: false,
+            elapsed_ms: 18,
+        };
+        let result = build_exec_result(ExecMode::Native, req_id, outcome, req.timeout_s, req.quiet);
+        assert_eq!(result.status, "failed");
+        assert_eq!(
+            result.error_kind.as_deref(),
+            Some("provider_transport_closed")
+        );
+        assert!(result.retryable);
+        assert!(result.reply.contains("执行异常（可重试）"));
+        assert!(result.reply.contains("premature close"));
+    }
+
+    #[test]
+    fn incomplete_failure_is_marked_retryable() {
+        let req = sample_request();
+        let req_id = "req-incomplete-retry";
+        let outcome = ProcessOutcome {
+            stdout: format!(
+                "RCCB_REQ_ID: {req_id}\n任务要求较长，已写入临时文件：/tmp/{req_id}.request.md\n请严格按照以下格式回复：\nRCCB_BEGIN: {req_id}\n<回复内容>\nRCCB_DONE: {req_id}\n"
+            ),
+            stderr: String::new(),
+            exit_code: 0,
+            timed_out: false,
+            canceled: false,
+            elapsed_ms: 9,
+        };
+        let result = build_exec_result(ExecMode::Native, req_id, outcome, req.timeout_s, req.quiet);
+        assert_eq!(result.status, "incomplete");
+        assert_eq!(result.error_kind.as_deref(), Some("missing_final_reply"));
+        assert!(result.retryable);
+        assert!(result.reply.contains("执行异常（可重试）"));
     }
 
     #[test]
