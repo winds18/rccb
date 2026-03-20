@@ -45,6 +45,16 @@
 
 当前已发布版本：`v0.1.1`
 
+当前预发布候选：`v0.2.0-preview.1`
+
+- 状态：已完成本地构建与全量测试，等待你的 tmux / wezterm 实测
+- 对应分支：`codex/orchestrator-consumption-polish`
+- 重点能力：
+  - `rccb await`
+  - `ask --async --await-terminal`
+  - 调研 / 复核 / 文档子代理默认等待真实终态
+  - 长任务 prompt echo / 占位输出去误判
+
 - GitHub Release: `v0.1.1`
 - 发布产物：
   - `rccb-v0.1.1-macos-arm64.tar.gz`

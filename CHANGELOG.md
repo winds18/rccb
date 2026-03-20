@@ -2,6 +2,35 @@
 
 All notable changes to this project will be documented in this file.
 
+## v0.2.0-preview.1 - 2026-03-20
+
+`v0.2.0-preview.1` 是 `v0.2.0` 的首个开发预览版，重点收口编排者静默消费、子代理等待真实终态，以及长任务结果误判这三条核心链路。
+
+### Added
+
+- 新增 `rccb await --instance <id> --req-id <req_id>`，支持按 `req_id` 阻塞等待任务进入真实终态
+- 新增 `rccb ask --async --await-terminal` 组合模式，适合子代理提交后静默等待真实结果
+
+### Changed
+
+- `delegate-researcher`、`delegate-auditor`、`delegate-scribe` 默认改为“派单后等待真实终态再返回”
+- `delegate-coder` 保持“异步提交即返回 req_id”，保留并行编码能力
+- Claude 编排运行时规则、委派模板和项目级 skill 已对齐 `await-terminal` 新链路
+- 调研/复核类编排默认更安静、更耐心，减少长任务期间的重复状态播报
+
+### Fixed
+
+- 修复 `droid` 等执行者在长任务场景下，仅回显 prompt echo / 占位内容就被误判为 `completed` 的问题
+- 修复静默结果消费链路中，wrapped prompt / task artifact notice 干扰 reply 提取的问题
+- 修复调研、复核、文档子代理“派单即结束”导致主编排者过早失去真实状态感知的问题
+
+### Tests
+
+- 新增 `cmd_ask` 对 `--await-terminal` 参数约束测试
+- 新增规则生成测试，确保 research / audit / doc 子代理模板包含 `--await-terminal`
+- 补强 provider 层长任务 prompt echo / 占位输出去误判测试
+- 全量测试通过：`129 passed`
+
 ## v0.1.1 - 2026-03-18
 
 `v0.1.1` 是针对 `v0.1.0` 的热修版本，聚焦 Linux / bash 环境下的启动稳定性，不引入新的编排能力。
