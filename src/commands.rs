@@ -21,8 +21,8 @@ use crate::io_utils::{
     write_json_pretty, write_line,
 };
 use crate::layout::{
-    ensure_project_layout, launcher_feed_dir, launcher_feed_path, launcher_meta_path, lock_path,
-    logs_instance_dir, rccb_dir, sanitize_filename, session_instance_dir, state_path,
+    ensure_project_layout, launcher_dir, launcher_feed_dir, launcher_feed_path, launcher_meta_path,
+    lock_path, logs_instance_dir, rccb_dir, sanitize_filename, session_instance_dir, state_path,
     tasks_instance_dir, tasks_root_dir, tmp_instance_dir,
 };
 use crate::orchestrator_lock::{clear_inflight, load_inflight, mark_inflight};
@@ -3178,16 +3178,16 @@ fn detect_launch_backend() -> Result<Option<LaunchBackend>> {
     Ok(Some(LaunchBackend::Tmux { anchor_pane: pane }))
 }
 
-fn maybe_prepare_tmux_mouse_support() {
+fn maybe_prepare_tmux_mouse_support(project_dir: &Path, instance: &str) {
     if !env_bool("RCCB_TMUX_AUTO_MOUSE", true) {
         return;
     }
-    if let Err(err) = ensure_tmux_mouse_support_runtime() {
+    if let Err(err) = ensure_tmux_mouse_support_runtime(project_dir, instance) {
         eprintln!("警告：tmux mouse 运行时启用失败：{}", err);
     }
 }
 
-fn ensure_tmux_mouse_support_runtime() -> Result<()> {
+fn ensure_tmux_mouse_support_runtime(project_dir: &Path, instance: &str) -> Result<()> {
     run_simple("tmux", &["set-option", "-g", "mouse", "on"])
         .context("执行 `tmux set-option -g mouse on` 失败")?;
 
@@ -3209,6 +3209,7 @@ fn ensure_tmux_mouse_support_runtime() -> Result<()> {
 
     if tmux_mouse_runtime_enabled(&session_state, &window_state) {
         ensure_tmux_clipboard_runtime()?;
+        ensure_tmux_copy_priority_runtime(project_dir, instance)?;
         return Ok(());
     }
 
@@ -3248,6 +3249,116 @@ fn ensure_tmux_clipboard_runtime() -> Result<()> {
     );
 }
 
+fn ensure_tmux_copy_priority_runtime(project_dir: &Path, instance: &str) -> Result<()> {
+    if !env_bool("RCCB_TMUX_COPY_PRIORITY", true) {
+        return Ok(());
+    }
+
+    let launcher = launcher_dir(project_dir, instance);
+    fs::create_dir_all(&launcher)?;
+    let restore_path = launcher.join("tmux.copy.restore.conf");
+    let apply_path = launcher.join("tmux.copy.apply.conf");
+
+    if restore_path.exists() {
+        let _ = run_simple(
+            "tmux",
+            &["source-file", &restore_path.display().to_string()],
+        );
+        let _ = fs::remove_file(&restore_path);
+    }
+
+    let restore = build_tmux_copy_priority_restore_script()?;
+    fs::write(&restore_path, restore.as_bytes())
+        .with_context(|| format!("写入 tmux 恢复脚本失败：{}", restore_path.display()))?;
+
+    let apply = build_tmux_copy_priority_apply_script(tmux_clipboard_mode());
+    fs::write(&apply_path, apply.as_bytes())
+        .with_context(|| format!("写入 tmux 注入脚本失败：{}", apply_path.display()))?;
+    run_simple("tmux", &["source-file", &apply_path.display().to_string()])
+        .context("执行 tmux copy-priority 注入失败")?;
+    Ok(())
+}
+
+fn tmux_clipboard_mode() -> String {
+    env::var("RCCB_TMUX_SET_CLIPBOARD")
+        .ok()
+        .map(|v| v.trim().to_ascii_lowercase())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| "external".to_string())
+}
+
+fn build_tmux_copy_priority_apply_script(clipboard_mode: String) -> String {
+    let mut lines = vec![
+        "set-option -g mouse on".to_string(),
+        "set-window-option -g mouse on".to_string(),
+    ];
+    if clipboard_mode != "keep" && clipboard_mode != "inherit" {
+        lines.push(format!("set-option -g set-clipboard {}", clipboard_mode));
+    }
+    lines.push("bind-key -T root MouseDown1Pane select-pane -t=".to_string());
+    lines.push(
+        "bind-key -T root MouseDrag1Pane if-shell -F '#{pane_in_mode}' 'send-keys -M' 'select-pane -t= \\; copy-mode -M'"
+            .to_string(),
+    );
+    lines.push(
+        "bind-key -T copy-mode MouseDragEnd1Pane send-keys -X copy-selection-and-cancel"
+            .to_string(),
+    );
+    lines.push(
+        "bind-key -T copy-mode-vi MouseDragEnd1Pane send-keys -X copy-selection-and-cancel"
+            .to_string(),
+    );
+    lines.join("\n") + "\n"
+}
+
+fn build_tmux_copy_priority_restore_script() -> Result<String> {
+    let bindings = [
+        ("root", "MouseDown1Pane"),
+        ("root", "MouseDrag1Pane"),
+        ("copy-mode", "MouseDragEnd1Pane"),
+        ("copy-mode-vi", "MouseDragEnd1Pane"),
+    ];
+    let mut lines = vec![
+        format!(
+            "set-option -g mouse {}",
+            read_tmux_mouse_state(&["show-options", "-gv", "mouse"])?
+        ),
+        format!(
+            "set-window-option -g mouse {}",
+            read_tmux_mouse_state(&["show-window-options", "-gv", "mouse"])?
+        ),
+        format!(
+            "set-option -g set-clipboard {}",
+            run_capture(
+                "tmux",
+                &["show-options", "-gv", "set-clipboard"],
+                "读取 tmux set-clipboard 状态失败",
+            )?
+            .trim()
+        ),
+    ];
+    for (table, key) in bindings {
+        lines.push(capture_tmux_binding_restore_line(table, key)?);
+    }
+    Ok(lines.join("\n") + "\n")
+}
+
+fn capture_tmux_binding_restore_line(table: &str, key: &str) -> Result<String> {
+    let output = run_capture(
+        "tmux",
+        &["list-keys", "-T", table],
+        "读取 tmux key table 失败",
+    )?;
+    let prefix = format!("bind-key -T {} {}", table, key);
+    for line in output.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with(&prefix) {
+            return Ok(trimmed.to_string());
+        }
+    }
+    Ok(format!("unbind-key -T {} {}", table, key))
+}
+
 fn read_tmux_mouse_state(args: &[&str]) -> Result<String> {
     Ok(normalize_tmux_mouse_state(&run_capture(
         "tmux",
@@ -3282,7 +3393,7 @@ fn run_interactive_layout(
 
     let run_result = match &backend {
         LaunchBackend::Tmux { anchor_pane } => {
-            maybe_prepare_tmux_mouse_support();
+            maybe_prepare_tmux_mouse_support(project_dir, SHORTCUT_INSTANCE);
             provider_panes.insert(orchestrator.clone(), anchor_pane.clone());
             mark_anchor_pane(&backend, anchor_pane, &orchestrator);
             spawn_tmux_layout(
@@ -6534,6 +6645,8 @@ fn cleanup_launcher_bindings(project_dir: &Path, instance: &str) {
         return;
     }
 
+    restore_tmux_copy_priority_runtime(project_dir, instance);
+
     for provider in meta.providers {
         let Some(pane_id) = provider
             .pane_id
@@ -6546,6 +6659,20 @@ fn cleanup_launcher_bindings(project_dir: &Path, instance: &str) {
         let _ = run_simple_quiet_if_missing_pane("tmux", &["pipe-pane", "-t", pane_id]);
         let _ = run_simple_quiet_if_missing_pane("tmux", &["select-pane", "-t", pane_id, "-T", ""]);
     }
+}
+
+fn restore_tmux_copy_priority_runtime(project_dir: &Path, instance: &str) {
+    let restore_path = launcher_dir(project_dir, instance).join("tmux.copy.restore.conf");
+    if !restore_path.exists() {
+        return;
+    }
+    let _ = run_simple(
+        "tmux",
+        &["source-file", &restore_path.display().to_string()],
+    );
+    let _ = fs::remove_file(restore_path);
+    let apply_path = launcher_dir(project_dir, instance).join("tmux.copy.apply.conf");
+    let _ = fs::remove_file(apply_path);
 }
 
 fn remove_path_if_exists(path: &Path) -> Result<()> {

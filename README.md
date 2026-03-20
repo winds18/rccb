@@ -43,7 +43,7 @@
   - 主编排者“只编排不下场执行”仍需继续压实
   - 实时状态、超时恢复、`inbox/watch/reply.md` 一致性仍是核心发布阻塞项
   - 首启 pane 注入稳定性仍需继续验证
-  - `tmux` 启动时的 mouse / clipboard 运行态收敛已补上，仍需继续验证复制体验与跨终端兼容性
+  - `tmux` 启动时现在会注入运行态 copy-priority 绑定，目标是“pane 内鼠标拖选即复制”；仍需继续验证跨终端兼容性
   - Claude 编排已改成“自动加载优先，pane 注入兜底”，但仍需继续实测首启稳定性
 
 后续如果 README 摘要与 roadmap 明细不一致，以 roadmap 为准，并优先修正文档漂移。
@@ -228,6 +228,7 @@ rccb claude codex gemini opencode droid
    - `RCCB_ORCHESTRATOR_PRIME_MODE=<auto|always|off>`：控制 Claude 编排者 pane 首启 guardrail 注入；默认 `auto`，即项目级规则齐全时跳过注入，只在缺失时兜底
    - `RCCB_ORCHESTRATOR_CALLBACK_MAX_CHARS=<N>`：限制回注给编排者的结果长度（默认 12000）
    - `RCCB_TMUX_SET_CLIPBOARD=<external|on|off|keep>`：tmux 运行态 clipboard 模式（默认 `external`，用于减少子任务运行时对用户复制内容的干扰；`keep` 表示不改当前 tmux 设定）
+   - `RCCB_TMUX_COPY_PRIORITY=0`：关闭 tmux “复制优先”运行态绑定；默认开启。开启时会让 pane 内普通鼠标拖选优先进入 tmux copy-mode 并在松开时复制，代价是 pane 内 TUI 程序的原生鼠标交互会让位
 
 静默后台消费排查：
 
@@ -255,6 +256,7 @@ rccb --project-dir . inbox --instance default --req-id <req_id> --kind result --
   - 原始异常片段
 - 如需安静查看最新状态，优先使用 `inbox --latest`
 - 只有任务超时、异常或用户明确要求实时跟踪时，再使用一次性 `watch --req-id ... --with-provider-log --timeout-s 3 --pane-ui`
+- tmux 下如果启用了默认的复制优先模式，RCCB 会在启动时临时注入当前 tmux server 的 copy 绑定，并在停止实例时尝试恢复原绑定；不会改写你的 `tmux.conf`
 
 provider CLI 启动命令可覆盖：
 
